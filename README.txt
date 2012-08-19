@@ -3,6 +3,8 @@ Hosting tasks extra
 
 This module extends Aegit front-end with some additional tasks.
 
+Forked from http://drupal.org/project/hosting_tasks_extra
+
 Supported tasks/commands are:
 
 - Flush all caches (drush cache-clear -d)
