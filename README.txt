@@ -1,24 +1,19 @@
 Hosting tasks extra
 =====================
 
-This module extends Aegit hostmaster (and drush/provision)
-with some additional tasks.
+This module extends Aegit front-end with some additional tasks.
 
-Supported commands are:
+Supported tasks/commands are:
 
-- drush cache-clear -d
-- drush registry-rebuild -d
-- drush core-cron -d
+- Flush all caches (drush cache-clear -d)
+- Rebuild registry (drush registry-rebuild -d)
+- Run cron (drush core-cron -d)
 
 
 INSTALL
 =================
+This code is for hostmaster it needs to be uploaded
+in the modules directory of the hostmaster platform.
 
-As it has code for both hostmaster and drush it needs to be in both
-a modules directory of the hostmaster site and a directory where
-drush looks e.g. ~/.drush/.
-
-The module can be placed in both directories or symlinked.
-
-Registry-rebuild required the equally named drush module,
-installable with e.g. drush dl registry-rebuild.
+It requires provision_tasks_extra exstension uploaded
+in the ~/.drush/ directory of your Aegir backend.
