@@ -20,7 +20,7 @@ function hosting_tasks_extra_hosting_tasks() {
   );
   $tasks['site']['force_rebuild_registry'] = array(
     'title' => t('Force registry rebuild'),
-    'description' => t('Truncates registry and registry_file tables and rebuilds them from scratch.'),
+    'description' => t('Rebuilds registry and registry_file tables from scratch.'),
   );
 
   return $tasks;
