@@ -19,7 +19,7 @@ function hosting_tasks_extra_hosting_tasks() {
     'description' => t('Runs cron on the site.'),
   );
   $tasks['site']['force_rebuild_registry'] = array(
-    'title' => t('Force registry rebuild'),
+    'title' => t('Re-create registry'),
     'description' => t('Rebuilds registry and registry_file tables from scratch.'),
   );
 
