@@ -4,28 +4,31 @@
  * Implementation of hook_hosting_tasks
  */
 function hosting_tasks_extra_hosting_tasks() {
+  $nid = menu_get_object();
+  $site = node_load($nid->nid);
   $tasks = array();
 
   $tasks['site']['flush_cache'] = array(
     'title' => t('Flush all caches'),
-    'description' => t('Flushes all caches on the site.'),
+    'description' => t('Flushes all caches.'),
   );
   $tasks['site']['rebuild_registry'] = array(
     'title' => t('Rebuild registry'),
-    'description' => t('Rebuilds the registry and flushes all caches on the site.'),
+    'description' => t('Rebuilds the registry and flushes all caches.'),
   );
   $tasks['site']['run_cron'] = array(
-    'title' => t('Run cron'),
-    'description' => t('Runs cron on the site.'),
+    'title' => t('Run standard cron'),
+    'description' => t('Runs standard cron.'),
   );
-  $tasks['site']['force_rebuild_registry'] = array(
-    'title' => t('Re-create registry'),
-    'description' => t('Rebuilds registry and registry_file tables from scratch.'),
-  );
+  if (!empty($site->cron_key)) {
+    $tasks['site']['force_rebuild_registry'] = array(
+      'title' => t('Re-create registry'),
+      'description' => t('Truncates and re-creates registry tables.'),
+    );
+  }
 
   return $tasks;
 }
-
 
 /**
  * Implementation of hook_perm()
