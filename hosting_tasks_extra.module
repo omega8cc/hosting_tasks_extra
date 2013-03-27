@@ -38,7 +38,6 @@ function hosting_tasks_extra_perm() {
     'create rebuild_registry task',
     'create flush_cache task',
     'create run_cron task',
-    'create force_rebuild_registry task',
+    'create delete_rebuild_registry task',
   );
 }
-
