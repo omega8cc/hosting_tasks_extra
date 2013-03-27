@@ -20,12 +20,10 @@ function hosting_tasks_extra_hosting_tasks() {
     'title' => t('Run standard cron'),
     'description' => t('Runs standard cron.'),
   );
-  if (!empty($site->cron_key)) {
-    $tasks['site']['force_rebuild_registry'] = array(
-      'title' => t('Re-create registry'),
-      'description' => t('Truncates and re-creates registry tables.'),
-    );
-  }
+  $tasks['site']['delete_rebuild_registry'] = array(
+    'title' => t('Delete & rebuild D7 registry'),
+    'description' => t('Truncates and re-creates registry tables.'),
+  );
 
   return $tasks;
 }
