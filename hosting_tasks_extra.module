@@ -21,7 +21,7 @@ function hosting_tasks_extra_hosting_tasks() {
     'description' => t('Runs standard cron.'),
   );
   $tasks['site']['delete_rebuild_registry'] = array(
-    'title' => t('Delete & rebuild D7 registry'),
+    'title' => t('Delete/Rebuild D7 registry'),
     'description' => t('Truncates and re-creates registry tables.'),
   );
 
