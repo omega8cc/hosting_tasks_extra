@@ -11,7 +11,9 @@ function drush_provision_sync_init($source = NULL, $destination = NULL) {
 }
 
 /**
- * Pre provision-sync
+ * Implements hook_TASK_NAME_validate().
+ *
+ * @todo: Do we really need this?
  */
 function drush_provision_sync_validate($source = NULL, $destination = NULL) {
   drush_set_arguments(array($source, $destination));
@@ -41,7 +43,14 @@ function drush_provision_sync($source = NULL, $destination = NULL) {
   $destination_alias = $destination_settings['#name'];
   $destination_site = $destination_settings['uri'];
 
-  // @todo: we should optionally run the provision backups!
+  if (drush_get_option('backup')) {
+    // Make a backup before making any changes.
+    // @todo: How can we tell if the backup failed? Is there a way to pass this stuff through automatically?
+    $result = provision_backend_invoke($destination_alias, 'provision-backup');
+    drush_set_option('backup_file', $result['context']['backup_file']);
+    drush_set_option('backup_file_size', $result['context']['backup_file_size']);
+    // @todo: We should rollback in the case of failure to fully sync!
+  }
 
   foreach (drush_command_implements('provision_sync_before') as $command) {
     $func = $command . '_provision_sync_before';
@@ -53,7 +62,7 @@ function drush_provision_sync($source = NULL, $destination = NULL) {
 
   if (drush_get_option('database')) {
     // Drop the database
-    drush_log(dt('Dropping tables for destination database (!dest)', array('!dest' => $destination)), 'ok');
+    drush_log(dt('Dropping tables for destination database (!dest)', array('!dest' => $destination_alias)), 'ok');
     provision_backend_invoke($destination_alias, 'sql-drop');
     
     // Sync the databases

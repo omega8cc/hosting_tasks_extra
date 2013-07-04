@@ -16,6 +16,7 @@ function provision_sync_drush_command() {
     'bootstrap' => DRUSH_BOOTSTRAP_DRUSH,
     'drush dependencies' => array('sql', 'core'),
     'options' => array(
+      'backup' => 'Create a backup of the destination before sync.',
       'updatedb' => 'Run update.php after content sync.',
       'features-revert-all' => 'Revert all features after content sync.',
       'cache-clear' => 'Clear all caches after content sync.',
