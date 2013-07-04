@@ -25,12 +25,12 @@ function drush_provision_sync_validate($source = NULL, $destination = NULL) {
 function drush_provision_sync($source = NULL, $destination = NULL) {
   // Fail if no source
   if (empty($source) && !($source = drush_get_option('source'))) {
-    return drush_log(dt('Source not found.  You must enter a source alias to sync from'), 'error');
+    return drush_set_error('DRUSH_TARGET_NOT_FOUND', dt('Source not found.  You must enter a source alias to sync from'));
   }
 
   // Fail if no destination
   if (empty($destination) && !($destination = drush_get_option('destination'))) {
-    return drush_log(dt('Destination not found.  You must enter a source alias to sync to.'), 'error');
+    return drush_set_error('DRUSH_TARGET_NOT_FOUND', dt('Destination not found.  You must enter a source alias to sync to.'));
   }
 
   $source_settings = drush_sitealias_get_record($source);
