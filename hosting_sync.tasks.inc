@@ -29,6 +29,40 @@ function _hosting_sync_site_has_module($node, $module) {
 }
 
 /**
+ * Helper to get the list of sites.
+ *
+ * Similar to hosting_get_sites_by_status() but it calls db_rewrite_sql() so that the
+ * node access rules are applied (adding support for the 'hosting_client' module).
+ */
+function _hosting_sync_get_sites($platform = NULL, $profile = NULL, $exclude_nid = NULL, $status = HOSTING_SITE_ENABLED) {
+  $sql = "SELECT n.nid FROM {node} n LEFT JOIN {hosting_site} s ON n.vid = s.vid WHERE n.type = 'site' AND s.status = %d";
+  $args = array($status);
+
+  if (!is_null($platform)) {
+    $sql .= " AND s.platform = %d";
+    $args[] = $platform;
+  }
+
+  if (!is_null($profile)) {
+    $sql .= " AND s.profile = %d";
+    $args[] = $profile;
+  }
+
+  if (!is_null($exclude_nid)) {
+    $sql .= " AND n.nid != %d";
+    $args[] = $exclude_nid;
+  }
+
+  $result = db_query(db_rewrite_sql($sql), $args);
+
+  $nodes = array();
+  while ($nid = db_fetch_object($result)) {
+    $nodes[$nid->nid] = node_load($nid->nid);
+  }
+  return $nodes;
+}
+
+/**
  * Implementation of hook_hosting_task_TASK_TYPE_form().
  *
  * For "Sync Content" task.
@@ -36,23 +70,29 @@ function _hosting_sync_site_has_module($node, $module) {
 function hosting_task_sync_form($node) {
   $form = array();
 
+  // @todo: we should be able to allow sites with the same profile on different platforms
+  //        but then we'll need a check like the migrate task does, where it makes sure
+  //        all the modules are available there...
+
+  // Get a list of the sites on the same platform and profile, removing the the current
+  // site itself and allowing other modules to modify this list.
+  $sites = _hosting_sync_get_sites($node->platform, $node->profile, $node->nid);
+  drupal_alter('hosting_sync_destinations', $sites);
+
+  if (count($sites) == 0) {
+    $form['destination'] = array(
+      '#type' => 'item',
+      '#title' => t('Destination'),
+      '#value' => t('No destinations are currently available.'),
+    );
+    return $form;
+  }
+
   $form['source'] = array(
     '#type' => 'value',
     '#value' => '@' . $node->hosting_name,
   );
 
-  // Get a list of the sites on the same platform and profile, removing the the current
-  // site itself and allowing other modules to modify this list.
-  $sites = hosting_get_sites_by_status($node->platform, HOSTING_SITE_ENABLED);
-  foreach ($sites as $index => $site) {
-    if ($site->nid == $node->nid || $site->profile != $node->profile) {
-      unset($sites[$index]);
-    }
-  }
-  // @todo: filter for hosting_client (maybe implement the hook on it's behalf?)
-  drupal_alter('hosting_sync_destinations', $sites);
-
-  // Convert to a format that works for the Form API
   $options = array();
   foreach ($sites as $site) {
     $options['@' . $site->hosting_name] = $site->title;
