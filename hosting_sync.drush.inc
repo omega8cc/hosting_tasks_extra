@@ -29,6 +29,24 @@ function drush_hosting_sync_pre_hosting_task() {
     $task->options['updatedb'] = $task->task_args['updatedb'];
     $task->options['features-revert-all'] = $task->task_args['features_revert_all'];
     $task->options['cache-clear'] = $task->task_args['cache_clear'];
+    $task->options['backup'] = $task->task_args['backup'];
+  }
+}
+
+/**
+ * Implements hook_hosting_TASK_NAME_task().
+ */
+function hosting_sync_post_hosting_sync_task($task, $data) {
+  if ($task->ref->type == 'site' && $task->task_args['backup']) {
+    $task = clone $task;
+
+    // Load the destination node
+    $destination = hosting_get_site_by_url(ltrim($task->task_args['destination'], '@'));
+
+    // Record the backup created during sync.
+    $task->ref = $destination;
+    $task->task_args['description'] = t('Before sync from %source', array('%source' => $task->task_args['source']));
+    hosting_site_post_hosting_backup_task($task, $data);
   }
 }
 

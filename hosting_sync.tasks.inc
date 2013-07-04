@@ -146,8 +146,14 @@ function hosting_task_sync_form($node) {
     '#title' => t('Clear cache on Destination'),
     '#type' => 'checkbox',
     '#default_value' => 1,
-    '#suffix' => '</fieldset>',
   );
+  $form['backup'] = array(
+    '#title' => t('Create backup of destination'),
+    '#type' => 'checkbox',
+    '#description' => t('If this option is enabled, a backup of the destination will be created before any changes are made. <em>This is will allow you to restore later in case this was a mistake!</em>'),
+    '#default_value' => 1,
+  );
+
   $form['#validate'][] = 'hosting_task_sync_form_validate';
   return $form;
 }
