@@ -18,19 +18,17 @@
  * line.
  */
 function drush_hosting_sync_pre_hosting_task() {
-
   $task =& drush_get_context('HOSTING_TASK');
 
   // Sync
-  if ($task->ref->type == 'project' && $task->task_type == 'hosting-sync') {
+  if ($task->ref->type == 'site' && $task->task_type == 'sync') {
     $task->args[] = $task->task_args['source'];
     $task->args[] = $task->task_args['destination'];
     $task->options['database'] = $task->task_args['database'];
     $task->options['files'] = $task->task_args['files'];
-    $task->options['pull'] = $task->task_args['pull'];
-    $task->options['update'] = $task->task_args['update'];
-    $task->options['revert'] = $task->task_args['revert'];
-    $task->options['cache'] = $task->task_args['cache'];
+    $task->options['updatedb'] = $task->task_args['updatedb'];
+    $task->options['features-revert-all'] = $task->task_args['features_revert_all'];
+    $task->options['cache-clear'] = $task->task_args['cache_clear'];
   }
 }
 
