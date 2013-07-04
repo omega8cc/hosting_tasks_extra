@@ -14,20 +14,21 @@ function provision_sync_drush_command() {
   $items['provision-sync'] = array(
     'description' => 'Sync database and files from a chosen source site.',
     'bootstrap' => DRUSH_BOOTSTRAP_DRUSH,
+    'drush dependencies' => array('sql', 'core'),
     'options' => array(
-      'update' => 'Run update.php after content sync.',
-      'revert' => 'Revert all features after content sync.',
-      'cache' => 'Clear all caches after content sync.',
+      'updatedb' => 'Run update.php after content sync.',
+      'features-revert-all' => 'Revert all features after content sync.',
+      'cache-clear' => 'Clear all caches after content sync.',
       'files' => 'Sync site files.',
+      'database' => 'Sync site database.',
     ),
     'arguments' => array(
-      'from' => 'Environment to sync from.',
-      'to' => 'Environment to sync to.',
+      'from' => 'Name of subdirectory within /sites or a site-alias.',
+      'to' => 'Name of subdirectory within /sites or a site-alias.',
     ),
     'examples' => array(
-      'drush @project_mysite provision-sync live dev' => 'Syncs the database from @live to @dev.',
+      'drush provision-sync @prod @dev' => 'Copies the database and files from @prod to @dev',
     ),
-    'aliases' => array('ps'),
   );
   return $items;
 }
