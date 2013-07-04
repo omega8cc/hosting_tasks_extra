@@ -41,14 +41,15 @@ function hosting_task_sync_form($node) {
     '#value' => '@' . $node->hosting_name,
   );
 
-  // Get a list of the sites on the current platform (filtering out the current site) and
-  // allowing other modules to modify this list.
+  // Get a list of the sites on the same platform and profile, removing the the current
+  // site itself and allowing other modules to modify this list.
   $sites = hosting_get_sites_by_status($node->platform, HOSTING_SITE_ENABLED);
   foreach ($sites as $index => $site) {
-    if ($site->nid == $node->nid) {
+    if ($site->nid == $node->nid || $site->profile != $node->profile) {
       unset($sites[$index]);
     }
   }
+  // @todo: filter for hosting_client (maybe implement the hook on it's behalf?)
   drupal_alter('hosting_sync_destinations', $sites);
 
   // Convert to a format that works for the Form API
@@ -64,11 +65,6 @@ function hosting_task_sync_form($node) {
     '#required' => TRUE,
     '#description' => t('Choose the destination site.  <em>Data from this environment will be DESTROYED.</em>'),
   );
-
-  $form['source']['#prefix'] = '<div class="sync-envs"><div class="source">';
-  $form['source']['#suffix'] = '</div>';
-  $form['destination']['#prefix'] = '<div class="destination">';
-  $form['destination']['#suffix'] = '</div></div>';
 
   $form['database'] = array(
     '#title' => t('Copy database from source to destination.'),
