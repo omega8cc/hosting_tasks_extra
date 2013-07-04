@@ -9,15 +9,6 @@
 include_once('hosting_sync.tasks.inc');
 
 /**
- * Implementation of hook_init()
- *
- * Adds a css file.
- */
-function hosting_sync_init() {
-  drupal_add_css(drupal_get_path('module', 'hosting_sync') . '/hosting_sync.css');
-}
-
-/**
  * Implementation of hook_perm()
  *
  * Since we have a node type, "create project content permission is
