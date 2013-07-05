@@ -41,10 +41,10 @@ function hosting_sync_post_hosting_sync_task($task, $data) {
     $task = clone $task;
 
     // Load the destination node
-    $destination = hosting_get_site_by_url(ltrim($task->task_args['destination'], '@'));
+    //$destination = hosting_get_site_by_url(ltrim($task->task_args['destination'], '@'));
 
     // Record the backup created during sync.
-    $task->ref = $destination;
+    //$task->ref = $destination;
     $task->task_args['description'] = t('Before sync from %source', array('%source' => $task->task_args['source']));
     hosting_site_post_hosting_backup_task($task, $data);
   }

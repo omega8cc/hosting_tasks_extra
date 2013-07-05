@@ -13,7 +13,7 @@ function hosting_sync_hosting_tasks() {
   $tasks = array();
   $tasks['site']['sync'] = array(
     'title' => t('Sync'),
-    'description' => t('Synchronize database and files from another site and (optionally) run update.php, clear cache, and revert features.'),
+    'description' => t('Synchronize database and files from another site and (optionally) run update.php, clear cache, and revert features. <strong>Data on the current site will be DESTROYED.</strong>'),
     'access callback' => 'hosting_sync_hosting_task_menu_access',
     'dialog' => TRUE,
   );
@@ -77,57 +77,57 @@ function hosting_task_sync_form($node) {
   // Get a list of the sites on the same platform and profile, removing the the current
   // site itself and allowing other modules to modify this list.
   $sites = _hosting_sync_get_sites($node->platform, $node->profile, $node->nid);
-  drupal_alter('hosting_sync_destinations', $sites);
+  drupal_alter('hosting_sync_sources', $sites);
 
   if (count($sites) == 0) {
-    $form['destination'] = array(
+    $form['source'] = array(
       '#type' => 'item',
-      '#title' => t('Destination'),
-      '#value' => t('No destinations are currently available.'),
+      '#title' => t('Source'),
+      '#value' => t('No sources are currently available.'),
     );
     return $form;
   }
-
-  $form['source'] = array(
-    '#type' => 'value',
-    '#value' => '@' . $node->hosting_name,
-  );
 
   $options = array();
   foreach ($sites as $site) {
     $options['@' . $site->hosting_name] = $site->title;
   }
 
-  $form['destination'] = array(
+  $form['source'] = array(
     '#type' => 'radios',
-    '#title' => t('Destination'),
+    '#title' => t('Source'),
     '#options' => $options,
     '#required' => TRUE,
-    '#description' => t('Choose the destination site.  <em>Data from this environment will be DESTROYED.</em>'),
+    '#description' => t('Choose the site to copy data and/or files from.')
+  );
+
+  $form['destination'] = array(
+    '#type' => 'value',
+    '#value' => '@' . $node->hosting_name,
   );
 
   $form['database'] = array(
-    '#title' => t('Copy database from source to destination.'),
+    '#title' => t('Copy database from source.'),
     '#type' => 'checkbox',
     '#default_value' => 1,
     '#prefix' => '<fieldset><legend>What to sync</legend>',
   );
 
   $form['files'] = array(
-    '#title' => t('Copy files folder from source to destination.'),
+    '#title' => t('Copy files from source.'),
     '#type' => 'checkbox',
     '#default_value' => 0,
     '#suffix' => '</fieldset>',
   );
 
   $form['updatedb'] = array(
-    '#title' => t('Run update.php on Destination'),
+    '#title' => t('Run update.php'),
     '#type' => 'checkbox',
     '#default_value' => 1,
   );
   if (_hosting_sync_site_has_module($node, 'features')){
     $form['features_revert_all'] = array(
-      '#title' => t('Revert all features on Destination'),
+      '#title' => t('Revert all features'),
       '#type' => 'checkbox',
       '#default_value' => $has_features,
       '#access' => $has_features,
@@ -143,12 +143,12 @@ function hosting_task_sync_form($node) {
     //  );
   }
   $form['cache_clear'] = array(
-    '#title' => t('Clear cache on Destination'),
+    '#title' => t('Clear cache'),
     '#type' => 'checkbox',
     '#default_value' => 1,
   );
   $form['backup'] = array(
-    '#title' => t('Create backup of destination'),
+    '#title' => t('Create backup'),
     '#type' => 'checkbox',
     '#description' => t('If this option is enabled, a backup of the destination will be created before any changes are made. <em>This is will allow you to restore later in case this was a mistake!</em>'),
     '#default_value' => 1,
