@@ -1,15 +1,5 @@
 <?php
 
-require_once DRUSH_BASE_PATH . '/commands/sql/sync.sql.inc';
-
-/**
- * Implements drush_hook_init
- * drush_sql_sync_init() does what we want!
- */
-function drush_provision_sync_init($source = NULL, $destination = NULL) {
-  return drush_sql_sync_init($source, $destination);
-}
-
 /**
  * Implements hook_TASK_NAME_validate().
  *
@@ -35,13 +25,13 @@ function drush_provision_sync($source = NULL, $destination = NULL) {
     return drush_set_error('DRUSH_TARGET_NOT_FOUND', dt('Destination not found.  You must enter a source alias to sync to.'));
   }
 
-  $source_settings = drush_sitealias_get_record($source);
-  $source_alias = $source_settings['#name'];
-  $source_site = $source_settings['uri'];
+  // @todo: validate that these aliases exist, and that we can connect to their databases!
 
-  $destination_settings = drush_sitealias_get_record($destination);
-  $destination_alias = $destination_settings['#name'];
-  $destination_site = $destination_settings['uri'];
+  $source_site = ltrim($source, '@');
+  $source_alias = '@' . $source_site;
+
+  $destination_site = ltrim($destination, '@');
+  $destination_alias = '@' . $destination_site;
 
   if (drush_get_option('backup')) {
     // Make a backup before making any changes.
@@ -67,6 +57,7 @@ function drush_provision_sync($source = NULL, $destination = NULL) {
     
     // Sync the databases
     drush_log(dt('Syncing databases...'), 'ok');
+    // @todo: update to drush_invoke_process('@self', ...)
     drush_backend_invoke('sql-sync', array($source_alias, $destination_alias));
   }
   else {
@@ -79,6 +70,7 @@ function drush_provision_sync($source = NULL, $destination = NULL) {
     
     // Sync the files
     // @todo: should include the private files too!
+    // @todo: update to drush_invoke_process('@self', ...)
     drush_backend_invoke('rsync', array("$source_alias:sites/$source_site/files/", "$destination_alias:sites/$destination_site/files/"));
   }
   else {
