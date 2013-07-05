@@ -22,7 +22,11 @@ function drush_provision_sync($source = NULL, $destination = NULL) {
 
   // Fail if no destination
   if (empty($destination) && !($destination = drush_get_option('destination'))) {
-    return drush_set_error('DRUSH_TARGET_NOT_FOUND', dt('Destination not found.  You must enter a source alias to sync to.'));
+    // Default to the current site if no destination is given
+    $destination = drush_get_option('#name');
+    if (empty($destination) || !drush_get_option('db_name')) {
+      return drush_set_error('DRUSH_TARGET_NOT_FOUND', dt('Destination not found.  You must enter a destination alias to sync to.'));
+    }
   }
 
   // @todo: validate that these aliases exist, and that we can connect to their databases!
