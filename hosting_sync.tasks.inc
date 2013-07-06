@@ -12,8 +12,8 @@
 function hosting_sync_hosting_tasks() {
   $tasks = array();
   $tasks['site']['sync'] = array(
-    'title' => t('Sync'),
-    'description' => t('Synchronize database and files from another site and (optionally) run update.php, clear cache, and revert features. <strong>Data on the current site will be DESTROYED.</strong>'),
+    'title' => t('Sync data'),
+    'description' => t('Synchronize database and files from another site and (optionally) run update.php, clear cache, and revert features. <strong>Data on the current site will be DESTROYED!</strong>'),
     'access callback' => 'hosting_sync_hosting_task_menu_access',
     'dialog' => TRUE,
   );
@@ -106,20 +106,36 @@ function hosting_task_sync_form($node) {
     '#value' => '@' . $node->hosting_name,
   );
 
+  // What to sync?
   $form['database'] = array(
     '#title' => t('Copy database from source.'),
     '#type' => 'checkbox',
     '#default_value' => 1,
-    '#prefix' => '<fieldset><legend>What to sync</legend>',
+    '#prefix' => '<fieldset><legend>' . t('What to sync?') . '</legend>',
   );
-
   $form['files'] = array(
     '#title' => t('Copy files from source.'),
+    '#type' => 'checkbox',
+    '#default_value' => 1,
+  );
+  $form['modules'] = array(
+    '#title' => t('Copy modules from source.'),
+    '#type' => 'checkbox',
+    '#default_value' => 0,
+  );
+  $form['themes'] = array(
+    '#title' => t('Copy themes from source.'),
+    '#type' => 'checkbox',
+    '#default_value' => 0,
+  );
+  $form['libraries'] = array(
+    '#title' => t('Copy libraries from source.'),
     '#type' => 'checkbox',
     '#default_value' => 0,
     '#suffix' => '</fieldset>',
   );
 
+  // Options
   $form['updatedb'] = array(
     '#title' => t('Run update.php'),
     '#type' => 'checkbox',
