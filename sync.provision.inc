@@ -1,6 +1,27 @@
 <?php
 
 /**
+ * Helper function to validate site aliases.
+ */
+function _drush_provision_sync_validate_alias($alias) {
+  // We can't use drush_sitealias_load_record() because it will overwrite values loaded from the
+  // current site's drushrc.php with values from the $alias drushrc.php, and provision will 
+  // overwrite the current site's drushrc.php with the new values. Effectively, this causes the
+  // database credentials on the destination site to get overwritten with the credentials from
+  // the source site. That is no good!
+  //
+  // To make a long story short, invoking a new drush process is the only safe way to read alias
+  // records...
+
+  $result = drush_backend_invoke('site-alias', array(0 => $alias, 'component' => 'context_type'), 'GET', FALSE);
+  if ($result['error_status'] === DRUSH_SUCCESS && trim($result['output']) === 'site') {
+    return TRUE;
+  }
+
+  return drush_set_error('DRUSH_ALIAS_NOT_FOUND', dt('Error: no alias record could be found for @alias', array('@alias' => $alias)));
+}
+
+/**
  * Implements hook_TASK_NAME_validate().
  */
 function drush_provision_sync_validate($source = NULL, $destination = NULL) {
@@ -21,7 +42,12 @@ function drush_provision_sync_validate($source = NULL, $destination = NULL) {
   $source = '@' . ltrim($source, '@');
   $destination = '@' . ltrim($destination, '@');
 
-  // @todo: validate that these aliases exist, and that we can connect to their databases!
+  // Validate that these aliases exist and represent sites (as opposed to platforms, etc)
+  foreach (array($source, $destination) as $alias) {
+    if (!_drush_provision_sync_validate_alias($alias)) {
+      return FALSE;
+    }
+  }
 
   drush_set_option('source', $source);
   drush_set_option('destination', $destination);
@@ -88,8 +114,6 @@ function drush_provision_sync($source = NULL, $destination = NULL) {
     foreach ($files as $path) {
       drush_log(dt('Syncing files in the %path directory from @source to @destination', array('%path' => $path, '@source' => $source, '@destination' => $destination)), 'ok');
       
-      // Sync the files
-      // @todo: should include the private files too!
       // @todo: update to drush_invoke_process('@self', ...)
       $result = drush_backend_invoke('rsync', array("$source:sites/$source_site/$path/", "$destination:sites/$destination_site/$path/"));
       if ($result['error_status'] !== DRUSH_SUCCESS) {
@@ -100,9 +124,6 @@ function drush_provision_sync($source = NULL, $destination = NULL) {
   else {
     drush_log(dt('Skipped syncing files...'), 'ok');
   }
-
-  // @todo: Debugging! Remove this line.
-  //return drush_set_error('DEBUG', dt("Error so we can roll back!"));
 
   // update db, unless option is false.
   if (drush_get_option('updatedb')) {
