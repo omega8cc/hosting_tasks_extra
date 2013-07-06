@@ -20,8 +20,11 @@ function provision_sync_drush_command() {
       'updatedb' => 'Run update.php after content sync.',
       'features-revert-all' => 'Revert all features after content sync.',
       'cache-clear' => 'Clear all caches after content sync.',
-      'files' => 'Sync site files.',
       'database' => 'Sync site database.',
+      'files' => 'Sync site files.',
+      'modules' => 'Sync site modules.',
+      'themes' => 'Sync site themes.',
+      'libraries' => 'Sync site libraries.',
     ),
     'arguments' => array(
       'from' => 'Name of subdirectory within /sites or a site-alias.',

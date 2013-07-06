@@ -57,7 +57,7 @@ function drush_provision_sync($source = NULL, $destination = NULL) {
 
   if (drush_get_option('database')) {
     // Drop the database
-    drush_log(dt('Dropping tables for destination database (!dest)', array('!dest' => $destination)), 'ok');
+    drush_log(dt('Dropping tables for destination database (@destination)', array('@destination' => $destination)), 'ok');
     provision_backend_invoke($destination, 'sql-drop');
     
     // Sync the databases
@@ -65,21 +65,37 @@ function drush_provision_sync($source = NULL, $destination = NULL) {
     // @todo: update to drush_invoke_process('@self', ...)
     $result = drush_backend_invoke('sql-sync', array($source, $destination));
     if ($result['error_status'] !== DRUSH_SUCCESS) {
-      return drush_set_error('PROVISION_SQL_SYNC_FAILED', dt("Unable to sync from @source to @destination.", array($source, $destination)));
+      return drush_set_error('PROVISION_SQL_SYNC_FAILED', dt("Unable to sync from @source to @destination.", array('@source' => $source, '@destination' => $destination)));
     }
   }
   else {
     drush_log(dt('Skipped syncing databases...'), 'ok');
   }
 
-  // Sync files via rsync
+  $files = array();
   if (drush_get_option('files')) {
-    drush_log(dt('Syncing file contents from !source to !destination', array('!source' => $source, '!destination' => $destination)), 'ok');
-    
-    // Sync the files
-    // @todo: should include the private files too!
-    // @todo: update to drush_invoke_process('@self', ...)
-    drush_backend_invoke('rsync', array("$source:sites/$source_site/files/", "$destination:sites/$destination_site/files/"));
+    $files[] = 'files';
+    $files[] = 'private/files';
+  }
+  foreach (array('modules', 'themes', 'libraries') as $files_type) {
+    if (drush_get_option($files_type)) {
+      $files[] = $files_type;
+    }
+  }
+
+  // Sync files via rsync
+  if (!empty($files)) {
+    foreach ($files as $path) {
+      drush_log(dt('Syncing files in the %path directory from @source to @destination', array('%path' => $path, '@source' => $source, '@destination' => $destination)), 'ok');
+      
+      // Sync the files
+      // @todo: should include the private files too!
+      // @todo: update to drush_invoke_process('@self', ...)
+      $result = drush_backend_invoke('rsync', array("$source:sites/$source_site/$path/", "$destination:sites/$destination_site/$path/"));
+      if ($result['error_status'] !== DRUSH_SUCCESS) {
+        return drush_set_error('PROVISION_RSYNC_FAILED', dt("Unable to rsync files from @source to @destination.", array('@source' => $source, '@destination' => $destination)));
+      }
+    }
   }
   else {
     drush_log(dt('Skipped syncing files...'), 'ok');
