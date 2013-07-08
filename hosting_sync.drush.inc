@@ -26,6 +26,9 @@ function drush_hosting_sync_pre_hosting_task() {
     $task->args[] = $task->task_args['destination'];
     $task->options['database'] = $task->task_args['database'];
     $task->options['files'] = $task->task_args['files'];
+    $task->options['modules'] = $task->task_args['modules'];
+    $task->options['themes'] = $task->task_args['themes'];
+    $task->options['libraries'] = $task->task_args['libraries'];
     $task->options['updatedb'] = $task->task_args['updatedb'];
     $task->options['features-revert-all'] = $task->task_args['features_revert_all'];
     $task->options['cache-clear'] = $task->task_args['cache_clear'];
