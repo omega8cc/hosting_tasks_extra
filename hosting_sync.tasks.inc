@@ -63,6 +63,103 @@ function _hosting_sync_get_sites($platform = NULL, $profile = NULL, $exclude_nid
 }
 
 /**
+ * Helper to get a list of platforms that are compatible with the given site.
+ *
+ *  - $node is the site in question
+ *  - $type is whether the $node is the 'source' or 'destination'
+ */
+function hosting_sync_get_compatible_platforms($node, $type = 'destination') {
+  $profile_platform_instances = hosting_package_instances_load(
+    array('r.type' => 'platform', 'n.nid' => $node->profile, 'h.status' => HOSTING_PLATFORM_ENABLED));
+
+  $result = array();
+
+  foreach ($profile_platform_instances as $profile_instance) {
+    if ($type === 'source') {
+      $status = hosting_package_comparison($node->nid, $profile_instance->iid);
+    }
+    else {
+      $status = hosting_package_comparison($profile_instance->iid, $node->nid);
+    }
+
+    // If there are no errors, this one is compatible!
+    if ($status['error'] == 0) {
+      $result[] = array(
+        'platform' => $profile_instance->rid,
+        'profile'  => $profile_instance->nid,
+        'status'   => $status,
+      );
+    }
+  }
+
+  drupal_alter('hosting_sync_compatible_platforms', $result, $node, $type);
+
+  return $result;
+}
+
+/**
+ * Helper to get the sites for a particular destination.
+ */
+function hosting_sync_get_compatible_sites($node, $type = 'destination') {
+  $result = hosting_sync_get_compatible_platforms($node, $type);
+
+  foreach ($result as $idx => &$info) {
+    $sites = _hosting_sync_get_sites($info['platform'], $info['profile'], $node->nid);
+    if (count($sites) > 0) {
+      $info['sites'] = $sites;
+    }
+    else {
+      unset($result[$idx]);
+    }
+  }
+
+  drupal_alter('hosting_sync_compatible_sites', $result, $node, $type);
+
+  return $result;
+}
+
+/**
+ * Helper to create a set of radio buttons out of possible sources/destinations.
+ */
+function _hosting_sync_sites_elements($result, $parents) {
+  $elements = array();
+  foreach ($result as $info) {
+    if ($info['platform'] != $node->platform) {
+      $status = $info['status'];
+      $description = t("Upgrades: !upgrades, Warnings: !missing, Errors: !errors | <a href='!url' class='hosting-package-comparison-link'>Compare platforms</a>",
+        array(
+          '!upgrades' => $status['upgrade'],
+          '!missing' => $status['missing'] + $status['downgrade'],
+          '!errors' => $status['error'],
+          '!url' => url('hosting/migrate/compare/' . $node->nid . '/' . $profile_instance->iid))
+        );
+    }
+    else {
+      $description = '';
+    }
+
+    $platform_node = node_load($info['platform']);
+    $elements[$info['platform']] = array(
+      '#type' => 'fieldset',
+      '#title' => $platform_node->title,
+      '#description' => $description,
+      '#attributes' => array('class' => 'hosting-sync-platform-group'),
+    );
+
+    foreach ($info['sites'] as $site) {
+      $elements[$info['platform']][$site->hosting_name] = array(
+        '#type' => 'radio',
+        '#title' => $site->title,
+        '#parents' => $parents,
+        '#return_value' => '@' . $site->hosting_name,
+      );
+    }
+  }
+
+  return $elements;
+}
+
+/**
  * Implementation of hook_hosting_task_TASK_TYPE_form().
  *
  * For "Sync Content" task.
@@ -74,10 +171,8 @@ function hosting_task_sync_form($node) {
   //        but then we'll need a check like the migrate task does, where it makes sure
   //        all the modules are available there...
 
-  // Get a list of the sites on the same platform and profile, removing the the current
-  // site itself and allowing other modules to modify this list.
-  $sites = _hosting_sync_get_sites($node->platform, $node->profile, $node->nid);
-  drupal_alter('hosting_sync_sources', $sites);
+  // Get a list of compatible sources for this site as the destination
+  $sites = hosting_sync_get_compatible_sites($node, 'destination');
 
   if (count($sites) == 0) {
     $form['source'] = array(
@@ -88,18 +183,12 @@ function hosting_task_sync_form($node) {
     return $form;
   }
 
-  $options = array();
-  foreach ($sites as $site) {
-    $options['@' . $site->hosting_name] = $site->title;
-  }
-
-  $form['source'] = array(
+  $form['source'] = array_merge(array(
     '#type' => 'radios',
     '#title' => t('Source'),
-    '#options' => $options,
     '#required' => TRUE,
     '#description' => t('Choose the site to copy data and/or files from.')
-  );
+  ), _hosting_sync_sites_elements($sites, array('parameters', 'source')));
 
   $form['destination'] = array(
     '#type' => 'value',
