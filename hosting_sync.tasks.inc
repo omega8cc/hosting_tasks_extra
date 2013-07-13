@@ -86,8 +86,9 @@ function hosting_sync_get_compatible_platforms($node, $type = 'destination') {
     if ($status['error'] == 0) {
       $result[] = array(
         'platform' => $profile_instance->rid,
-        'profile'  => $profile_instance->nid,
-        'status'   => $status,
+        'profile' => $profile_instance->nid,
+        'profile_instance' => $profile_instance->iid,
+        'status' => $status,
       );
     }
   }
@@ -121,7 +122,7 @@ function hosting_sync_get_compatible_sites($node, $type = 'destination') {
 /**
  * Helper to create a set of radio buttons out of possible sources/destinations.
  */
-function _hosting_sync_sites_elements($result, $parents) {
+function _hosting_sync_sites_elements($node, $result, $parents) {
   $elements = array();
   foreach ($result as $info) {
     if ($info['platform'] != $node->platform) {
@@ -131,11 +132,11 @@ function _hosting_sync_sites_elements($result, $parents) {
           '!upgrades' => $status['upgrade'],
           '!missing' => $status['missing'] + $status['downgrade'],
           '!errors' => $status['error'],
-          '!url' => url('hosting/migrate/compare/' . $node->nid . '/' . $profile_instance->iid))
+          '!url' => url('hosting/sync/compare/' . $node->nid . '/' . $info['profile_instance']))
         );
     }
     else {
-      $description = '';
+      $description = t('Current platform');
     }
 
     $platform_node = node_load($info['platform']);
@@ -167,9 +168,7 @@ function _hosting_sync_sites_elements($result, $parents) {
 function hosting_task_sync_form($node) {
   $form = array();
 
-  // @todo: we should be able to allow sites with the same profile on different platforms
-  //        but then we'll need a check like the migrate task does, where it makes sure
-  //        all the modules are available there...
+  drupal_add_js(drupal_get_path('module', 'hosting_sync') . '/hosting_sync.js');
 
   // Get a list of compatible sources for this site as the destination
   $sites = hosting_sync_get_compatible_sites($node, 'destination');
@@ -188,7 +187,7 @@ function hosting_task_sync_form($node) {
     '#title' => t('Source'),
     '#required' => TRUE,
     '#description' => t('Choose the site to copy data and/or files from.')
-  ), _hosting_sync_sites_elements($sites, array('parameters', 'source')));
+  ), _hosting_sync_sites_elements($node, $sites, array('parameters', 'source')));
 
   $form['destination'] = array(
     '#type' => 'value',
