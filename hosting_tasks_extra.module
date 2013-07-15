@@ -24,6 +24,10 @@ function hosting_tasks_extra_hosting_tasks() {
     'title' => t('Delete/Rebuild D7 registry'),
     'description' => t('Truncates and re-creates registry tables.'),
   );
+  $tasks['site']['site_security_check'] = array(
+    'title' => t('Check site security'),
+    'description' => t('Checks basic site security settings.'),
+  );
 
   return $tasks;
 }
@@ -37,5 +41,6 @@ function hosting_tasks_extra_perm() {
     'create flush_cache task',
     'create run_cron task',
     'create delete_rebuild_registry task',
+    'create site_security_check task',
   );
 }
