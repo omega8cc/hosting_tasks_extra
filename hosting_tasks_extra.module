@@ -26,7 +26,7 @@ function hosting_tasks_extra_hosting_tasks() {
   );
   $tasks['site']['site_security_check'] = array(
     'title' => t('Check site security'),
-    'description' => t('Checks basic site security settings.'),
+    'description' => t('Checks basic site security.'),
   );
 
   return $tasks;
