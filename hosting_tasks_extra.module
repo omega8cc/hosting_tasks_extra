@@ -28,6 +28,10 @@ function hosting_tasks_extra_hosting_tasks() {
     'title' => t('Check site security'),
     'description' => t('Checks basic site security.'),
   );
+  $tasks['site']['site_security_review'] = array(
+    'title' => t('Review site security'),
+    'description' => t('Runs Security Review.'),
+  );
 
   return $tasks;
 }
@@ -42,5 +46,6 @@ function hosting_tasks_extra_perm() {
     'create run_cron task',
     'create delete_rebuild_registry task',
     'create site_security_check task',
+    'create site_security_review task',
   );
 }
