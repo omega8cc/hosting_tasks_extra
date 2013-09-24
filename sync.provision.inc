@@ -13,9 +13,23 @@ function _drush_provision_sync_validate_alias($alias) {
   // To make a long story short, invoking a new drush process is the only safe way to read alias
   // records...
 
-  $result = drush_backend_invoke('site-alias', array(0 => $alias, 'component' => 'context_type'), 'GET', FALSE);
-  if ($result['error_status'] === DRUSH_SUCCESS && trim($result['output']) === 'site') {
-    return TRUE;
+  if (DRUSH_VERSION >= 6) {
+    $result = drush_invoke_process('@none', 'site-alias', array($alias), array('format' => 'json'));
+    $result_arr = json_decode($result['output'], $assoc = TRUE );
+    if ($result['error_status'] === DRUSH_SUCCESS && $result_arr[trim($alias, '@')]['context_type'] === 'site') {
+      return TRUE;
+    }
+  }
+  else {
+    if (DRUSH_VERSION >= 5) {
+      $result = drush_invoke_process('@none', 'site-alias', array($alias), array('component' => 'context_type'));
+    }
+    else {
+      $result = drush_backend_invoke('site-alias', array(0 => $alias, 'component' => 'context_type'), 'GET', FALSE);
+    }
+    if ($result['error_status'] === DRUSH_SUCCESS && trim($result['output']) === 'site') {
+      return TRUE;
+    }
   }
 
   return drush_set_error('DRUSH_ALIAS_NOT_FOUND', dt('Error: no alias record could be found for @alias', array('@alias' => $alias)));
@@ -88,8 +102,12 @@ function drush_provision_sync($source = NULL, $destination = NULL) {
     
     // Sync the databases
     drush_log(dt('Syncing databases...'), 'ok');
-    // @todo: update to drush_invoke_process('@self', ...)
-    $result = drush_backend_invoke('sql-sync', array($source, $destination));
+    if (DRUSH_VERSION >= 5) {
+      $result = drush_invoke_process('@none', 'sql-sync', array($source, $destination), array('yes' => TRUE), TRUE);
+    }
+    else {
+      $result = drush_backend_invoke('sql-sync', array($source, $destination));
+    }
     if ($result['error_status'] !== DRUSH_SUCCESS) {
       return drush_set_error('PROVISION_SQL_SYNC_FAILED', dt("Unable to sync from @source to @destination.", array('@source' => $source, '@destination' => $destination)));
     }
@@ -113,9 +131,16 @@ function drush_provision_sync($source = NULL, $destination = NULL) {
   if (!empty($files)) {
     foreach ($files as $path) {
       drush_log(dt('Syncing files in the %path directory from @source to @destination', array('%path' => $path, '@source' => $source, '@destination' => $destination)), 'ok');
-      
-      // @todo: update to drush_invoke_process('@self', ...)
-      $result = drush_backend_invoke('rsync', array("$source:sites/$source_site/$path/", "$destination:sites/$destination_site/$path/"));
+
+      if (DRUSH_VERSION >= 5) {
+        $result = drush_invoke_process('@none', 'rsync',
+          array("$source:sites/$source_site/$path/", "$destination:sites/$destination_site/$path/"),
+          array('yes' => TRUE),
+          TRUE);
+      }
+      else {
+        $result = drush_backend_invoke('rsync', array("$source:sites/$source_site/$path/", "$destination:sites/$destination_site/$path/"));
+      }
       if ($result['error_status'] !== DRUSH_SUCCESS) {
         return drush_set_error('PROVISION_RSYNC_FAILED', dt("Unable to rsync files from @source to @destination.", array('@source' => $source, '@destination' => $destination)));
       }
