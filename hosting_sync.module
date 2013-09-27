@@ -46,33 +46,6 @@ function hosting_sync_perm() {
 }
 
 /**
- * Access Callback for Aegir Tasks
- *
- * This function defines access to the various aegir tasks.
- *
- * @arg $node object
- *   The node object is running the task. (Site, Platform, Server)
- *
- * @arg $task string
- *   The type of the task that is running.
- *
- * @see hosting_task_menu_access()
- *
- */
-function hosting_sync_hosting_task_menu_access($node, $task) {
-  // If we are passed the nid by mistake
-  if (!isset($node->nid)){
-    $node = node_load($node);
-  }
-
-  if ($task != 'delete' && !$node->status) {
-    return FALSE;
-  }
-
-  return user_access("create " . $task . " task");
-}
-
-/**
  * Compare package schema versions between the current and target platform in temp tables
  */
 function hosting_sync_comparison($current, $target) {

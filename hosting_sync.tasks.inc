@@ -21,6 +21,39 @@ function hosting_sync_hosting_tasks() {
 }
 
 /**
+ * Access Callback for Aegir Tasks
+ *
+ * This function defines access to the various aegir tasks.
+ *
+ * @arg $node object
+ *   The node object is running the task. (Site, Platform, Server)
+ *
+ * @arg $task string
+ *   The type of the task that is running.
+ *
+ * @see hosting_task_menu_access()
+ *
+ */
+function hosting_sync_hosting_task_menu_access($node, $task) {
+  // If we are passed the nid by mistake
+  if (!isset($node->nid)){
+    $node = node_load($node);
+  }
+
+  if ($task == 'sync' && user_access('create sync task') && $node->type == 'site') {
+    // If we are deleted or in the process of deleting, we can't sync!
+    if (hosting_task_outstanding($node->nid, 'delete') || ($node->site_status == HOSTING_SITE_DELETED)) {
+      return FALSE;
+    }
+
+    // Otherwise, only show if the site is enabled
+    return $node->site_status == HOSTING_SITE_ENABLED;
+  }
+
+  return FALSE;
+}
+
+/**
  * Helper to determine if a particular site has a module installed.
  */
 function _hosting_sync_site_has_module($node, $module) {
