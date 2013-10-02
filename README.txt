@@ -11,6 +11,9 @@ Supported tasks/commands are:
 - Run updates (drush updatedb -d)
 - Flush the Drush cache (drush clear-cache drush -d)
 
+Extra bundled modules:
+- HTTP Basic Authentication (hosting_http_basic_auth)
+
 
 INSTALL
 -------
