@@ -31,17 +31,31 @@ function hosting_tasks_extra_hosting_tasks() {
   return $tasks;
 }
 
-
 /**
- * Implementation of hook_perm()
+ * Implements hook_permission().
  */
-function hosting_tasks_extra_perm() {
+function hosting_tasks_extra_permission() {
   return array(
-    'create rebuild_registry task',
-    'create flush_cache task',
-    'create run_cron task',
-    'create update task',
-    'create flush_drush_cache task',
+    'create rebuild_registry task' => array(
+      'title' => t('create rebuild_registry task'),
+      'description' => t('TODO Add a description for \'create rebuild_registry task\''),
+    ),
+    'create flush_cache task' => array(
+      'title' => t('create flush_cache task'),
+      'description' => t('TODO Add a description for \'create flush_cache task\''),
+    ),
+    'create run_cron task' => array(
+      'title' => t('create run_cron task'),
+      'description' => t('TODO Add a description for \'create run_cron task\''),
+    ),
+    'create update task' => array(
+      'title' => t('create update task'),
+      'description' => t('TODO Add a description for \'create update task\''),
+    ),
+    'create flush_drush_cache task' => array(
+      'title' => t('create flush_drush_cache task'),
+      'description' => t('TODO Add a description for \'create flush_drush_cache task\''),
+    ),
   );
 }
 

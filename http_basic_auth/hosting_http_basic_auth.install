@@ -57,19 +57,3 @@ function hosting_http_basic_auth_update_6100() {
 
   return $ret;
 }
-
-/**
- * Implementation of hook_install().
- */
-function hosting_http_basic_auth_install() {
-  // Create tables.
-  drupal_install_schema('hosting_http_basic_auth');
-}
-
-/**
- * Implementation of hook_uninstall().
- */
-function hosting_http_basic_auth_uninstall() {
-  // Remove tables.
-  drupal_uninstall_schema('hosting_http_basic_auth');
-}

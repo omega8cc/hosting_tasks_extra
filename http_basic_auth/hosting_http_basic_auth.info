@@ -3,4 +3,4 @@ description = Allows admins to specify HTTP basic authentication for sites.
 package = Hosting
 dependencies[] = hosting_site
 
-core = 6.x
+core = 7.x
