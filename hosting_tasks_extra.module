@@ -19,15 +19,17 @@ function hosting_tasks_extra_hosting_tasks() {
     'title' => t('Run cron'),
     'description' => t('Runs cron on this site.'),
   );
-  $tasks['site']['update'] = array(
-    'title' => t('Run db updates'),
-    'description' => t('Runs database updates on this site.'),
-    'dialog' => TRUE,
-  );
+  // Requires Drush5+ so can't be used with BOA yet.
+  //   $tasks['site']['update'] = array(
+  //     'title' => t('Run db updates'),
+  //     'description' => t('Runs database updates on this site.'),
+  //     'dialog' => TRUE,
+  //   );
   $tasks['server']['flush_drush_cache'] = array(
     'title' => t('Flush Drush cache'),
     'description' => t('Flushes the Drush cache on this (web) server.'),
   );
+  // It is BOA specific currently.
   $tasks['site']['site_health_check'] = array(
     'title' => t('Run health check'),
     'description' => t('Runs health check on this site. Any problems found will be reported only in this task log.'),
