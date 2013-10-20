@@ -12,7 +12,7 @@ function hosting_tasks_extra_hosting_tasks() {
   );
   $tasks['site']['rebuild_registry'] = array(
     'title' => t('Rebuild registry'),
-    'description' => t('Rebuilds the registry and flushes all caches on this site.'),
+    'description' => t('Rebuilds the registry and flushes all caches on this site. On Drupal 7 it will recreate registry tables from scratch.'),
     'dialog' => TRUE,
   );
   $tasks['site']['run_cron'] = array(
@@ -32,7 +32,7 @@ function hosting_tasks_extra_hosting_tasks() {
   // It is BOA specific currently.
   $tasks['site']['site_health_check'] = array(
     'title' => t('Run health check'),
-    'description' => t('Runs health check on this site. Any problems found will be reported only in this task log.'),
+    'description' => t('Runs health check on this site. Site status along with any problems found will be reported and displayed only in this task log. Make sure to click on the (Expand) links in the task log to see all details.'),
     'dialog' => TRUE,
   );
 
