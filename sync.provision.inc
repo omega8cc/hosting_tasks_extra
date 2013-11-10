@@ -70,7 +70,7 @@ function drush_provision_sync_validate($source = NULL, $destination = NULL) {
 /**
  * Implements the provision-sync command.
  *
- * Now expects environment names for source and destination
+ * Expects site aliases as the arguments.
  */
 function drush_provision_sync($source = NULL, $destination = NULL) {
   $source = drush_get_option('source', $source);
