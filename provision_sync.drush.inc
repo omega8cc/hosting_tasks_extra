@@ -37,3 +37,9 @@ function provision_sync_drush_command() {
   return $items;
 }
 
+/**
+ * Includes the sync.provision.inc file.
+ */
+function provision_sync_command_include() {
+  include_once(dirname(__FILE__) . '/sync.provision.inc');
+}
