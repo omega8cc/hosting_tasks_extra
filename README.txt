@@ -12,6 +12,9 @@ Supported commands are:
 - drush registry-rebuild --fire-bazooka (Drupal 7 only)
 - drush updatedb
 
+Extra bundled modules:
+- HTTP Basic Authentication (hosting_http_basic_auth)
+
 INSTALLATION
 ------------
 
