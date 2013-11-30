@@ -8,16 +8,18 @@ function hosting_tasks_extra_hosting_tasks() {
 
   $tasks['site']['flush_cache'] = array(
     'title' => t('Flush all caches'),
-    'description' => t('Flushes all caches on this site.'),
+    'description' => t('Flushes all caches on this site. This may cause a short load peak on any busy site, so please run it only if you have a good reason to flush caches on demand instead of allowing the site cron to flush them, when scheduled.'),
+    'dialog' => TRUE,
   );
   $tasks['site']['rebuild_registry'] = array(
     'title' => t('Rebuild registry'),
-    'description' => t('Rebuilds the registry and flushes all caches on this site. On Drupal 7 it will recreate registry tables from scratch.'),
+    'description' => t('Rebuilds the registry and flushes all caches on this site. On Drupal 7 it will recreate registry tables from scratch. This may cause a short load peak on any busy site, so please run it only if you have a good reason to rebuild registry.'),
     'dialog' => TRUE,
   );
   $tasks['site']['run_cron'] = array(
-    'title' => t('Run cron'),
-    'description' => t('Runs cron on this site.'),
+    'title' => t('Run drush cron'),
+    'description' => t('Runs cron locally with drush on this site. It allows you to manually run the cron even if this site main domain name does not point to this server IP address yet, so the standard, wget based cron, scheduled in Aegir, would not work.'),
+    'dialog' => TRUE,
   );
   // Requires Drush5+ so can't be used with BOA yet.
   //   $tasks['site']['update'] = array(
@@ -25,14 +27,14 @@ function hosting_tasks_extra_hosting_tasks() {
   //     'description' => t('Runs database updates on this site.'),
   //     'dialog' => TRUE,
   //   );
-  $tasks['server']['flush_drush_cache'] = array(
-    'title' => t('Flush Drush cache'),
-    'description' => t('Flushes the Drush cache on this (web) server.'),
-  );
+  //   $tasks['server']['flush_drush_cache'] = array(
+  //     'title' => t('Flush Drush cache'),
+  //     'description' => t('Flushes the Drush cache on this (web) server.'),
+  //   );
   // It is BOA specific currently.
   $tasks['site']['site_health_check'] = array(
     'title' => t('Run health check'),
-    'description' => t('Runs health check on this site. Site status along with any problems found will be reported and displayed only in this task log. Make sure to click on the (Expand) links in the task log to see all details.'),
+    'description' => t('Runs health check on this site. Site status along with any problems found will be reported and displayed only in this task log. Make sure to click on the (Expand) links in the task log to review all reported details.'),
     'dialog' => TRUE,
   );
 
