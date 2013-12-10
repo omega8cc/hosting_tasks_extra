@@ -18,7 +18,7 @@ function hosting_tasks_extra_hosting_tasks() {
   );
   $tasks['site']['run_cron'] = array(
     'title' => t('Run drush cron'),
-    'description' => t('Runs cron locally with drush on this site. It allows you to manually run the cron even if this site main domain name does not point to this server IP address yet, so the standard, wget based cron, scheduled in Aegir, would not work.'),
+    'description' => t('Runs cron locally with drush on this site. It allows you to manually run the cron with longer timeout and higher memory allowed than in standard, web based, scheduled cron Aegir runs for you via cURL request to protected /cron.php URL.'),
     'dialog' => TRUE,
   );
   // Requires Drush5+ so can't be used with BOA yet.
