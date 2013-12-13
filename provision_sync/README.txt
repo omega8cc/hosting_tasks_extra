@@ -13,7 +13,7 @@ Installation
 To install provision_sync, simply use drush:
 
   $ drush dl provision_sync
-  
+
 Or, you can download the source code to any available drush commands
 directory, such as your ~/.drush/commands or the system-wide
 /usr/drush/share/commands directory.
@@ -22,7 +22,7 @@ Commands
 --------
 
   $ drush @project_NAME provision-sync SOURCE_ENVIRONMENT DESTINATION_ENVIRONMENT
-  
+
 This task makes it easy to syncronize the database and filesdown from other
 environments within the project.
 
