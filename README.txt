@@ -13,7 +13,8 @@ Supported commands are:
 - drush updatedb
 
 Extra bundled modules:
-- HTTP Basic Authentication (hosting_http_basic_auth)
+- HTTP Basic Authentication (http_basic_auth)
+- Sync (provision_sync)
 
 INSTALLATION
 ------------
