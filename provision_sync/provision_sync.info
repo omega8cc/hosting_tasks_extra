@@ -1,0 +1,2 @@
+name = "Provision sync"
+description = "Allows you to sync data between two Drupal sites."
