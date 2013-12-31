@@ -89,7 +89,7 @@ function drush_provision_sync($source = NULL, $destination = NULL) {
 
   foreach (drush_command_implements('provision_sync_before') as $command) {
     $func = $command . '_provision_sync_before';
-    if ($func($source_settings, $destination_settings) === FALSE) {
+    if ($func($source, $destination) === FALSE) {
       // Allow the before hook to abort the sync!
       return;
     }
@@ -179,7 +179,7 @@ function drush_provision_sync($source = NULL, $destination = NULL) {
     drush_log(dt('Skipped clearing all caches...'), 'ok');
   }
 
-  drush_command_invoke_all('provision_sync_after', $source_settings, $destination_settings);
+  drush_command_invoke_all('provision_sync_after', $source, $destination);
 }
 
 /**
