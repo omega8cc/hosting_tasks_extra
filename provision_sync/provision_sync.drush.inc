@@ -18,6 +18,7 @@ function provision_sync_drush_command() {
     'options' => array(
       'backup' => 'Create a backup of the destination before sync.',
       'updatedb' => 'Run update.php after content sync.',
+      'registry-rebuild' => 'Run registry-rebuild after content sync.',
       'features-revert-all' => 'Revert all features after content sync.',
       'cache-clear' => 'Clear all caches after content sync.',
       'database' => 'Sync site database.',

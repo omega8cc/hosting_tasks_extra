@@ -150,6 +150,15 @@ function drush_provision_sync($source = NULL, $destination = NULL) {
     drush_log(dt('Skipped syncing files...'), 'ok');
   }
 
+  // registry-rebuild, unless option is false.
+  if (drush_get_option('registry-rebuild')) {
+    drush_log(dt('Rebuilding registry...'), 'ok');
+    provision_backend_invoke($destination, 'registry-rebuild');
+  }
+  else {
+    drush_log(dt('Skipped registry-rebuild...'), 'ok');
+  }
+
   // update db, unless option is false.
   if (drush_get_option('updatedb')) {
     drush_log(dt('Updating database...'), 'ok');
