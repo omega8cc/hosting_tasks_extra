@@ -257,6 +257,11 @@ function hosting_task_sync_form($node) {
   );
 
   // Options
+  $form['registry-rebuild'] = array(
+    '#title' => t('Rebuild registry'),
+    '#type' => 'checkbox',
+    '#default_value' => 1,
+  );
   $form['updatedb'] = array(
     '#title' => t('Run update.php'),
     '#type' => 'checkbox',
