@@ -6,6 +6,7 @@
  * In a drush contrib check if the frontend part (hosting_hook variant) is enabled.
  */
 function http_basic_auth_drush_load() {
-  return in_array('http_basic_auth', drush_get_option('hosting_features', array()));
+  $features = drush_get_option('hosting_features', array());
+  return array_key_exists('http_basic_auth', $features) && $features['http_basic_auth'];
 }
 
