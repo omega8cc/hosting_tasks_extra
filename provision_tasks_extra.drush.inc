@@ -31,6 +31,19 @@ function provision_tasks_extra_drush_command() {
     'description' => 'Flushes the Drush cache on the server',
     'bootstrap' => DRUSH_BOOTSTRAP_DRUSH,
   );
+  $items['provision-update_uri'] = array(
+    'description' => 'Update a site database to reflect a changed URI. This does NOT rename the whole site, use a provision-migrate task for that.',
+    'bootstrap' => DRUSH_BOOTSTRAP_DRUPAL_FULL,
+    'arguments' => array(
+      'old_uri' => 'Previous name of subdirectory within /sites or a site-alias.',
+      'uri' => 'New name of subdirectory within /sites or a site-alias.',
+    ),
+    'examples' => array(
+      'drush provision-update_uri www.example.com dev.example.com'
+        => 'Update many references to the www.example.com uri in the site database'
+    ),
+  );
+
 
   return $items;
 }
@@ -149,4 +162,17 @@ function drush_provision_tasks_extra_provision_flush_drush_cache() {
   drush_log(dt('Drush cache on the server cleared'));
 }
 
+/**
+ * Implements the provision-update_uri command.
+ *
+ * Expects site uri's as the arguments.
+ */
+function drush_provision_tasks_extra_provision_update_uri($old_uri, $new_uri) {
+  // Delegate to provision's deploy engine, found in provision/platform/drupal/deploy*.
+  // This handles path and uri changes
+  drush_set_option('uri', $new_uri);
+  drush_set_option('old_uri', $old_uri);
+
+  drush_include_engine('drupal', 'deploy', drush_drupal_major_version());
+}
 

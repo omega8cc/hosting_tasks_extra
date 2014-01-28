@@ -177,6 +177,14 @@ function drush_provision_sync($source = NULL, $destination = NULL) {
     drush_log(dt('Skipped reverting all features...'), 'ok');
   }
 
+  // Update URI in database content, unless option is false.
+  if (drush_get_option('update-uri')) {
+    provision_backend_invoke($destination, 'provision-update_uri', array($source_site, $destination_site));
+  }
+  else {
+    drush_log(dt('Skipped updating URI in database content...'), 'ok');
+  }
+
   // Clear the whole cache, unless option is false
   // Seriously, lets do this twice.  Go Drupal!
   if (drush_get_option('cache-clear')) {

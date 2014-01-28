@@ -21,6 +21,7 @@ function provision_sync_drush_command() {
       'registry-rebuild' => 'Run registry-rebuild after content sync.',
       'features-revert-all' => 'Revert all features after content sync.',
       'cache-clear' => 'Clear all caches after content sync.',
+      'update-uri' => 'Update URIs inside the database content.',
       'database' => 'Sync site database.',
       'files' => 'Sync site files.',
       'modules' => 'Sync site modules.',
