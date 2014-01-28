@@ -284,6 +284,11 @@ function hosting_task_sync_form($node) {
     //  '#disabled' => TRUE,
     //  );
   }
+  $form['update_uri'] = array(
+    '#title' => t('Update URI in database content'),
+    '#type' => 'checkbox',
+    '#default_value' => 1,
+  );
   $form['cache_clear'] = array(
     '#title' => t('Clear cache'),
     '#type' => 'checkbox',
