@@ -32,9 +32,11 @@ function drush_hosting_sync_pre_hosting_task() {
     $task->options['registry-rebuild'] = $task->task_args['registry-rebuild'];
     $task->options['updatedb'] = $task->task_args['updatedb'];
     $task->options['update-uri'] = $task->task_args['update_uri'];
-    $task->options['features-revert-all'] = $task->task_args['features_revert_all'];
     $task->options['cache-clear'] = $task->task_args['cache_clear'];
     $task->options['backup'] = $task->task_args['backup'];
+    if (isset($task->task_args['features_revert_all'])) {
+      $task->options['features-revert-all'] = $task->task_args['features_revert_all'];
+    }
   }
 }
 
