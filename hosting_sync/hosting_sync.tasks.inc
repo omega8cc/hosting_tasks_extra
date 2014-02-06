@@ -75,7 +75,7 @@ function _hosting_sync_site_has_module($node, $module) {
  * Similar to hosting_get_sites_by_status() but it calls db_rewrite_sql() so that the
  * node access rules are applied (adding support for the 'hosting_client' module).
  */
-function _hosting_sync_get_sites($platform = NULL, $profile = NULL, $exclude_nid = NULL, $status = HOSTING_SITE_ENABLED) {
+function _hosting_sync_get_sites($platform = NULL, $profile = NULL, $exclude_nid = NULL, $client = NULL, $status = HOSTING_SITE_ENABLED) {
   $sql = "SELECT n.nid FROM {node} n LEFT JOIN {hosting_site} s ON n.vid = s.vid WHERE n.type = 'site' AND s.status = %d";
   $args = array($status);
 
@@ -92,6 +92,11 @@ function _hosting_sync_get_sites($platform = NULL, $profile = NULL, $exclude_nid
   if (!is_null($exclude_nid)) {
     $sql .= " AND n.nid != %d";
     $args[] = $exclude_nid;
+  }
+
+  if (!is_null($client)) {
+    $sql .= " AND s.client = %d";
+    $args[] = $client;
   }
 
   $result = db_query(db_rewrite_sql($sql), $args);
@@ -146,7 +151,7 @@ function hosting_sync_get_compatible_sites($node, $type = 'destination') {
   $result = hosting_sync_get_compatible_platforms($node, $type);
 
   foreach ($result as $idx => &$info) {
-    $sites = _hosting_sync_get_sites($info['platform'], $info['profile'], $node->nid);
+    $sites = _hosting_sync_get_sites($info['platform'], $info['profile'], $node->nid, $node->client);
     if (count($sites) > 0) {
       $info['sites'] = $sites;
     }
