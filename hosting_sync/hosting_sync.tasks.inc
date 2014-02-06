@@ -41,6 +41,14 @@ function hosting_sync_hosting_task_menu_access($node, $task) {
   }
 
   if ($task == 'sync' && user_access('create sync task') && $node->type == 'site') {
+    // Determine site's profile name
+    $profile = node_load($node->profile);
+
+    $ishostmaster = ($profile->short_name == 'hostmaster');
+    if ($ishostmaster) {
+      return FALSE;
+    }
+
     // If we are deleted or in the process of deleting, we can't sync!
     if (hosting_task_outstanding($node->nid, 'delete') || ($node->site_status == HOSTING_SITE_DELETED)) {
       return FALSE;
