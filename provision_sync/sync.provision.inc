@@ -132,10 +132,17 @@ function drush_provision_sync($source = NULL, $destination = NULL) {
     foreach ($files as $path) {
       drush_log(dt('Syncing files in the %path directory from @source to @destination', array('%path' => $path, '@source' => $source, '@destination' => $destination)), 'ok');
 
+      $default_options = array(
+          'yes' => TRUE,
+          'delete' => TRUE,
+          'include-vcs' => TRUE,
+          );
+      $global_extra_options = drush_get_option('global_sync_options', array());
+      $options = array_merge($default_options, $global_extra_options);
       if (DRUSH_VERSION >= 5) {
         $result = drush_invoke_process('@none', 'rsync',
           array("$source:sites/$source_site/$path/", "$destination:sites/$destination_site/$path/"),
-          array('yes' => TRUE),
+          $options,
           TRUE);
       }
       else {
