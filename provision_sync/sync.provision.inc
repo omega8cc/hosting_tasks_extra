@@ -79,7 +79,7 @@ function drush_provision_sync($source = NULL, $destination = NULL) {
   $source_site = ltrim($source, '@');
   $destination_site = ltrim($destination, '@');
 
-  // Make a backup before making any changes.
+  // Make a backup of the destination site before making any changes.
   $result = provision_backend_invoke($destination, 'provision-backup');
   if ($result['error_status'] !== DRUSH_SUCCESS) {
     return drush_set_error('PROVISION_BACKUP_FAILED', dt("Unable to proceed with sync because backup of destination failed."));
@@ -87,6 +87,7 @@ function drush_provision_sync($source = NULL, $destination = NULL) {
   drush_set_option('backup_file', $result['context']['backup_file']);
   drush_set_option('backup_file_size', $result['context']['backup_file_size']);
 
+  // Invoke hook_provision_sync_before().
   foreach (drush_command_implements('provision_sync_before') as $command) {
     $func = $command . '_provision_sync_before';
     if ($func($source, $destination) === FALSE) {
@@ -203,6 +204,7 @@ function drush_provision_sync($source = NULL, $destination = NULL) {
     drush_log(dt('Skipped clearing all caches...'), 'ok');
   }
 
+  // Invoke hook_provision_sync_after().
   drush_command_invoke_all('provision_sync_after', $source, $destination);
 }
 
