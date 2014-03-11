@@ -96,6 +96,9 @@ function drush_provision_sync($source = NULL, $destination = NULL) {
     }
   }
 
+  // Fetch the source site, to have the latest files on the master server.
+  provision_drupal_fetch_site($source);
+
   if (drush_get_option('database')) {
     // Drop the database
     drush_log(dt('Dropping tables for destination database (@destination)', array('@destination' => $destination)), 'ok');
@@ -206,6 +209,8 @@ function drush_provision_sync($source = NULL, $destination = NULL) {
 
   // Invoke hook_provision_sync_after().
   drush_command_invoke_all('provision_sync_after', $source, $destination);
+
+  provision_drupal_push_site(TRUE);
 }
 
 /**
