@@ -83,6 +83,7 @@ function http_basic_auth_provision_apache_vhost_config($uri, $data) {
 
     $lines[] = "    AuthUserFile $path";
     $lines[] = "    Require valid-user";
+    $lines[] = "    Satisfy All";
     $lines[] = "  </Directory>";
     $lines[] = "";
   }
