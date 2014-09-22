@@ -13,7 +13,7 @@ Supported tasks/commands are:
 
 Extra bundled modules:
 - HTTP Basic Authentication (hosting_http_basic_auth)
-
+- Sync (hosting_sync)
 
 INSTALL
 -------

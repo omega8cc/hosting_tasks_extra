@@ -8,24 +8,25 @@ function hosting_tasks_extra_hosting_tasks() {
 
   $tasks['site']['flush_cache'] = array(
     'title' => t('Flush all caches'),
-    'description' => t('Flushes all caches on the site.'),
+    'description' => t('Flushes all caches on this site.'),
   );
   $tasks['site']['rebuild_registry'] = array(
     'title' => t('Rebuild registry'),
-    'description' => t('Rebuilds the registry and flushes all caches on the site.'),
+    'description' => t('Rebuilds the registry and flushes all caches on this site.'),
+    'dialog' => TRUE,
   );
   $tasks['site']['run_cron'] = array(
     'title' => t('Run cron'),
-    'description' => t('Runs cron on the site.'),
+    'description' => t('Runs cron on this site.'),
   );
   $tasks['site']['update'] = array(
-    'title' => t('Update'),
-    'description' => t('Run updates on this site.'),
+    'title' => t('Run db updates'),
+    'description' => t('Runs database updates on this site.'),
     'dialog' => TRUE,
   );
   $tasks['server']['flush_drush_cache'] = array(
     'title' => t('Flush Drush cache'),
-    'description' => t('Flush the Drush cache on this (web) server.'),
+    'description' => t('Flushes the Drush cache on this (web) server.'),
   );
 
   return $tasks;
