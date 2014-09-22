@@ -2,7 +2,7 @@
 
 
 /**
- * Implementation of hook_form_alter()
+ * Implements hook_form_alter().
  */
 function hosting_http_basic_auth_form_alter(&$form, $form_state, $form_id) {
   if ($form_id == 'site_node_form') {
@@ -65,7 +65,15 @@ function hosting_http_basic_auth_delete($node) {
  */
 function hosting_http_basic_auth_node_insert($node) {
   if ($node->type == 'site' && !empty($node->http_basic_auth_username)) {
-    hosting_http_basic_auth_insert($node);
+    $id = db_insert('hosting_http_basic_auth')
+    ->fields(array(
+      'vid' => $node->vid,
+      'nid' => $node->nid,
+      'username' => $node->http_basic_auth_username,
+      'password' => $node->http_basic_auth_password,
+      'message' => $node->http_basic_auth_message,
+    ))
+    ->execute();
   }
 }
 
@@ -121,8 +129,8 @@ function hosting_http_basic_auth_node_load($nodes, $types) {
 
 
 /**
-* Implementation of hook_feeds_node_processor_targets_alter().
-*/
+ * Implements hook_feeds_node_processor_targets_alter().
+ */
 function hosting_http_basic_auth_feeds_node_processor_targets_alter(&$targets, $content_type) {
   if ($content_type == 'site') {
     $targets['http_basic_auth_username'] = array(

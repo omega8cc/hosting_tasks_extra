@@ -25,7 +25,7 @@ function hosting_http_basic_auth_hosting_feature() {
     // module to enable/disable alongside feature
     'module' => 'hosting_http_basic_auth',
     // which group to display in ( null , experimental )
-    'group' => 'experimental'
-    );
+    'group' => 'experimental',
+  );
   return $features;
 }

@@ -18,7 +18,7 @@
  * line.
  */
 function drush_hosting_sync_pre_hosting_task() {
-  $task =& drush_get_context('HOSTING_TASK');
+  $task = &drush_get_context('HOSTING_TASK');
 
   // Sync
   if ($task->ref->type == 'site' && $task->task_type == 'sync') {

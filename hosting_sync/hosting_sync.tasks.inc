@@ -7,7 +7,7 @@
  */
 
 /**
- * Implementation of hook_hosting_tasks()
+ * Implements hook_hosting_tasks().
  */
 function hosting_sync_hosting_tasks() {
   $tasks = array();
@@ -36,7 +36,7 @@ function hosting_sync_hosting_tasks() {
  */
 function hosting_sync_hosting_task_menu_access($node, $task) {
   // If we are passed the nid by mistake
-  if (!isset($node->nid)){
+  if (!isset($node->nid)) {
     $node = node_load($node);
   }
 
@@ -99,6 +99,7 @@ function _hosting_sync_get_sites($platform = NULL, $profile = NULL, $exclude_nid
     $args[] = $client;
   }
 
+  // TODO Please convert this statement to the D7 database API syntax.
   $result = db_query(db_rewrite_sql($sql), $args);
 
   $nodes = array();
@@ -175,10 +176,11 @@ function _hosting_sync_sites_elements($node, $result, $parents) {
       $status = $info['status'];
       $description = t("Upgrades: !upgrades, Warnings: !missing, Errors: !errors | <a href='!url' class='hosting-package-comparison-link'>Compare platforms</a>",
         array(
-          '!upgrades' => $status['upgrade'],
-          '!missing' => $status['missing'] + $status['downgrade'],
-          '!errors' => $status['error'],
-          '!url' => url('hosting/sync/compare/' . $node->nid . '/' . $info['profile_instance']))
+        '!upgrades' => $status['upgrade'],
+        '!missing' => $status['missing'] + $status['downgrade'],
+        '!errors' => $status['error'],
+        '!url' => url('hosting/sync/compare/' . $node->nid . '/' . $info['profile_instance']),
+      )
         );
     }
     else {
@@ -232,7 +234,7 @@ function hosting_task_sync_form($node) {
     '#type' => 'radios',
     '#title' => t('Source'),
     '#required' => TRUE,
-    '#description' => t('Choose the site to copy data and/or files from.')
+    '#description' => t('Choose the site to copy data and/or files from.'),
   ), _hosting_sync_sites_elements($node, $sites, array('parameters', 'source')));
 
   $form['destination'] = array(
@@ -280,22 +282,23 @@ function hosting_task_sync_form($node) {
     '#type' => 'checkbox',
     '#default_value' => 1,
   );
-  if (_hosting_sync_site_has_module($node, 'features')){
+  if (_hosting_sync_site_has_module($node, 'features')) {
     $form['features_revert_all'] = array(
       '#title' => t('Revert all features'),
       '#type' => 'checkbox',
       '#default_value' => $has_features,
       '#access' => $has_features,
     );
-  } else{
+  }
+  else {
     // I think its better UI just to hide it? If they need features it will be enabled!
     //$form['actions']['revert'] = array(
-    //  '#title' => t('<em>Revert all features on Destination after content sync?</em>'),
-    //  '#type' => 'checkbox',
-    //  '#description' => t('This site doesn\'t have features.module enabled. Please enable and then "Verify" the site.'),
-    //  '#default_value' => FALSE,
-    //  '#disabled' => TRUE,
-    //  );
+//  '#title' => t('<em>Revert all features on Destination after content sync?</em>'),
+//  '#type' => 'checkbox',
+//  '#description' => t('This site doesn\'t have features.module enabled. Please enable and then "Verify" the site.'),
+//  '#default_value' => FALSE,
+//  '#disabled' => TRUE,
+//  );
   }
   $form['update_uri'] = array(
     '#title' => t('Update URI in database content'),
@@ -321,9 +324,9 @@ function hosting_task_sync_form($node) {
 /**
  * Validation for hosting_task_hosting_sync_form()
  */
-function hosting_task_sync_form_validate(&$form, &$form_state){
+function hosting_task_sync_form_validate(&$form, &$form_state) {
   // Can't sync to self
-  if ($form_state['values']['parameters']['source'] == $form_state['values']['parameters']['destination']){
+  if ($form_state['values']['parameters']['source'] == $form_state['values']['parameters']['destination']) {
     form_set_error('destination', t('The source cannot be the same as the destination.'));
   }
 }

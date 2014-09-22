@@ -5,7 +5,7 @@
  */
 
 /**
- * Implementation of hook_hosting_feature().
+ * Implements hook_hosting_feature().
  */
 function hosting_sync_hosting_feature() {
   $features['sync'] = array(
@@ -13,7 +13,7 @@ function hosting_sync_hosting_feature() {
     'description' => t("Tasks that synchronizing sites."),
     'status' => HOSTING_FEATURE_ENABLED,
     'module' => 'hosting_sync',
-    );
+  );
   return $features;
 }
 

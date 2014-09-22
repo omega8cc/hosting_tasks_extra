@@ -1,7 +1,13 @@
 <?php
+/**
+ * @file
+ * Install, update and uninstall functions for the hosting_http_basic_auth module.
+ *
+ */
+
 
 /**
- * Implementation of hook_schema().
+ * Implements hook_schema().
  */
 function hosting_http_basic_auth_schema() {
   $schema['hosting_http_basic_auth'] = array(
@@ -41,7 +47,7 @@ function hosting_http_basic_auth_schema() {
 }
 
 /**
- * Implementation of hook_update_N().
+ * Implements hook_update_N().
  *
  * Add the message field to the table.
  */

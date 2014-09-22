@@ -1,7 +1,7 @@
 <?php
 
 /**
- * Implementation of hook_hosting_site_context_options().
+ * Implements hook_hosting_site_context_options().
  */
 function hosting_http_basic_auth_hosting_site_context_options(&$task) {
   if (isset($task->ref->http_basic_auth_username) && !empty($task->ref->http_basic_auth_username)) {
@@ -17,7 +17,7 @@ function hosting_http_basic_auth_hosting_site_context_options(&$task) {
 }
 
 /**
- * Implementation of hook_drush_context_import().
+ * Implements hook_drush_context_import().
  */
 function hosting_http_basic_auth_drush_context_import($context, &$node) {
   if ($context->type == 'site') {
