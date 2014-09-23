@@ -6,7 +6,7 @@
  * Provides the front-end for syncing Aegir sites.
  */
 
-include_once DRUPAL_ROOT . '/' . 'hosting_sync.tasks.inc';
+require_once 'hosting_sync.tasks.inc';
 
 /**
  * Implements hook_menu().

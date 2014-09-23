@@ -16,19 +16,19 @@ function hosting_http_basic_auth_form_alter(&$form, $form_state, $form_id) {
     $form['http_basic_auth']['http_basic_auth_username'] = array(
       '#type' => 'textfield',
       '#title' => t('Username'),
-      '#default_value' => $form['#node']->http_basic_auth_username ? $form['#node']->http_basic_auth_username : '',
+      '#default_value' => isset($form['#node']->http_basic_auth_username) ? $form['#node']->http_basic_auth_username : '',
       '#weight' => 0,
     );
     $form['http_basic_auth']['http_basic_auth_password'] = array(
       '#type' => 'textfield',
       '#title' => t('Password'),
-      '#default_value' => $form['#node']->http_basic_auth_password ? $form['#node']->http_basic_auth_password : '',
+      '#default_value' => isset($form['#node']->http_basic_auth_password) ? $form['#node']->http_basic_auth_password : '',
       '#weight' => 1,
     );
     $form['http_basic_auth']['http_basic_auth_message'] = array(
       '#type' => 'textfield',
       '#title' => t('Message'),
-      '#default_value' => $form['#node']->http_basic_auth_message ? $form['#node']->http_basic_auth_message : t('Restricted access'),
+      '#default_value' => isset($form['#node']->http_basic_auth_message) ? $form['#node']->http_basic_auth_message : t('Restricted access'),
       '#weight' => 2,
     );
     return $form;
@@ -107,7 +107,7 @@ function hosting_http_basic_auth_node_delete($node) {
 /**
  * Implements hook_node_validate().
  */
-function hosting_http_basic_auth_node_delete($node) {
+function hosting_http_basic_auth_node_validate($node) {
   if ($node->type == 'site') {
     if (!empty($node->http_basic_auth_username) && empty($node->http_basic_auth_password)) {
       form_set_error('http_basic_auth_password', t('You must specify a password for the HTTP basic authentication.'));

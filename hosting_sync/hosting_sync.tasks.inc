@@ -76,34 +76,33 @@ function _hosting_sync_site_has_module($node, $module) {
  * node access rules are applied (adding support for the 'hosting_client' module).
  */
 function _hosting_sync_get_sites($platform = NULL, $profile = NULL, $exclude_nid = NULL, $client = NULL, $status = HOSTING_SITE_ENABLED) {
-  $sql = "SELECT n.nid FROM {node} n LEFT JOIN {hosting_site} s ON n.vid = s.vid WHERE n.type = 'site' AND s.status = %d";
-  $args = array($status);
+  $sql = "SELECT n.nid FROM {node} n LEFT JOIN {hosting_site} s ON n.vid = s.vid WHERE n.type = 'site' AND s.status = :status";
+  $args = array(':status' => $status);
 
   if (!is_null($platform)) {
-    $sql .= " AND s.platform = %d";
-    $args[] = $platform;
+    $sql .= " AND s.platform = :platform";
+    $args[':platform'] = $platform;
   }
 
   if (!is_null($profile)) {
-    $sql .= " AND s.profile = %d";
-    $args[] = $profile;
+    $sql .= " AND s.profile = :profile";
+    $args[':profile'] = $profile;
   }
 
   if (!is_null($exclude_nid)) {
-    $sql .= " AND n.nid != %d";
-    $args[] = $exclude_nid;
+    $sql .= " AND n.nid != :exclude_nid";
+    $args[':exclude_nid'] = $exclude_nid;
   }
 
   if (!is_null($client)) {
-    $sql .= " AND s.client = %d";
-    $args[] = $client;
+    $sql .= " AND s.client = :client";
+    $args[':client'] = $client;
   }
 
-  // TODO Please convert this statement to the D7 database API syntax.
-  $result = db_query(db_rewrite_sql($sql), $args);
+  $result = db_query($sql, $args);
 
   $nodes = array();
-  while ($nid = db_fetch_object($result)) {
+  while ($nid = $result->fetch()) {
     $nodes[$nid->nid] = node_load($nid->nid);
   }
   return $nodes;
@@ -225,13 +224,13 @@ function hosting_task_sync_form($node) {
     $form['source'] = array(
       '#type' => 'item',
       '#title' => t('Source'),
-      '#value' => t('No sources are currently available.'),
+      '#markup' => t('No sources are currently available.'),
     );
     return $form;
   }
 
   $form['source'] = array_merge(array(
-    '#type' => 'radios',
+    '#type' => 'item',
     '#title' => t('Source'),
     '#required' => TRUE,
     '#description' => t('Choose the site to copy data and/or files from.'),
@@ -317,15 +316,23 @@ function hosting_task_sync_form($node) {
     '#default_value' => 1,
   );
 
-  $form['#validate'][] = 'hosting_task_sync_form_validate';
   return $form;
 }
 
 /**
  * Validation for hosting_task_hosting_sync_form()
+ *
+ * @see hosting_task_confirm_form()
  */
 function hosting_task_sync_form_validate(&$form, &$form_state) {
-  // Can't sync to self
+
+  // There has to be a sync source.
+  if (empty($form_state['values']['parameters']['source'])) {
+    form_set_error('destination', t('No sources are currently available.'));
+    return;
+  }
+
+  // Can't sync to self.
   if ($form_state['values']['parameters']['source'] == $form_state['values']['parameters']['destination']) {
     form_set_error('destination', t('The source cannot be the same as the destination.'));
   }
