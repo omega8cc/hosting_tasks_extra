@@ -191,7 +191,7 @@ function _hosting_sync_sites_elements($node, $result, $parents) {
       '#type' => 'fieldset',
       '#title' => $platform_node->title,
       '#description' => $description,
-      '#attributes' => array('class' => 'hosting-sync-platform-group'),
+      '#attributes' => array('class' => array('hosting-sync-platform-group')),
     );
 
     foreach ($info['sites'] as $site) {
