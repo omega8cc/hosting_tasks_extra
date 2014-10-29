@@ -19,14 +19,8 @@ Extra bundled modules:
 INSTALLATION
 ------------
 
-This code is for provision, so it needs to be uploaded
-in the ~/.drush/ directory of your Aegir backend.
-
-You will need hosting_tasks_extra module uploaded
-in the modules directory of the hostmaster platform
-to be able to use this extension from the frontend:
-
-http://drupal.org/project/hosting_tasks_extra
+You will need to have the hosting_tasks_extra module enabled in
+the hostmaster site.
 
 Requires registry_rebuild Drush extension uploaded
 also in the ~/.drush/ directory of your Aegir backend.
