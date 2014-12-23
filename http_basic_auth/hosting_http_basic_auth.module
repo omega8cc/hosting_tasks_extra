@@ -122,8 +122,10 @@ function hosting_http_basic_auth_node_load($nodes, $types) {
   if (in_array('site', $types)) {
     foreach ($nodes as $nid => $node) {
       $additions = db_query("SELECT username AS http_basic_auth_username, password AS http_basic_auth_password, message AS http_basic_auth_message FROM {hosting_http_basic_auth} WHERE vid = :vid", array(':vid' => $node->vid))->fetchAssoc();
-      foreach ($additions as $key => $value) {
-        $nodes[$nid]->$key = $value;
+      if (!empty($additions)) {
+        foreach ($additions as $key => $value) {
+          $nodes[$nid]->$key = $value;
+        }
       }
     }
   }
