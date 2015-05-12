@@ -44,7 +44,7 @@ function hosting_sync_hosting_task_menu_access($node, $task) {
     // Determine site's profile name
     $profile = node_load($node->profile);
 
-    $ishostmaster = ($profile->short_name == 'hostmaster');
+    $ishostmaster = ($profile && $profile->short_name == 'hostmaster');
     if ($ishostmaster) {
       return FALSE;
     }
@@ -285,8 +285,7 @@ function hosting_task_sync_form($node) {
     $form['features_revert_all'] = array(
       '#title' => t('Revert all features'),
       '#type' => 'checkbox',
-      '#default_value' => $has_features,
-      '#access' => $has_features,
+      '#default_value' => TRUE,
     );
   }
   else {
