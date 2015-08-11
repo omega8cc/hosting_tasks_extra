@@ -66,6 +66,9 @@ function hosting_sync_hosting_task_menu_access($node, $task) {
  */
 function _hosting_sync_site_has_module($node, $module) {
   $package = hosting_package_instance_load(array('rid' => $node->nid, 'p.short_name' => $module));
+  if (!is_object($package)) {
+    return FALSE;
+  }
   return $package->status;
 }
 
