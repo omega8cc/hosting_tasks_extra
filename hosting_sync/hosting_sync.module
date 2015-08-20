@@ -62,14 +62,14 @@ function hosting_sync_comparison($current, $target) {
     c.version as current_version, t.version as target_version,
     c.version_code as current_version_code, t.version_code as target_version_code,
     c.schema_version as current_schema, t.schema_version as target_schema, c.status AS enabled
-    FROM %s c LEFT JOIN %s t ON c.nid = t.nid ORDER BY c.status DESC, short_name", $current_tbl, $target_tbl);
+    FROM $current_tbl c LEFT JOIN $target_tbl t ON c.nid = t.nid ORDER BY c.status DESC, short_name");
 
-  while ($obj = db_fetch_object($result)) {
+  while ($obj = $result->fetch()) {
     if (isset($obj->current_schema) && ((int) $obj->target_schema > 0) && ((int) $obj->current_schema > (int) $obj->target_schema)) {
       $obj->status = 'downgrade';
     }
     elseif ( ($obj->current_version_code > $obj->target_version_code)
-       || is_null($obj->target_version_code)) {
+      || is_null($obj->target_version_code)) {
       $obj->status = 'missing';
     }
     elseif (($obj->current_version_code < $obj->target_version_code) || ($obj->current_schema < $obj->target_schema)) {
@@ -111,14 +111,14 @@ function theme_hosting_sync_comparison($variables) {
     $row = array();
     $row[] = array(
       'data' => $instance->short_name,
-      'class' => 'hosting-status',
+      'class' => array('hosting-status'),
     );
     $target_schema = ((int) $instance->target_schema == 0) ? $instance->current_schema : $instance->target_schema;
     $row[] = _hosting_sync_version_display($instance->current_version, $instance->current_schema);
     $row[] = _hosting_sync_version_display($instance->target_version, $target_schema, $instance->status);
     $rows[] = array(
       'data' => $row,
-      'class' => ($instance->enabled) ? 'hosting-success' : 'hosting-info',
+      'class' => ($instance->enabled) ? array('hosting-success') : array('hosting-info'),
     );
   }
   $options['attributes']['class'] = 'hosting-sync-comparison-return';
