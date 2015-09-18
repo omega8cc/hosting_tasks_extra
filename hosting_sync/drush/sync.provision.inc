@@ -80,13 +80,15 @@ function drush_provision_sync($source = NULL, $destination = NULL) {
   $source_site = ltrim($source, '@');
   $destination_site = ltrim($destination, '@');
 
-  // Make a backup of the destination site before making any changes.
-  $result = provision_backend_invoke($destination, 'provision-backup');
-  if ($result['error_status'] !== DRUSH_SUCCESS) {
-    return drush_set_error('PROVISION_BACKUP_FAILED', dt("Unable to proceed with sync because backup of destination failed."));
+  if (!drush_get_option('disable-rollback-backup')) {
+    // Make a backup of the destination site before making any changes.
+    $result = provision_backend_invoke($destination, 'provision-backup');
+    if ($result['error_status'] !== DRUSH_SUCCESS) {
+      return drush_set_error('PROVISION_BACKUP_FAILED', dt("Unable to proceed with sync because backup of destination failed."));
+    }
+    drush_set_option('backup_file', $result['context']['backup_file']);
+    drush_set_option('backup_file_size', $result['context']['backup_file_size']);
   }
-  drush_set_option('backup_file', $result['context']['backup_file']);
-  drush_set_option('backup_file_size', $result['context']['backup_file_size']);
 
   // Invoke hook_provision_sync_before().
   foreach (drush_command_implements('provision_sync_before') as $command) {
@@ -246,7 +248,7 @@ function drush_provision_sync_rollback($source = NULL, $destination = NULL) {
  */
 function drush_provision_sync_post_provision_sync($source = NULL, $destination = NULL) {
   // If the user didn't want a backup, we discard it.
-  if (!drush_get_option('backup')) {
+  if (!drush_get_option('backup') && !drush_get_option('disable-rollback-backup')) {
     unlink(drush_get_option('backup_file'));
     drush_set_option('backup_file', NULL);
     drush_set_option('backup_file_size', NULL);

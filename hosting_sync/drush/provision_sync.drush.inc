@@ -27,6 +27,7 @@ function provision_sync_drush_command() {
       'modules' => 'Sync site modules.',
       'themes' => 'Sync site themes.',
       'libraries' => 'Sync site libraries.',
+      'disable-rollback-backup' => 'Live dangerously... trade the rollback option for a time saving.',
     ),
     'arguments' => array(
       'from' => 'Name of subdirectory within /sites or a site-alias.',
