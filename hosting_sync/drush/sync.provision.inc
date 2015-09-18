@@ -14,7 +14,8 @@ function _drush_provision_sync_validate_alias($alias) {
   // records...
 
   if (DRUSH_VERSION >= 6) {
-    $result = drush_invoke_process('@none', 'site-alias', array($alias), array('format' => 'json'));
+    $result = drush_invoke_process('@none', 'site-alias', array($alias), array('format' => 'json'), FALSE);
+    drush_log($result['output'], 'debug');
     $result_arr = json_decode($result['output'], $assoc = TRUE );
     if ($result['error_status'] === DRUSH_SUCCESS && $result_arr[trim($alias, '@')]['context_type'] === 'site') {
       return TRUE;
