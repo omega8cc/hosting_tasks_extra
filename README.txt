@@ -31,3 +31,4 @@ Drush extension:
 
   http://drupal.org/project/registry_rebuild
 
+  drush dl registry_rebuild --select
