@@ -13,6 +13,7 @@ function hosting_tasks_extra_hosting_feature() {
     'description' => t("Tasks that expose additional Drush commands to Aegir's frontend."),
     'status' => HOSTING_FEATURE_ENABLED,
     'module' => 'hosting_tasks_extra',
+    'group' => 'advanced',
   );
   return $features;
 }

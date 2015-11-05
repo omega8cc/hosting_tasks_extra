@@ -13,6 +13,7 @@ function hosting_sync_hosting_feature() {
     'description' => t("Tasks that synchronizing sites."),
     'status' => HOSTING_FEATURE_ENABLED,
     'module' => 'hosting_sync',
+    'group' => 'advanced',
   );
   return $features;
 }
