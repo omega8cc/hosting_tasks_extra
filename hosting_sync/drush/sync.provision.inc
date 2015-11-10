@@ -176,7 +176,7 @@ function drush_provision_sync($source = NULL, $destination = NULL) {
   // update db, unless option is false.
   if (drush_get_option('updatedb')) {
     drush_log(dt('Updating database...'), 'ok');
-    provision_backend_invoke($destination, 'updb');
+    provision_backend_invoke($destination, 'updatedb');
   }
   else {
     drush_log(dt('Skipped updating database...'), 'ok');
@@ -203,8 +203,8 @@ function drush_provision_sync($source = NULL, $destination = NULL) {
   // Seriously, lets do this twice.  Go Drupal!
   if (drush_get_option('cache-clear')) {
     drush_log(dt('Clearing all caches...'), 'ok');
-    provision_backend_invoke($destination, 'cc all');
-    provision_backend_invoke($destination, 'cc all');
+    provision_backend_invoke($destination, 'cache-clear all');
+    provision_backend_invoke($destination, 'cache-clear all');
   }
   else {
     drush_log(dt('Skipped clearing all caches...'), 'ok');
