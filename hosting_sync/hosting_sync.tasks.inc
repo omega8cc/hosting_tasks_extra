@@ -1,8 +1,7 @@
 <?php
 
 /**
- * @file hosting_sync.tasks.inc
- *
+ * @file
  * Implements a new Aegir task.
  */
 
@@ -21,7 +20,7 @@ function hosting_sync_hosting_tasks() {
 }
 
 /**
- * Access Callback for Aegir Tasks
+ * Access Callback for Aegir Tasks.
  *
  * This function defines access to the various aegir tasks.
  *
@@ -32,16 +31,15 @@ function hosting_sync_hosting_tasks() {
  *   The type of the task that is running.
  *
  * @see hosting_task_menu_access()
- *
  */
 function hosting_sync_hosting_task_menu_access($node, $task) {
-  // If we are passed the nid by mistake
+  // If we are passed the nid by mistake.
   if (!isset($node->nid)) {
     $node = node_load($node);
   }
 
   if ($task == 'sync' && user_access('create sync task') && $node->type == 'site') {
-    // Determine site's profile name
+    // Determine site's profile name.
     $profile = node_load($node->profile);
 
     $ishostmaster = ($profile && $profile->short_name == 'hostmaster');
@@ -54,7 +52,7 @@ function hosting_sync_hosting_task_menu_access($node, $task) {
       return FALSE;
     }
 
-    // Otherwise, only show if the site is enabled
+    // Otherwise, only show if the site is enabled.
     return $node->site_status == HOSTING_SITE_ENABLED;
   }
 
@@ -178,12 +176,12 @@ function _hosting_sync_sites_elements($node, $result, $parents) {
       $status = $info['status'];
       $description = t("Upgrades: !upgrades, Warnings: !missing, Errors: !errors | <a href='!url' class='hosting-package-comparison-link'>Compare platforms</a>",
         array(
-        '!upgrades' => $status['upgrade'],
-        '!missing' => $status['missing'] + $status['downgrade'],
-        '!errors' => $status['error'],
-        '!url' => url('hosting/sync/compare/' . $node->nid . '/' . $info['profile_instance']),
-      )
-        );
+          '!upgrades' => $status['upgrade'],
+          '!missing' => $status['missing'] + $status['downgrade'],
+          '!errors' => $status['error'],
+          '!url' => url('hosting/sync/compare/' . $node->nid . '/' . $info['profile_instance']),
+        )
+      );
     }
     else {
       $description = t('Current platform');
@@ -211,7 +209,7 @@ function _hosting_sync_sites_elements($node, $result, $parents) {
 }
 
 /**
- * Implementation of hook_hosting_task_TASK_TYPE_form().
+ * Implements hook_hosting_task_TASK_TYPE_form().
  *
  * For "Sync Content" task.
  */
@@ -220,7 +218,7 @@ function hosting_task_sync_form($node) {
 
   drupal_add_js(drupal_get_path('module', 'hosting_sync') . '/hosting_sync.js');
 
-  // Get a list of compatible sources for this site as the destination
+  // Get a list of compatible sources for this site as the destination.
   $sites = hosting_sync_get_compatible_sites($node, 'destination');
 
   if (count($sites) == 0) {
@@ -273,7 +271,7 @@ function hosting_task_sync_form($node) {
     '#suffix' => '</fieldset>',
   );
 
-  // Options
+  // Options.
   $form['registry-rebuild'] = array(
     '#title' => t('Rebuild registry'),
     '#type' => 'checkbox',
@@ -290,16 +288,6 @@ function hosting_task_sync_form($node) {
       '#type' => 'checkbox',
       '#default_value' => TRUE,
     );
-  }
-  else {
-    // I think its better UI just to hide it? If they need features it will be enabled!
-    //$form['actions']['revert'] = array(
-//  '#title' => t('<em>Revert all features on Destination after content sync?</em>'),
-//  '#type' => 'checkbox',
-//  '#description' => t('This site doesn\'t have features.module enabled. Please enable and then "Verify" the site.'),
-//  '#default_value' => FALSE,
-//  '#disabled' => TRUE,
-//  );
   }
   $form['update_uri'] = array(
     '#title' => t('Update URI in database content'),
@@ -322,7 +310,7 @@ function hosting_task_sync_form($node) {
 }
 
 /**
- * Validation for hosting_task_hosting_sync_form()
+ * Validation for hosting_task_hosting_sync_form().
  *
  * @see hosting_task_confirm_form()
  */
@@ -339,4 +327,3 @@ function hosting_task_sync_form_validate(&$form, &$form_state) {
     form_set_error('destination', t('The source cannot be the same as the destination.'));
   }
 }
-
