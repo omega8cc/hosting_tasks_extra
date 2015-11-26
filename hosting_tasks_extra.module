@@ -24,6 +24,11 @@ function hosting_tasks_extra_hosting_tasks() {
     'description' => t('Runs database updates on this site.'),
     'dialog' => TRUE,
   );
+  $tasks['site']['features_revert_all'] = array(
+    'title' => t('Revert features'),
+    'description' => t('Reverts all features overrides on this site.'),
+    'dialog' => TRUE,
+  );
   $tasks['server']['flush_drush_cache'] = array(
     'title' => t('Flush Drush cache'),
     'description' => t('Flushes the Drush cache on this (web) server.'),
@@ -52,6 +57,9 @@ function hosting_tasks_extra_permission() {
     ),
     'create flush_drush_cache task' => array(
       'title' => t('create flush_drush_cache task'),
+    ),
+    'create features_revert_all task' => array(
+      'title' => t('create features_revert_all task'),
     ),
   );
 }

@@ -43,6 +43,10 @@ function provision_tasks_extra_drush_command() {
         => 'Update many references to the www.example.com uri in the site database'
     ),
   );
+  $items['provision-features_revert_all'] = array(
+    'description' => 'Reverts all Features modules on a site.',
+    'bootstrap' => DRUSH_BOOTSTRAP_DRUSH,
+  );
 
 
   return $items;
@@ -181,3 +185,11 @@ function drush_provision_tasks_extra_provision_update_uri($old_uri, $new_uri) {
   drush_include_engine('drupal', 'deploy', drush_drupal_major_version());
 }
 
+/**
+ * Implements the provision-flush_cache command.
+ */
+function drush_provision_tasks_extra_provision_features_revert_all() {
+  drush_errors_on();
+  provision_backend_invoke(d()->name, 'features-revert-all');
+  drush_log(dt('All features reverted.'));
+}
