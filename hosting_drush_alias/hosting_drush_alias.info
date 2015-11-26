@@ -1,0 +1,5 @@
+name = Hosting Drush Alias
+description = Generates drush aliasses for sites.
+package = Hosting
+dependencies[] = hosting
+core = 7.x
