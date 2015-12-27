@@ -221,21 +221,50 @@ function hosting_task_sync_form($node) {
   // Get a list of compatible sources for this site as the destination.
   $sites = hosting_sync_get_compatible_sites($node, 'destination');
 
-  if (count($sites) == 0) {
-    $form['source'] = array(
-      '#type' => 'item',
-      '#title' => t('Source'),
-      '#markup' => t('No sources are currently available.'),
-    );
-    return $form;
-  }
-
-  $form['source'] = array_merge(array(
+  $form['source'] = array(
     '#type' => 'item',
     '#title' => t('Source'),
     '#required' => TRUE,
     '#description' => t('Choose the site to copy data and/or files from.'),
-  ), _hosting_sync_sites_elements($node, $sites, array('parameters', 'source')));
+  );
+
+  $parents = array('parameters', 'source');
+
+  if (!empty($sites)) {
+    $form['source'] = array_merge($form['source'], _hosting_sync_sites_elements($node, $sites, $parents));
+  }
+
+  // TODO setting or access control?
+  if (1) {
+    $form['source']['custom_alias'] = array(
+      '#type' => 'fieldset',
+      '#title' => "A custom Drush alias",
+      '#attributes' => array('class' => array('hosting-sync-platform-group')),
+    );
+    $form['source']['custom_alias']['radio'] = array(
+      '#type' => 'radio',
+      '#title' => 'Any Drush alias defined on the hostmaster server.',
+      '#parents' => $parents,
+      '#return_value' => 'CUSTOM',
+    );
+    $form['source']['custom_alias']['text'] = array(
+      '#type' => 'textfield',
+      '#title' => "",
+      '#parents' => $parents,
+      '#states' => array(
+        // Only visible this field when backups is enabled.
+        'visible' => array(
+          ':input[name="parameters[source]"]' => array('value' => 'CUSTOM'),
+        ),
+      ),
+    );
+  }
+  elseif (empty($sites)) {
+    $elements['none'] = array(
+      '#type' => 'item',
+      '#markup' => t('No sources are currently available.'),
+    );
+  }
 
   $form['destination'] = array(
     '#type' => 'value',

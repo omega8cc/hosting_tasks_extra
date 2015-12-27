@@ -17,13 +17,15 @@ function _drush_provision_sync_validate_alias($alias) {
     $result = drush_invoke_process('@none', 'site-alias', array($alias), array('format' => 'json'), FALSE);
     drush_log($result['output'], 'debug');
     $result_arr = json_decode($result['output'], $assoc = TRUE );
-    if ($result['error_status'] === DRUSH_SUCCESS && $result_arr[trim($alias, '@')]['context_type'] === 'site') {
+
+    if ($result['error_status'] === DRUSH_SUCCESS && !empty($result_arr[trim($alias, '@')]['uri'])) {
       return TRUE;
     }
+
   }
   else {
     if (DRUSH_VERSION >= 5) {
-      $result = drush_invoke_process('@none', 'site-alias', array($alias), array('component' => 'context_type'));
+      $result = drush_invoke_process('@none', 'site-alias', array($alias));
     }
     else {
       $result = drush_backend_invoke('site-alias', array(0 => $alias, 'component' => 'context_type'), 'GET', FALSE);
