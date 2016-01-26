@@ -38,6 +38,60 @@ function hosting_tasks_extra_hosting_tasks() {
 }
 
 /**
+ * Callback for site action.
+ *
+ * @see: hosting_task_action_info().
+ */
+function hosting_site_flush_cache_action($node) {
+  hosting_add_task($node->nid, 'flush_cache');
+}
+
+/**
+ * Callback for site action.
+ *
+ * @see: hosting_task_action_info().
+ */
+function hosting_site_rebuild_registry_action($node) {
+  hosting_add_task($node->nid, 'rebuild_registry');
+}
+
+/**
+ * Callback for site action.
+ *
+ * @see: hosting_task_action_info().
+ */
+function hosting_site_run_cron_action($node) {
+  hosting_add_task($node->nid, 'run_cron');
+}
+
+/**
+ * Callback for site action.
+ *
+ * @see: hosting_task_action_info().
+ */
+function hosting_site_update_action($node) {
+  hosting_add_task($node->nid, 'update');
+}
+
+/**
+ * Callback for server action.
+ *
+ * @see: hosting_task_action_info().
+ */
+function hosting_server_flush_drush_cache_action($node) {
+  hosting_add_task($node->nid, 'flush_drush_cache');
+}
+
+/**
+ * Callback for site action.
+ *
+ * @see: hosting_task_action_info().
+ */
+function hosting_site__action($node) {
+  hosting_add_task($node->nid, '');
+}
+
+/**
  * Implements hook_permission().
  */
 function hosting_tasks_extra_permission() {
