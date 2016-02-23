@@ -166,6 +166,32 @@ function drush_provision_sync($source = NULL, $destination = NULL) {
     drush_log(dt('Skipped syncing files...'), 'ok');
   }
 
+  // Sync platform code via rsync
+  if (drush_get_option('sync-platform')) {
+    drush_log(dt('Syncing platform code from @source to @destination', array('@source' => $source, '@destination' => $destination)), 'ok');
+
+    $default_options = array(
+      'yes' => TRUE,
+      'delete' => TRUE,
+      'include-vcs' => TRUE,
+       'exclude-sites' => TRUE,
+    );
+    $global_extra_options = drush_get_option('global_sync_options', array());
+    $options = array_merge($default_options, $global_extra_options);
+
+    $result = drush_invoke_process('@none', 'rsync',
+      array("$source:%root", "$destination:%root"),
+      $options,
+      TRUE);
+
+    if ($result['error_status'] !== DRUSH_SUCCESS) {
+      return drush_set_error('PROVISION_RSYNC_FAILED', dt("Unable to rsync platform code from @source to @destination.", array('@source' => $source, '@destination' => $destination)));
+    }
+  }
+  else {
+    drush_log(dt('Skipped syncing platform code...'), 'ok');
+  }
+
   // registry-rebuild, unless option is false.
   if (drush_get_option('registry-rebuild')) {
     drush_log(dt('Rebuilding registry...'), 'ok');
