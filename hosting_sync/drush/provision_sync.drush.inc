@@ -24,6 +24,7 @@ function provision_sync_drush_command() {
       'update-uri' => 'Update URIs inside the database content.',
       'database' => 'Sync site database.',
       'files' => 'Sync site files.',
+      'sync-platform' => 'Sync site platform code. DANGEROUS when target platform has multiple sites',
       'modules' => 'Sync site modules.',
       'themes' => 'Sync site themes.',
       'libraries' => 'Sync site libraries.',
