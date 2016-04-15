@@ -10,7 +10,7 @@
 function hosting_sync_hosting_feature() {
   $features['sync'] = array(
     'title' => t('Sync task'),
-    'description' => t("Tasks that synchronizing sites."),
+    'description' => t("Adds task for synchronizing data between sites."),
     'status' => HOSTING_FEATURE_ENABLED,
     'module' => 'hosting_sync',
     'group' => 'advanced',
