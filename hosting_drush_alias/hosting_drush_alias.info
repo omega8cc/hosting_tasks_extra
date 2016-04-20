@@ -1,5 +1,5 @@
 name = Hosting Drush Alias
 description = Generates drush aliasses for sites.
-package = Hosting
+package = Aegir Extras
 dependencies[] = hosting
 core = 7.x
