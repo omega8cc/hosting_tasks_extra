@@ -18,13 +18,7 @@ Extra bundled modules:
 INSTALL
 -------
 
-This code is for hostmaster and needs to be uploaded in the modules directory
-of the hostmaster platform.
-
-It requires provision_tasks_extra extension uploaded in the ~/.drush/ directory
-of your Aegir backend:
-
-  http://drupal.org/project/provision_tasks_extra
+Starting the 3.x branch it's included in the distribution by default. So in most cases you can just enable it.
 
 In addition, for 'Rebuild registry', you will need to install an additional
 Drush extension:
@@ -32,3 +26,6 @@ Drush extension:
   http://drupal.org/project/registry_rebuild
 
   drush dl registry_rebuild --select
+
+To use the extra tasks as Views Bulk Operations you have to manually edit the particular view to add them.
+See https://www.drupal.org/node/2715945
