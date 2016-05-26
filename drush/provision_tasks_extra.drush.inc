@@ -63,38 +63,38 @@ function drush_provision_tasks_extra_provision_site_health_check() {
   $sitename = d()->name;
   $dmv = DRUSH_MAJOR_VERSION;
   drush_log(dt("This is Drush major version: %dmv", array('%dmv' => $dmv)), 'notice');
-  drush_shell_exec("drush7 $sitename en update -y");
+  drush_shell_exec("drush8 $sitename en update -y");
   $array = drush_shell_exec_output();
   drush_log(dt($array), 'notice');
   drush_log(dt('Health Check ###---### update module enabled temporarily'), 'success');
 
   if (drush_drupal_major_version(d()->root) < 8) {
-    drush_log(dt('Health Check ###---### drush7 clean-modules ###---### start'), 'warning');
-    drush_shell_exec("drush7 $sitename clean-modules -y 2>&1");
+    drush_log(dt('Health Check ###---### drush8 clean-modules ###---### start'), 'warning');
+    drush_shell_exec("drush8 $sitename clean-modules -y 2>&1");
     $array = drush_shell_exec_output();
     drush_log(dt($array), 'notice');
   }
 
-  drush_log(dt('Health Check ###---### drush7 pm-updatestatus ###---### start'), 'warning');
-  drush_shell_exec("drush7 $sitename ups --field-labels 2>&1");
+  drush_log(dt('Health Check ###---### drush8 pm-updatestatus ###---### start'), 'warning');
+  drush_shell_exec("drush8 $sitename ups --field-labels 2>&1");
   $array = drush_shell_exec_output();
   drush_log(dt($array), 'notice');
 
-  drush_log(dt('Health Check ###---### drush7 status-report ###---### start'), 'warning');
-  drush_shell_exec("drush7 $sitename status-report 2>&1");
+  drush_log(dt('Health Check ###---### drush8 status-report ###---### start'), 'warning');
+  drush_shell_exec("drush8 $sitename status-report 2>&1");
   $array = drush_shell_exec_output();
   drush_log(dt($array), 'notice');
 
   if (drush_drupal_major_version(d()->root) < 8) {
-    drush_log(dt('Health Check ###---### drush7 updatedb-status ###---### start'), 'warning');
-    drush_shell_exec("drush7 $sitename updatedb-status 2>&1");
+    drush_log(dt('Health Check ###---### drush8 updatedb-status ###---### start'), 'warning');
+    drush_shell_exec("drush8 $sitename updatedb-status 2>&1");
     $array = drush_shell_exec_output();
     drush_log(dt($array), 'notice');
   }
 
   if (drush_drupal_major_version(d()->root) == 7) {
-    drush_log(dt('Health Check ###---### drush7 security-review ###---### start'), 'warning');
-    drush_shell_exec("drush7 $sitename secrev --check=input_formats,field,error_reporting,query_errors,failed_logins,upload_extensions,admin_permissions,untrusted_php,temporary_files 2>&1");
+    drush_log(dt('Health Check ###---### drush8 security-review ###---### start'), 'warning');
+    drush_shell_exec("drush8 $sitename secrev --check=input_formats,field,error_reporting,query_errors,failed_logins,upload_extensions,admin_permissions,untrusted_php,temporary_files 2>&1");
     $array = drush_shell_exec_output();
     drush_log(dt($array), 'notice');
   }
