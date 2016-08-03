@@ -115,13 +115,7 @@ function drush_provision_tasks_extra_provision_update_pre_validate() {
   _provision_drupal_create_settings_file();
   provision_drupal_push_site();
 
-  // Ensure a unique backup file is used.
-  $backup_file = d()->platform->server->backup_path . '/' . d()->uri . '-pre-update-' . date("Ymd.His", time()) . '.tar.gz';
-  $count = 0;
-  while (is_file($backup_file)) {
-    $count++;
-    $backup_file = d()->platform->server->backup_path . '/' . d()->uri . '-pre-update-' .  date('Ymd.His', time()) . '_' . $count . '.tar.gz';
-  }
+  $backup_file = drush_provision_drupal_provision_backup_suggest_filename();
   drush_set_option('pre_update_backup_file', $backup_file);
 
   drush_set_option('force', true);
