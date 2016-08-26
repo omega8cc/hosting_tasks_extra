@@ -167,6 +167,11 @@ function drush_provision_tasks_extra_provision_update_pre_validate() {
   /* Set offline mode to true and re-generate the settings.php. This will write a
    * $conf['site_offline'] = 1; to the settings.php
    */
+
+  $list = drush_commandfile_list();
+  $provision_dir = dirname($list['provision']);
+  include_once($provision_dir . '/platform/backup.provision.inc');
+
   drush_log(dt("Putting the site under maintenance"));
   d()->site_enabled = FALSE;
   _provision_drupal_create_settings_file();
