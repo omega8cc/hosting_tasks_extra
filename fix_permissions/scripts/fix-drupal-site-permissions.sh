@@ -43,18 +43,18 @@ fi
 cd $site_path
 
 printf "Changing permissions of all directories inside \"${site_path}\" to \"750\"...\n"
-find . -type d ! -path "./files" ! -path "./files/*" -exec chmod 750 '{}' \;
+find . -type d ! -path "./files" ! -path "./files/*" -exec chmod 750 '{}' \+
 
 printf "Changing permissions of all files inside \"${site_path}\" to \"640\"...\n"
-find . -type f ! -path "./files" ! -path "./files/*" -exec chmod 640 '{}' \;
+find . -type f ! -path "./files" ! -path "./files/*" -exec chmod 640 '{}' \+
 
 printf "Changing permissions of \"files\" directory in \"${site_path}/sites\" to \"770\"...\n"
 chmod 770 files
 
 cd files
 printf "Changing permissions of all files inside \"files\" directory in \"${site_path}\" to \"660\"...\n"
-find . -type f -exec chmod 660 '{}' \;
+find . -type f -exec chmod 660 '{}' \+
 printf "Changing permissions of all directories inside \"files\" directory in \"${site_path}\" to \"770\"...\n"
-find . -type d -exec chmod 770 '{}' \;
+find . -type d -exec chmod 770 '{}' \+
 
 echo "Done setting proper permissions on site files and directories."
