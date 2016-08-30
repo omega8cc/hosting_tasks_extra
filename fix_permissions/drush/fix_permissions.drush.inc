@@ -5,7 +5,7 @@
 
 function drush_fix_permissions_pre_provision_verify() {
   if (d()->type === 'platform') {
-    drush_shell_exec("sudo /usr/local/bin/fix-permissions.sh --drupal_path=%s", d()->root);
+    drush_shell_exec("sudo /usr/local/bin/fix-permissions.sh --root=%s", d()->root);
     $result = drush_shell_exec_output();
     foreach ($result as $line) {
       drush_log($line);
