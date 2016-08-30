@@ -8,9 +8,12 @@ if [ $(id -u) != 0 ]; then
 fi
 
 DIR=$(dirname "$0")
+SCRIPTS=(fix-drupal-platform-ownership fix-drupal-site-ownership)
 
-cp $DIR/fix-ownership.sh /usr/local/bin
-chown root:root /usr/local/bin/fix-ownership.sh
-chmod u+x /usr/local/bin/fix-ownership.sh
-echo "aegir ALL=NOPASSWD: /usr/local/bin/fix-ownership.sh" > /etc/sudoers.d/fix-ownership
-chmod 0440 /etc/sudoers.d/fix-ownership
+for SCRIPT in ${SCRIPTS[@]}; do
+  cp ${DIR}/${SCRIPT}.sh /usr/local/bin
+  chown root:root /usr/local/bin/${SCRIPT}.sh
+  chmod u+x /usr/local/bin/${SCRIPT}.sh
+  echo "aegir ALL=NOPASSWD: /usr/local/bin/${SCRIPT}.sh" > /etc/sudoers.d/${SCRIPT}
+  chmod 0440 /etc/sudoers.d/${SCRIPT}
+done
