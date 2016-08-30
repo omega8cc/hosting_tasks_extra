@@ -8,7 +8,7 @@ function drush_fix_ownership_pre_provision_verify() {
     $success = drush_shell_exec("sudo /usr/local/bin/fix-drupal-platform-ownership.sh --root=%s --script-user=%s --web-group=%s", d()->root, d()->server->script_user, d()->server->web_group);
   }
   elseif (d()->type === 'site') {
-    $success = drush_shell_exec("sudo /usr/local/bin/fix-drupal-site-ownership.sh --root=%s --script-user=%s --web-group=%s", d()->root, d()->server->script_user, d()->server->web_group);
+    $success = drush_shell_exec("sudo /usr/local/bin/fix-drupal-site-ownership.sh --site-path=%s --script-user=%s --web-group=%s", d()->site_path, d()->server->script_user, d()->server->web_group);
   }
   else {
     return TRUE;

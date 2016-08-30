@@ -5,10 +5,10 @@
 
 function drush_fix_permissions_pre_provision_verify() {
   if (d()->type === 'platform') {
-    $success = drush_shell_exec("sudo /usr/local/bin/fix-permissions.sh --root=%s", d()->root);
+    $success = drush_shell_exec("sudo /usr/local/bin/fix-drupal-platform-permissions.sh --root=%s", d()->root);
   }
   elseif (d()->type === 'site') {
-    $success = drush_shell_exec("sudo /usr/local/bin/fix-permissions.sh --root=%s", d()->root);
+    $success = drush_shell_exec("sudo /usr/local/bin/fix-drupal-site-permissions.sh --site-path=%s", d()->site_path);
   }
   else {
     return TRUE;

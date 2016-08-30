@@ -3,13 +3,13 @@
 # Help menu
 print_help() {
 cat <<-HELP
-This script is used to fix the file permissions of a Drupal platform. You need
+This script is used to fix the file permissions of a Drupal site. You need
 to provide the following argument:
 
-  --root: Path to the root of your Drupal installation.
+  --site-path: Path to the Drupal site's directory.
 
-Usage: (sudo) ${0##*/} --root=PATH
-Example: (sudo) ${0##*/} --drupal_path=/var/aegir/platforms/drupal-7.50
+Usage: (sudo) ${0##*/} --site-path=PATH
+Example: (sudo) ${0##*/} --site-path=/var/aegir/platforms/drupal-7.50/sites/example.com
 HELP
 exit 0
 }
@@ -19,13 +19,13 @@ if [ $(id -u) != 0 ]; then
   exit 1
 fi
 
-drupal_root=${1%/}
+site_path=${1%/}
 
 # Parse Command Line Arguments
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --root=*)
-        drupal_root="${1#*=}"
+    --site-path=*)
+        site_path="${1#*=}"
         ;;
     --help) print_help;;
     *)
@@ -35,28 +35,26 @@ while [ "$#" -gt 0 ]; do
   shift
 done
 
-if [ -z "${drupal_root}" ] || [ ! -d "${drupal_root}/sites" ] || [ ! -f "${drupal_root}/core/modules/system/system.module" ] && [ ! -f "${drupal_root}/modules/system/system.module" ]; then
-  printf "Error: Please provide a valid Drupal root directory.\n"
-  print_help
+if [ -z "${site_path}" ] || [ ! -f "${site_path}/settings.php" ] ; then
+  printf "Error: Please provide a valid Drupal site directory.\n"
   exit 1
 fi
 
-cd $drupal_root
+cd $site_path
 
-printf "Changing permissions of all directories inside "${drupal_root}" to "750"...\n"
-find . -type d -exec chmod 750 '{}' \;
+printf "Changing permissions of all directories inside \"${site_path}\" to \"750\"...\n"
+find . -type d ! -path "./files" ! -path "./files/*" -exec chmod 750 '{}' \;
 
-printf "Changing permissions of all files inside "${drupal_root}" to "640"...\n"
-find . -type f -exec chmod 640 '{}' \;
+printf "Changing permissions of all files inside \"${site_path}\" to \"640\"...\n"
+find . -type f ! -path "./files" ! -path "./files/*" -exec chmod 640 '{}' \;
 
-printf "Changing permissions of "files" directories in "${drupal_root}/sites" to "770"...\n"
-cd sites
-find . -type d -name files -exec chmod 770 '{}' \;
+printf "Changing permissions of \"files\" directory in \"${site_path}/sites\" to \"770\"...\n"
+chmod 770 files
 
-printf "Changing permissions of all files inside all "files" directories in "${drupal_root}/sites" to "660"...\n"
-printf "Changing permissions of all directories inside all "files" directories in "${drupal_root}/sites" to "770"...\n"
-for x in ./*/files; do
-  find ${x} -type f -exec chmod 660 '{}' \;
-  find ${x} -type d -exec chmod 770 '{}' \;
-done
-echo "Done setting proper permissions on files and directories."
+cd files
+printf "Changing permissions of all files inside \"files\" directory in \"${site_path}\" to \"660\"...\n"
+find . -type f -exec chmod 660 '{}' \;
+printf "Changing permissions of all directories inside \"files\" directory in \"${site_path}\" to \"770\"...\n"
+find . -type d -exec chmod 770 '{}' \;
+
+echo "Done setting proper permissions on site files and directories."

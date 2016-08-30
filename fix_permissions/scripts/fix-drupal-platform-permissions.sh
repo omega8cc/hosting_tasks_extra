@@ -43,19 +43,12 @@ fi
 cd $drupal_root
 
 printf "Changing permissions of all directories inside "${drupal_root}" to "750"...\n"
-find . -type d -exec chmod 750 '{}' \;
+find . -type d ! -path "./sites/*" -exec chmod 750 '{}' \;
+find ./sites/all/ -type d -exec chmod 750 '{}' \;
+chmod 750 ./sites/all/
 
 printf "Changing permissions of all files inside "${drupal_root}" to "640"...\n"
-find . -type f -exec chmod 640 '{}' \;
+find . -type f ! -path "./sites/*/*" -exec chmod 640 '{}' \;
+find ./sites/all/ -type f -exec chmod 640 '{}' \;
 
-printf "Changing permissions of "files" directories in "${drupal_root}/sites" to "770"...\n"
-cd sites
-find . -type d -name files -exec chmod 770 '{}' \;
-
-printf "Changing permissions of all files inside all "files" directories in "${drupal_root}/sites" to "660"...\n"
-printf "Changing permissions of all directories inside all "files" directories in "${drupal_root}/sites" to "770"...\n"
-for x in ./*/files; do
-  find ${x} -type f -exec chmod 660 '{}' \;
-  find ${x} -type d -exec chmod 770 '{}' \;
-done
-echo "Done setting proper permissions on files and directories."
+echo "Done setting proper permissions on platform files and directories."
