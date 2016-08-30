@@ -3,6 +3,9 @@
  * @file Drush hooks for the fix_permissions extension.
  */
 
+/**
+ * Implements drush_HOOK_pre_COMMAND().
+ */
 function drush_fix_permissions_pre_provision_verify() {
   if (d()->type === 'platform') {
     $success = drush_shell_exec("sudo /usr/local/bin/fix-drupal-platform-permissions.sh --root=%s", d()->root);
@@ -25,3 +28,14 @@ function drush_fix_permissions_pre_provision_verify() {
     drush_log($line, $line_status);
   }
 }
+
+/**
+ * Implements hook_provision_drupal_create_directories_alter().
+ */
+function fix_permissions_provision_drupal_create_directories_alter(&$chmod, $url) {
+  foreach ($chmod as $path => $perm) {;
+    // Disable Aegir core's chmod, since we handle it now.
+    $chmod[$path] = FALSE;
+  }
+}
+
