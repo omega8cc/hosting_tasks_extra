@@ -18,10 +18,7 @@ exit 0
 }
 
 if [ $(id -u) != 0 ]; then
-  printf "***********************************************\n"
-  printf "* Error: You must run this with sudo or root. *\n"
-  printf "***********************************************\n"
-  print_help
+  printf "Error: You must run this with sudo or root.\n"
   exit 1
 fi
 
@@ -43,27 +40,19 @@ while [ "$#" -gt 0 ]; do
         ;;
     --help) print_help;;
     *)
-      printf "************************************************************\n"
-      printf "* Error: Invalid argument, run --help for valid arguments. *\n"
-      printf "************************************************************\n"
+      printf "Error: Invalid argument, run --help for valid arguments.\n"
       exit 1
   esac
   shift
 done
 
 if [ -z "${drupal_root}" ] || [ ! -d "${drupal_root}/sites" ] || [ ! -f "${drupal_root}/core/modules/system/system.module" ] && [ ! -f "${drupal_root}/modules/system/system.module" ]; then
-  printf "********************************************************\n"
-  printf "* Error: Please provide a valid Drupal root directory. *\n"
-  printf "********************************************************\n"
-  print_help
+  printf "Error: Please provide a valid Drupal root directory.\n"
   exit 1
 fi
 
 if [ -z "${script_user}" ] || [[ $(id -un "${script_user}" 2> /dev/null) != "${script_user}" ]]; then
-  printf "***************************************\n"
-  printf "* Error: Please provide a valid user. *\n"
-  printf "***************************************\n"
-  print_help
+  printf "Error: Please provide a valid user.\n"
   exit 1
 fi
 
