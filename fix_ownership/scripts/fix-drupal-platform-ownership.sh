@@ -59,7 +59,8 @@ fi
 cd $drupal_root
 
 printf "Changing ownership of all contents of "${drupal_root}":\n user => "${script_user}" \t group => "${web_group}"\n"
-find . ! -path "./sites/*" -exec chown ${script_user}:${web_group} '{}' \+
+find . \( -path "./sites" -prune \) -exec chown ${script_user}:${web_group} '{}' \+
+chown ${script_user}:${web_group} ./sites/sites.php
 chown -R ${script_user}:${web_group} ./sites/all
 
 echo "Done setting proper ownership of platform files and directories."
