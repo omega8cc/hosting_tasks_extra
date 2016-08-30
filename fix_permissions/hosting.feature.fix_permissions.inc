@@ -10,7 +10,7 @@
 function hosting_fix_permissions_hosting_feature() {
   $features['fix_permissions'] = array(
     'title' => t('Fix Permissions'),
-    'description' => t("Task that fixes file ownership and permissions of Drupal platforms and sites."),
+    'description' => t("Task that fixes file permissions of Drupal platforms and sites."),
     'status' => HOSTING_FEATURE_DISABLED,
     'module' => 'fix_permissions',
     'group' => 'experimental',

@@ -1,7 +1,7 @@
-FIX PERMISSIONS
-===============
+FIX OWNERSHIP
+=============
 
-This extension will help Aegir to fix file permissions for Drupal platforms and
+This extension will help Aegir to fix file ownership for Drupal platforms and
 sites.
 
 A full discussion on proper file ownership and permissions in Drupal can be
