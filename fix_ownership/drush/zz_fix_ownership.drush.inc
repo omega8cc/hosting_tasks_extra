@@ -6,7 +6,7 @@
 /**
  * Implements drush_HOOK_pre_COMMAND().
  */
-function drush_fix_ownership_pre_provision_verify() {
+function drush_zz_fix_ownership_post_provision_verify() {
   if (d()->type === 'platform') {
     $success = drush_shell_exec("sudo /usr/local/bin/fix-drupal-platform-ownership.sh --root=%s --script-user=%s --web-group=%s", d()->root, d()->server->script_user, d()->server->web_group);
   }
@@ -32,7 +32,7 @@ function drush_fix_ownership_pre_provision_verify() {
 /**
  * Implements hook_provision_drupal_chgrp_directories_alter().
  */
-function fix_permissions_provision_drupal_chgrp_directories_alter(&$chgrp, $url) {
+function zz_fix_permissions_provision_drupal_chgrp_directories_alter(&$chgrp, $url) {
   foreach ($chgrp as $path => $group) {;
     // Disable Aegir core's chgrp, since we handle it now.
     $chgrp[$path] = FALSE;
