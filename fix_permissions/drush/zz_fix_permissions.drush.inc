@@ -33,9 +33,13 @@ function drush_zz_fix_permissions_post_provision_verify() {
  * Implements hook_provision_drupal_create_directories_alter().
  */
 function zz_fix_permissions_provision_drupal_create_directories_alter(&$chmod, $url) {
-  foreach ($chmod as $path => $perm) {;
-    // Disable Aegir core's chmod, since we handle it now.
-    $chmod[$path] = FALSE;
+  // We only handle chmod's for 'verify' tasks, atm.
+  $cmd = drush_get_command();
+  if ($cmd['command'] === 'provision-verify') {
+    foreach ($chmod as $path => $perm) {
+      // Disable Aegir core's chmod, since we handle it now.
+      $chmod[$path] = FALSE;
+    }
   }
 }
 

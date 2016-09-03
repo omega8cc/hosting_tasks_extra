@@ -33,9 +33,13 @@ function drush_zz_fix_ownership_post_provision_verify() {
  * Implements hook_provision_drupal_chgrp_directories_alter().
  */
 function zz_fix_permissions_provision_drupal_chgrp_directories_alter(&$chgrp, $url) {
-  foreach ($chgrp as $path => $group) {;
-    // Disable Aegir core's chgrp, since we handle it now.
-    $chgrp[$path] = FALSE;
+  // We only handle chgrp's for 'verify' tasks, atm.
+  $cmd = drush_get_command();
+  if ($cmd['command'] === 'provision-verify') {
+    foreach ($chgrp as $path => $group) {
+      // Disable Aegir core's chgrp, since we handle it now.
+      $chgrp[$path] = FALSE;
+    }
   }
 }
 
