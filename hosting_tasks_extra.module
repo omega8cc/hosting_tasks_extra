@@ -133,6 +133,15 @@ function hosting_task_update_form($node) {
   $form['operations'] = array(
     '#value' => $value,
   );
+
+  $platform_node = node_load($node->platform);
+  $core_major_version = $platform_node->release->version[0];
+  if ($core_major_version >= 8) {
+    $form['entity_updates'] = array(
+      '#type' => 'checkbox',
+      '#title' => t('Run automatic entity schema updates at the end of any update hooks.'),
+    );
+  }
   return $form;
 }
 
