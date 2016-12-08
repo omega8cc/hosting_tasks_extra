@@ -98,7 +98,7 @@ function drush_provision_tasks_extra_provision_run_cron() {
 function drush_provision_tasks_extra_provision_update() {
   drush_errors_on();
   $options = d()->options;
-  if (isset($options['entity_updates']) && $options['entity_updates'] && drush_drupal_major_version(d()->root) == 8) {
+  if (isset($options['entity_updates']) && $options['entity_updates'] && drush_drupal_major_version(d()->root) >= 8) {
     provision_backend_invoke(d()->name, 'updatedb',  array('--entity-updates'));
     drush_log(dt('Drush updatedb task completed with --entity-updates'));
   }
