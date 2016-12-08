@@ -60,17 +60,6 @@ function hosting_sync_hosting_task_menu_access($node, $task) {
 }
 
 /**
- * Helper to determine if a particular site has a module installed.
- */
-function _hosting_sync_site_has_module($node, $module) {
-  $package = hosting_package_instance_load(array('rid' => $node->nid, 'p.short_name' => $module));
-  if (!is_object($package)) {
-    return FALSE;
-  }
-  return $package->status;
-}
-
-/**
  * Helper to get the list of sites.
  *
  * Similar to hosting_get_sites_by_status() but it calls db_rewrite_sql() so that the
@@ -311,7 +300,7 @@ function hosting_task_sync_form($node) {
     '#type' => 'checkbox',
     '#default_value' => 1,
   );
-  if (_hosting_sync_site_has_module($node, 'features')) {
+  if (_hosting_package_site_has_module($node, 'features')) {
     $form['features_revert_all'] = array(
       '#title' => t('Revert all features'),
       '#type' => 'checkbox',

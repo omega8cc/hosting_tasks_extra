@@ -158,3 +158,15 @@ function hosting_tasks_extra_hosting_task_update_ops() {
     ),
   );
 }
+
+/**
+ * Implements hosting_task_TASK_TYPE_form_validate().
+ */
+function hosting_task_features_revert_all_form_validate($form, &$form_state) {
+  $site = node_load($form_state['values']['nid']);
+
+  // Check if the features module is enabled.
+  if (!_hosting_package_site_has_module($site, 'features')) {
+    form_set_error('nid', t('You need to enable the Features module on this site and then clear the Drush cache before running this task.'));
+  }
+}
