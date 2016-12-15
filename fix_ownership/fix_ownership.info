@@ -1,0 +1,5 @@
+name = Fix Ownership
+description = Fix file ownership of Drupal platforms and sites.
+package = Aegir Extras
+dependencies[] = hosting_site
+core = 7.x
