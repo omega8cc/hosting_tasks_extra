@@ -1,0 +1,5 @@
+name = Fix Permissions
+description = Fix file permissions of Drupal platforms and sites.
+package = Aegir Extras
+dependencies[] = hosting_site
+core = 7.x

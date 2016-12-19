@@ -154,8 +154,15 @@ function drush_provision_tasks_extra_provision_run_cron() {
  */
 function drush_provision_tasks_extra_provision_update() {
   drush_errors_on();
-  provision_backend_invoke(d()->name, 'updatedb');
-  drush_log(dt('Drush updatedb task completed'));
+  $options = d()->options;
+  if (isset($options['entity_updates']) && $options['entity_updates'] && drush_drupal_major_version(d()->root) >= 8) {
+    provision_backend_invoke(d()->name, 'updatedb',  array('--entity-updates'));
+    drush_log(dt('Drush updatedb task completed with --entity-updates'));
+  }
+  else {
+    provision_backend_invoke(d()->name, 'updatedb');
+    drush_log(dt('Drush updatedb task completed w/o --entity-updates'));
+  }
 }
 
 /**
@@ -248,4 +255,24 @@ function drush_provision_tasks_extra_provision_features_revert_all() {
   drush_errors_on();
   provision_backend_invoke(d()->name, 'features-revert-all');
   drush_log(dt('All features reverted.'));
+}
+
+/**
+ * Implements drush_HOOK_pre_COMMAND().
+ *
+ * This runs for each tasks during the command
+ *    drush @hostmaster hosting-tasks
+ *
+ * NOTE: This ONLY runs when being called from a hostmaster task.
+ * This hook should ONLY be used to pass Options from a hostmaster task form to
+ * the $task object, or if you don't need this functionality from the command
+ * line.
+ */
+function drush_provision_tasks_extra_pre_hosting_task() {
+  $task = &drush_get_context('HOSTING_TASK');
+
+  // Update.
+  if ($task->ref->type == 'site' && $task->task_type == 'update' && isset($task->task_args['entity_updates'])) {
+    $task->options['entity_updates'] = $task->task_args['entity_updates'];
+  }
 }
