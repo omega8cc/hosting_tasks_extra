@@ -245,6 +245,9 @@ function hosting_task_sync_form($node) {
         'visible' => array(
           ':input[name="parameters[source]"]' => array('value' => 'CUSTOM'),
         ),
+        'enabled' => array(
+          ':input[name="parameters[source]"]' => array('value' => 'CUSTOM'),
+        ),
       ),
     );
   }
