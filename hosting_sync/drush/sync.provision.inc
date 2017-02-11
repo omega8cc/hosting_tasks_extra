@@ -79,8 +79,8 @@ function drush_provision_sync($source = NULL, $destination = NULL) {
   $source = drush_get_option('source', $source);
   $destination = drush_get_option('destination', $destination);
 
-  $source_site = ltrim($source, '@');
-  $destination_site = ltrim($destination, '@');
+  $source_site = d($source)->uri;
+  $destination_site = d($destination)->uri;
 
   if (!drush_get_option('disable-rollback-backup')) {
     // Make a backup of the destination site before making any changes.
