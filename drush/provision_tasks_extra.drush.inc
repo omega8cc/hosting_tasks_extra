@@ -27,6 +27,10 @@ function provision_tasks_extra_drush_command() {
     'description' => dt('Runs db updates on a site'),
     'bootstrap' => DRUSH_BOOTSTRAP_DRUSH,
   );
+  $items['provision-update_translations'] = array(
+    'description' => dt('Update translations on a site'),
+    'bootstrap' => DRUSH_BOOTSTRAP_DRUPAL_FULL,
+  );
   $items['provision-flush_drush_cache'] = array(
     'description' => 'Flushes the Drush cache on the server',
     'bootstrap' => DRUSH_BOOTSTRAP_DRUSH,
@@ -105,6 +109,25 @@ function drush_provision_tasks_extra_provision_update() {
   else {
     provision_backend_invoke(d()->name, 'updatedb');
     drush_log(dt('Drush updatedb task completed w/o --entity-updates'));
+  }
+}
+
+/**
+ * Implements the provision-update_translations command.
+ */
+function drush_provision_tasks_extra_provision_update_translations() {
+  drush_errors_on();
+  if (drush_drupal_major_version(d()->root) == 8) {
+    provision_backend_invoke(d()->name, 'locale-check');
+    drush_log(dt('Drush locale-check task completed'));
+    provision_backend_invoke(d()->name, 'locale-update');
+    drush_log(dt('Drush locale-update task completed'));
+  }
+  else {
+    provision_backend_invoke(d()->name, 'l10n-update-refresh');
+    drush_log(dt('Drush l10n-update-refresh task completed'));
+    provision_backend_invoke(d()->name, 'l10n-update');
+    drush_log(dt('Drush l10n-update task completed'));
   }
 }
 
