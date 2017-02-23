@@ -25,11 +25,23 @@ function hosting_http_basic_auth_form_alter(&$form, $form_state, $form_id) {
       '#default_value' => isset($form['#node']->http_basic_auth_password) ? $form['#node']->http_basic_auth_password : '',
       '#weight' => 1,
     );
+    $platform = node_load($form['#node']->platform);
+    $web_server = node_load($platform->web_server);
+    if (in_array($web_server->services['http']->type, ['apache', 'https_apache', 'apache_ssl'])) {
+      $form['http_basic_auth']['http_basic_auth_whitelist'] = array(
+        '#type' => 'textfield',
+        '#title' => t('IP whitelist'),
+        '#default_value' => isset($form['#node']->http_basic_auth_whitelist) ? $form['#node']->http_basic_auth_whitelist : '',
+        '#description' => t('Space separated list of IP addresses. Have a look at the !link for more options.',
+          array('!link' => l('examples from apache', 'https://httpd.apache.org/docs/2.4/mod/mod_access_compat.html#allow'))),
+        '#weight' => 2,
+      );
+    }
     $form['http_basic_auth']['http_basic_auth_message'] = array(
       '#type' => 'textfield',
       '#title' => t('Message'),
       '#default_value' => isset($form['#node']->http_basic_auth_message) ? $form['#node']->http_basic_auth_message : t('Restricted access'),
-      '#weight' => 2,
+      '#weight' => 3,
     );
     return $form;
   }
@@ -47,6 +59,7 @@ function hosting_http_basic_auth_update($node) {
       'username' => $node->http_basic_auth_username,
       'password' => $node->http_basic_auth_password,
       'message' => $node->http_basic_auth_message,
+      'whitelist' => $node->http_basic_auth_whitelist,
     ))
     ->execute();
 }
@@ -72,6 +85,7 @@ function hosting_http_basic_auth_node_insert($node) {
       'username' => $node->http_basic_auth_username,
       'password' => $node->http_basic_auth_password,
       'message' => $node->http_basic_auth_message,
+      'whitelist' => $node->http_basic_auth_whitelist,
     ))
     ->execute();
   }
@@ -112,6 +126,9 @@ function hosting_http_basic_auth_node_validate($node) {
     if (!empty($node->http_basic_auth_username) && empty($node->http_basic_auth_password)) {
       form_set_error('http_basic_auth_password', t('You must specify a password for the HTTP basic authentication.'));
     }
+    if (!empty($node->http_basic_auth_whitelist) && !preg_match('/^[0-9a-z \.:]+$/i', $node->http_basic_auth_whitelist)) {
+      form_set_error('http_basic_auth_whitelist', t('The IP whitelist field contains illegal characters.'));
+    }
   }
 }
 
@@ -121,7 +138,7 @@ function hosting_http_basic_auth_node_validate($node) {
 function hosting_http_basic_auth_node_load($nodes, $types) {
   if (in_array('site', $types)) {
     foreach ($nodes as $nid => $node) {
-      $additions = db_query("SELECT username AS http_basic_auth_username, password AS http_basic_auth_password, message AS http_basic_auth_message FROM {hosting_http_basic_auth} WHERE vid = :vid", array(':vid' => $node->vid))->fetchAssoc();
+      $additions = db_query("SELECT username AS http_basic_auth_username, password AS http_basic_auth_password, message AS http_basic_auth_message, whitelist AS http_basic_auth_whitelist FROM {hosting_http_basic_auth} WHERE vid = :vid", array(':vid' => $node->vid))->fetchAssoc();
       if (!empty($additions)) {
         foreach ($additions as $key => $value) {
           $nodes[$nid]->$key = $value;
@@ -153,6 +170,12 @@ function hosting_http_basic_auth_feeds_node_processor_targets_alter(&$targets, $
       'name' => t('HTTP Basic Auth - username'),
       'description' => t('A message to show when prompting the user for username and password.'),
       'callback' => 'hosting_http_basic_auth_set_target_http_basic_auth_message',
+    );
+
+    $targets['http_basic_auth_whitelist'] = array(
+      'name' => t('HTTP Basic Auth - IP whitelist'),
+      'description' => t('IPs that are whitelisted from the basic authentication.'),
+      'callback' => 'hosting_http_basic_auth_set_target_http_basic_auth_simple',
     );
 
   }

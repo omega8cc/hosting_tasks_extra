@@ -33,6 +33,11 @@ function hosting_http_basic_auth_schema() {
         'length' => 128,
         'not null' => TRUE,
       ),
+      'whitelist' => array(
+        'type' => 'varchar',
+        'length' => 255,
+        'not null' => TRUE,
+      ),
       'message' => array(
         'type' => 'text',
         'not null' => TRUE,
@@ -62,4 +67,19 @@ function hosting_http_basic_auth_update_6100() {
   db_add_field($ret, 'hosting_http_basic_auth', 'message', $field['message']);
 
   return $ret;
+}
+
+/**
+ * Add the whitelist field to the table.
+ */
+function hosting_http_basic_auth_update_7300() {
+  $ret = array();
+
+  $field['whitelist'] = array(
+    'type' => 'varchar',
+    'length' => 255,
+    'not null' => TRUE,
+  );
+
+  db_add_field('hosting_http_basic_auth', 'whitelist', $field['whitelist']);
 }

@@ -13,6 +13,7 @@ class Provision_Service_http_basic_auth extends Provision_Service {
     $context->setProperty('http_basic_auth_username');
     $context->setProperty('http_basic_auth_password');
     $context->setProperty('http_basic_auth_message');
+    $context->setProperty('http_basic_auth_whitelist');
   }
 }
 
