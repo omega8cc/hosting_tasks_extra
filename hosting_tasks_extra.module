@@ -31,6 +31,12 @@ function hosting_tasks_extra_hosting_tasks() {
     'dialog' => TRUE,
   );
 
+  $tasks['site']['update_translations'] = array(
+    'title' => t('Update translations'),
+    'description' => t('Updates translations on this site.'),
+    'dialog' => TRUE,
+  );
+
   $tasks['site']['features_revert_all'] = array(
     'title' => t('Revert features'),
     'description' => t('Reverts all features overrides on this site.'),
@@ -89,6 +95,15 @@ function hosting_site_update_action($node) {
 }
 
 /**
+ * Callback for site action.
+ *
+ * @see: hosting_task_action_info().
+ */
+function hosting_site_update_translations_action($node) {
+  hosting_add_task($node->nid, 'update_translations');
+}
+
+/**
  * Callback for server action.
  *
  * @see: hosting_task_action_info().
@@ -123,6 +138,9 @@ function hosting_tasks_extra_permission() {
     'create update task' => array(
       'title' => t('create update task'),
       'description' => t('Run pending database updates on a site.'),
+    ),
+    'create update_translations task' => array(
+      'title' => t('create update translations task'),
     ),
     'create flush_drush_cache task' => array(
       'title' => t('create flush_drush_cache task'),
@@ -186,5 +204,18 @@ function hosting_task_features_revert_all_form_validate($form, &$form_state) {
   // Check if the features module is enabled.
   if (!_hosting_package_site_has_module($site, 'features')) {
     form_set_error('nid', t('You need to enable the Features module on this site and then clear the Drush cache before running this task.'));
+  }
+}
+
+function hosting_task_update_translations_form_validate($form, &$form_state) {
+  $site = node_load($form_state['values']['nid']);
+
+  // If the l10n_update module is not enabled, check if it is a Drupal 8 site.
+  if (!_hosting_package_site_has_module($site, 'l10n_update')) {
+    $platform_node = node_load($site->platform);
+    $core_major_version = $platform_node->release->version[0];
+    if ($core_major_version < 8) {
+      form_set_error('nid', t('You need to enable the module Localization update on this site and then clear the Drush cache before running this task.'));
+    }
   }
 }
