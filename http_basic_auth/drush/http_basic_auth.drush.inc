@@ -91,7 +91,17 @@ function http_basic_auth_provision_apache_vhost_config($uri, $data) {
 
     $lines[] = "    AuthUserFile $path";
     $lines[] = "    Require valid-user";
-    $lines[] = "    Satisfy All";
+
+    if (!empty(d()->http_basic_auth_whitelist)) {
+
+      $lines[] = "    Order deny,allow";
+      $lines[] = "    Deny from all";
+      $lines[] = "    Allow from " . d()->http_basic_auth_whitelist;
+      $lines[] = "    Satisfy Any";
+    }
+    else {
+      $lines[] = "    Satisfy All";
+    }
     $lines[] = "  </Directory>";
     $lines[] = "";
   }
