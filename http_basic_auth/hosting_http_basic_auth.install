@@ -79,6 +79,7 @@ function hosting_http_basic_auth_update_7300() {
     'type' => 'varchar',
     'length' => 255,
     'not null' => TRUE,
+    'default' => '',
   );
 
   db_add_field('hosting_http_basic_auth', 'whitelist', $field['whitelist']);
