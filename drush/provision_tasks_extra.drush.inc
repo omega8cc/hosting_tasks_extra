@@ -25,7 +25,7 @@ function provision_tasks_extra_drush_command() {
   );
   $items['provision-update'] = array(
     'description' => dt('Runs db updates on a site'),
-    'bootstrap' => DRUSH_BOOTSTRAP_DRUSH,
+    'bootstrap' => DRUSH_BOOTSTRAP_DRUPAL_ROOT,
   );
   $items['provision-update_translations'] = array(
     'description' => dt('Update translations on a site'),
