@@ -112,7 +112,7 @@ function drush_provision_sync($source = NULL, $destination = NULL) {
     // Sync the databases
     drush_log(dt('Syncing databases...'), 'ok');
     if (DRUSH_VERSION >= 5) {
-      $result = drush_invoke_process('@none', 'sql-sync', array($source, $destination), array('yes' => TRUE), TRUE);
+      $result = drush_invoke_process('@none', 'sql-sync', array($source, $destination), array('yes' => TRUE, 'structure-tables-key' => 'common'), TRUE);
     }
     else {
       $result = drush_backend_invoke('sql-sync', array($source, $destination));
