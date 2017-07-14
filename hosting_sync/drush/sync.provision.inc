@@ -82,7 +82,7 @@ function drush_provision_sync($source = NULL, $destination = NULL) {
   $source_site = d($source)->uri;
   $destination_site = d($destination)->uri;
 
-  if (!drush_get_option('disable-rollback-backup')) {
+  if (drush_get_option('backup', FALSE) && !drush_get_option('disable-rollback-backup')) {
     // Make a backup of the destination site before making any changes.
     $result = provision_backend_invoke($destination, 'provision-backup');
     if ($result['error_status'] !== DRUSH_SUCCESS) {
