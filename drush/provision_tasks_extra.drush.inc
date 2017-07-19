@@ -215,7 +215,7 @@ function drush_provision_tasks_extra_provision_update_uri($old_uri, $new_uri) {
 }
 
 /**
- * Implements the provision-flush_cache command.
+ * Implements the provision-features_revert_all command.
  */
 function drush_provision_tasks_extra_provision_features_revert_all() {
   drush_errors_on();
