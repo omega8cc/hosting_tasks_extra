@@ -89,6 +89,9 @@ function hosting_http_basic_auth_delete($node) {
  */
 function hosting_http_basic_auth_node_insert($node) {
   if ($node->type == 'site' && !empty($node->http_basic_auth_username)) {
+    if (!isset($node->http_basic_auth_whitelist)) {
+      $node->http_basic_auth_whitelist = '';
+    }
     $id = db_insert('hosting_http_basic_auth')
     ->fields(array(
       'vid' => $node->vid,
