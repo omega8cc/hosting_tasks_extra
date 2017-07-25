@@ -25,8 +25,19 @@ function hosting_http_basic_auth_form_alter(&$form, $form_state, $form_id) {
       '#default_value' => isset($form['#node']->http_basic_auth_password) ? $form['#node']->http_basic_auth_password : '',
       '#weight' => 1,
     );
-    $platform = node_load($form['#node']->platform);
-    $web_server = node_load($platform->web_server);
+    
+    // If there's already a platform (ie on the site edit page), or a platform was chosen but we are still on the form (ie  load $web_server from that.
+    // @TODO: We could use Drupal Ajax to actually load the IP Whitelist field depending ont he platform.
+    if (!empty($form['#node']->platform) || !empty($form_state['values']['platform'])) {
+      $platform_nid = !empty($form_state['values']['platform'])? $form_state['values']['platform']: $form['#node']->platform;
+      $platform = node_load($platform_nid);
+      $web_server = node_load($platform->web_server);
+    }
+    // Otherwise, just load the first http server we have. We don't know the platform the user wants yet.
+    else {
+      $web_server = node_load(key(hosting_get_servers('http')));
+    }
+    
     if (in_array($web_server->services['http']->type, ['apache', 'https_apache', 'apache_ssl'])) {
       $form['http_basic_auth']['http_basic_auth_whitelist'] = array(
         '#type' => 'textfield',
