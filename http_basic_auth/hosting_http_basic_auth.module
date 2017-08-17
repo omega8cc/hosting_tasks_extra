@@ -110,6 +110,10 @@ function hosting_http_basic_auth_node_insert($node) {
  */
 function hosting_http_basic_auth_node_update($node) {
   if ($node->type == 'site') {
+    if (!isset($node->http_basic_auth_whitelist)) {
+      $node->http_basic_auth_whitelist = '';
+    }
+
     $original = $node->original;
     // Compare old values with new.
     // If we had old values and the new are empty - we are deleting the auth.
