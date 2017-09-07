@@ -26,7 +26,7 @@ if [ $(id -u) != 0 ]; then
 fi
 
 DIR=$(dirname "$0")
-TYPES=(ownership permission)
+TYPES=(ownership permissions)
 
 for TYPE in ${TYPES[@]}; do
     SCRIPTS=(fix-drupal-platform-${TYPE} fix-drupal-site-${TYPE})
