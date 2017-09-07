@@ -8,6 +8,7 @@
 # It must be run as root.
 #
 # Usage:
+#
 #    wget http://cgit.drupalcode.org/hosting_tasks_extra/plain/fix_permissions/scripts/standalone-install-fix-permissions-ownership.sh
 #    sudo bash standalone-install-fix-permissions-ownership.sh
 #
