@@ -37,7 +37,7 @@ for TYPE in ${TYPES[@]}; do
       chmod u+x ${SCRIPTS_DESTINATION}/${SCRIPT}.sh
 
       echo "Adding sudoers config to ${SUDOERS_D_PATH}/${SCRIPT}"
-      echo "aegir ALL=NOPASSWD: ${SCRIPTS_PATH}/${SCRIPT}.sh" > ${SUDOERS_D_PATH}/${SCRIPT}
+      echo "aegir ALL=NOPASSWD: ${SCRIPTS_DESTINATION}/${SCRIPT}.sh" > ${SUDOERS_D_PATH}/${SCRIPT}
       chmod 0440 ${SUDOERS_D_PATH}/${SCRIPT}
     done
 done
