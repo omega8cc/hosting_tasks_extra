@@ -304,18 +304,18 @@ function hosting_task_sync_form($node) {
     '#default_value' => 1,
   );
   if (_hosting_package_site_has_module($node, 'features')) {
-    $form['features_revert_all'] = array(
+    $form['features-revert-all'] = array(
       '#title' => t('Revert all features'),
       '#type' => 'checkbox',
       '#default_value' => TRUE,
     );
   }
-  $form['update_uri'] = array(
+  $form['update-uri'] = array(
     '#title' => t('Update URI in database content'),
     '#type' => 'checkbox',
     '#default_value' => 1,
   );
-  $form['cache_clear'] = array(
+  $form['cache-clear'] = array(
     '#title' => t('Clear cache'),
     '#type' => 'checkbox',
     '#default_value' => 1,
