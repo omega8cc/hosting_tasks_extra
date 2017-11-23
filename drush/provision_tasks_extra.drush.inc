@@ -227,12 +227,12 @@ function drush_provision_tasks_extra_provision_features_revert_all() {
 }
 
 /**
- * Implements the provision-features_revert_all command.
+ * Implements the provision-features_update_all command.
  */
 function drush_provision_tasks_extra_provision_features_update_all() {
   drush_errors_on();
   provision_backend_invoke(d()->name, 'features-update-all');
-  
+
   if (drush_get_error()) {
     drush_log(dt('Update Features failed. Please try again.'), 'error');
   }
