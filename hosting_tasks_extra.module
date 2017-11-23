@@ -137,6 +137,9 @@ function hosting_tasks_extra_permission() {
     'create features_revert_all task' => array(
       'title' => t('create features_revert_all task'),
     ),
+    'create features_update_all task' => array(
+      'title' => t('create features_update_all task'),
+    ),
   );
 }
 
