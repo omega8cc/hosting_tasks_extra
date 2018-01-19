@@ -144,7 +144,7 @@ function hosting_http_basic_auth_node_validate($node) {
     if (!empty($node->http_basic_auth_username) && empty($node->http_basic_auth_password)) {
       form_set_error('http_basic_auth_password', t('You must specify a password for the HTTP basic authentication.'));
     }
-    if (!empty($node->http_basic_auth_whitelist) && !preg_match('/^[0-9a-z \.:]+$/i', $node->http_basic_auth_whitelist)) {
+    if (!empty($node->http_basic_auth_whitelist) && !preg_match('/^[0-9a-z \/\.:]+$/i', $node->http_basic_auth_whitelist)) {
       form_set_error('http_basic_auth_whitelist', t('The IP whitelist field contains illegal characters.'));
     }
   }

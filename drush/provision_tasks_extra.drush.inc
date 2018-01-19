@@ -52,7 +52,11 @@ function provision_tasks_extra_drush_command() {
     ),
   );
   $items['provision-features_revert_all'] = array(
-    'description' => 'Reverts all Features modules on a site.',
+    'description' => 'Revert all Features modules overrides on this site.',
+    'bootstrap' => DRUSH_BOOTSTRAP_DRUSH,
+  );
+  $items['provision-features_update_all'] = array(
+    'description' => 'Update all Features modules on this site: write overrides to files.',
     'bootstrap' => DRUSH_BOOTSTRAP_DRUSH,
   );
 
@@ -272,12 +276,27 @@ function drush_provision_tasks_extra_provision_update_uri($old_uri, $new_uri) {
 }
 
 /**
- * Implements the provision-flush_cache command.
+ * Implements the provision-features_revert_all command.
  */
 function drush_provision_tasks_extra_provision_features_revert_all() {
   drush_errors_on();
   provision_backend_invoke(d()->name, 'features-revert-all');
   drush_log(dt('All features reverted.'));
+}
+
+/**
+ * Implements the provision-features_update_all command.
+ */
+function drush_provision_tasks_extra_provision_features_update_all() {
+  drush_errors_on();
+  provision_backend_invoke(d()->name, 'features-update-all');
+
+  if (drush_get_error()) {
+    drush_log(dt('Update Features failed. Please try again.'), 'error');
+  }
+  else {
+    drush_log(dt('All features updated.'), 'ok');
+  }
 }
 
 /**
