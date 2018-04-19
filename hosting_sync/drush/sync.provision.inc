@@ -193,7 +193,7 @@ function drush_provision_sync($source = NULL, $destination = NULL) {
   }
 
   // registry-rebuild, unless option is false.
-  if (drush_get_option('registry-rebuild')) {
+  if (drush_drupal_major_version(d($destination)->root) == 7 && drush_get_option('registry-rebuild')) {
     drush_log(dt('Rebuilding registry...'), 'ok');
     provision_backend_invoke($destination, 'registry-rebuild');
   }
@@ -231,8 +231,17 @@ function drush_provision_sync($source = NULL, $destination = NULL) {
   // Seriously, lets do this twice.  Go Drupal!
   if (drush_get_option('cache-clear')) {
     drush_log(dt('Clearing all caches...'), 'ok');
-    provision_backend_invoke($destination, 'cache-clear all');
-    provision_backend_invoke($destination, 'cache-clear all');
+
+    if (drush_drupal_major_version(d($destination)->root) <= 7) {
+      provision_backend_invoke($destination, 'cache-clear all');
+      provision_backend_invoke($destination, 'cache-clear all');
+    }
+    elseif (drush_drupal_major_version(d($destination)->root) == 8) {
+      provision_backend_invoke($destination, 'cache-rebuild');
+    }
+    else {
+      drush_log(dt('Drupal version 8 or earlier not detected. Not clearing caches.'), 'warning');
+    }
   }
   else {
     drush_log(dt('Skipped clearing all caches...'), 'ok');
