@@ -205,7 +205,7 @@ function hosting_task_features_update_all_form($node) {
   $form['features'] = array(
     '#type' => 'textfield',
     '#title' => t('Features to update'),
-    '#description' => '<p>' . t('Enter the names of the features modules you would like to recreate.  If left empty, all features will be updated.') . '</p>',
+    '#description' => '<p>' . t('Enter the names of the features modules you would like to update.  If left empty, all features will be updated.') . '</p>',
   );
   $form['revert'] = array(
     '#title' => t('Revert Features after updating.'),
