@@ -50,10 +50,17 @@ function provision_tasks_extra_drush_command() {
   $items['provision-features_revert_all'] = array(
     'description' => 'Revert all Features modules overrides on this site.',
     'bootstrap' => DRUSH_BOOTSTRAP_DRUSH,
+    'options' => array(
+      'features' => 'Optional: List of features to revert.  If left empty, all features will be reverted.',
+    ),
   );
   $items['provision-features_update_all'] = array(
     'description' => 'Update all Features modules on this site: write overrides to files.',
     'bootstrap' => DRUSH_BOOTSTRAP_DRUSH,
+    'options' => array(
+      'features' => 'Optional: List of features to update.  If left empty, all features will be updated.',
+      'revert' => 'Optional: Run a features-revert-all --force command after updating.',
+    ),
   );
 
   return $items;
@@ -221,23 +228,53 @@ function drush_provision_tasks_extra_provision_update_uri($old_uri, $new_uri) {
  * Implements the provision-features_revert_all command.
  */
 function drush_provision_tasks_extra_provision_features_revert_all() {
-  drush_errors_on();
-  provision_backend_invoke(d()->name, 'features-revert-all');
-  drush_log(dt('All features reverted.'));
+  $drush_alias = d()->name;
+  $features = trim(drush_get_option('features', ''));
+  $options = "-y";
+
+  if (drush_get_option('force_revert')) {
+    $options .= " --force";
+  }
+
+  // If features were specified...
+  if (!empty($features)) {
+    provision_process("drush {$drush_alias} features-revert {$features} {$options}", NULL, dt('Revert Features: !feature', [
+      '!feature' => $features
+    ]));
+  }
+  else {
+    provision_process("drush {$drush_alias} features-revert-all {$options}", NULL, dt('Revert all Features'));
+  }
 }
 
 /**
  * Implements the provision-features_update_all command.
  */
 function drush_provision_tasks_extra_provision_features_update_all() {
-  drush_errors_on();
-  provision_backend_invoke(d()->name, 'features-update-all');
+  if (d()->type == 'site') {
+    $drush_alias = d()->name;
+    $features = trim(drush_get_option('features', ''));
+    $revert = drush_get_option('revert', FALSE);
 
-  if (drush_get_error()) {
-    drush_log(dt('Update Features failed. Please try again.'), 'error');
-  }
-  else {
-    drush_log(dt('All features updated.'), 'ok');
+    // If features were specified...
+    if (!empty($features)) {
+      provision_process("drush {$drush_alias} features-update {$features} -y", NULL, dt('Update Features: !feature', [
+        '!feature' => $features
+      ]));
+    }
+    else {
+      provision_process("drush {$drush_alias} features-update-all -y", NULL, dt('Update All Features'));
+    }
+
+    // Revert force revert the features if the user asked.
+    if ($revert) {
+      if (!empty($features)) {
+        provision_process("drush {$drush_alias} features-revert {$features} --force -y", NULL, dt('Revert Features'));
+      }
+      else {
+        provision_process("drush {$drush_alias} features-revert-all --force -y", NULL, dt('Revert Features'));
+      }
+    }
   }
 }
 
