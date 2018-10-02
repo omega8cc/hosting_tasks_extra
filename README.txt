@@ -25,7 +25,7 @@ Drush extension:
 
   http://drupal.org/project/registry_rebuild
 
-  drush dl registry_rebuild --select
+  drush dl registry_rebuild-7 --select
 
 To use the extra tasks as Views Bulk Operations you have to manually edit the particular view to add them.
 See https://www.drupal.org/node/2715945
