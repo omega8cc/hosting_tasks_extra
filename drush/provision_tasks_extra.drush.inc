@@ -236,6 +236,9 @@ function drush_provision_tasks_extra_provision_features_revert_all() {
     $options .= " --force";
   }
 
+  // Clear drush cache, just in case it is needed.
+  provision_process("drush {$drush_alias} cc drush", NULL, dt('Clearing drush cache...'));
+
   // If features were specified...
   if (!empty($features)) {
     provision_process("drush {$drush_alias} features-revert {$features} {$options}", NULL, dt('Revert Features: !feature', [
@@ -255,6 +258,9 @@ function drush_provision_tasks_extra_provision_features_update_all() {
     $drush_alias = d()->name;
     $features = trim(drush_get_option('features', ''));
     $revert = drush_get_option('revert', FALSE);
+
+    // Clear drush cache, just in case it is needed.
+    provision_process("drush {$drush_alias} cc drush", NULL, dt('Clearing drush cache...'));
 
     // If features were specified...
     if (!empty($features)) {
