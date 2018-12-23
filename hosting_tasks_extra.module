@@ -203,30 +203,6 @@ function hosting_tasks_extra_hosting_task_update_ops() {
   );
 }
 
-/**
- * Implements hosting_task_TASK_TYPE_form_validate().
- */
-function hosting_task_features_revert_all_form_validate($form, &$form_state) {
-  $site = node_load($form_state['values']['nid']);
-
-  // Check if the features module is enabled.
-  if (!_hosting_package_site_has_module($site, 'features')) {
-    form_set_error('nid', t('You need to enable the Features module on this site and then clear the Drush cache before running this task.'));
-  }
-}
-
-/**
- * Implements hosting_task_TASK_TYPE_form_validate().
- */
-function hosting_task_features_update_all_form_validate($form, &$form_state) {
-  $site = node_load($form_state['values']['nid']);
-
-  // Check if the features module is enabled.
-  if (!_hosting_package_site_has_module($site, 'features')) {
-    form_set_error('nid', t('You need to enable the Features module on this site and then clear the Drush cache before running this task.'));
-  }
-}
-
 function hosting_task_update_translations_form_validate($form, &$form_state) {
   $site = node_load($form_state['values']['nid']);
 
@@ -236,6 +212,79 @@ function hosting_task_update_translations_form_validate($form, &$form_state) {
     $core_major_version = $platform_node->release->version[0];
     if ($core_major_version < 8) {
       form_set_error('nid', t('You need to enable the module Localization update on this site and then clear the Drush cache before running this task.'));
+    }
+  }
+}
+
+/**
+ * Form for the Features Update task.
+ * @return mixed
+ */
+function hosting_task_features_update_all_form($node) {
+  $form['features'] = array(
+    '#type' => 'textfield',
+    '#title' => t('Features to update'),
+    '#description' => '<p>' . t('Enter the names of the features modules you would like to update.  If left empty, all features will be updated.') . '</p>',
+  );
+  $form['revert'] = array(
+    '#title' => t('Revert Features after updating.'),
+    '#type' => 'checkbox',
+    '#default_value' => 0,
+    '#description' => t('Once the features have been updated, run <code>drush features-revert --force</code>. This can help to keep this environment in the desired state.'),
+  );
+  return $form;
+}
+
+/**
+ * Implements hosting_task_TASK_TYPE_form_validate().
+ */
+function hosting_task_features_update_all_form_validate($form, &$form_state) {
+  $site = node_load($form_state['values']['nid']);
+}
+
+
+/**
+ * Form for the Features Revert task.
+ * @return mixed
+ */
+function hosting_task_features_revert_all_form($node) {
+  $form['features'] = array(
+    '#type' => 'textfield',
+    '#title' => t('Features to revert'),
+    '#description' => '<p>' . t('Enter the names of the features modules you would like to revert.  If left empty, all features will be reverted.') . '</p>',
+  );
+  $form['force_revert'] = array(
+    '#title' => t('Force reverting features even if current state matches defaults.'),
+    '#type' => 'checkbox',
+    '#default_value' => 0,
+    '#description' => t('Use the "--force" option in the <code>drush features-revert</code> command'),
+  );
+  return $form;
+}
+
+/**
+ * Implements hosting_task_TASK_TYPE_form_validate().
+ */
+function hosting_task_features_revert_all_form_validate($form, &$form_state) {
+  $site = node_load($form_state['values']['nid']);
+}
+
+/**
+ * Implements hook_form_alter().
+ */
+function hosting_tasks_extra_form_alter(&$form, &$form_state, $form_id)
+{
+  // Hosting Task Forms
+  if ($form_id == 'hosting_task_confirm_form') {
+    switch ($form['task']['#value']) {
+
+      case 'features_update_all':
+        drupal_set_title(t('Update Features'));
+        break;
+      case 'features_revert_all':
+        drupal_set_title(t('Revert Features'));
+        break;
+
     }
   }
 }
