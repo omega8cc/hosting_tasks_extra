@@ -25,11 +25,12 @@ function hosting_tasks_extra_hosting_tasks() {
   //     'dialog' => TRUE,
   //   );
 
-  $tasks['site']['update'] = array(
-    'title' => t('Run db updates'),
-    'description' => t('Runs database updates on this site -- but first it will create a hot-backup to be able to revert your site database to the pre-update state in case there will be any problem detected. NOTE: This task is NOT a replacement for proper upgrade workflow and should be used only occasionally.'),
-    'dialog' => TRUE,
-  );
+  // Removed because it should never be used in proper workflow, while exceptions should handled on command line
+  //   $tasks['site']['update'] = array(
+  //     'title' => t('Run db updates'),
+  //     'description' => t('Runs database updates on this site -- but first it will create a hot-backup to be able to revert your site database to the pre-update state in case there will be any problem detected. NOTE: This task is NOT a replacement for proper upgrade workflow and should be used only occasionally.'),
+  //     'dialog' => TRUE,
+  //   );
 
   $tasks['site']['update_translations'] = array(
     'title' => t('Update translations'),
