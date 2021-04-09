@@ -126,7 +126,7 @@ function drush_provision_tasks_extra_provision_site_health_check() {
  */
 function drush_provision_tasks_extra_provision_flush_cache() {
   drush_errors_on();
-  if (drush_drupal_major_version(d()->root) == 8) {
+  if (drush_drupal_major_version(d()->root) >= 8) {
     provision_backend_invoke(d()->name, 'cache-rebuild');
   }
   else {
@@ -150,7 +150,7 @@ function drush_provision_tasks_extra_provision_rebuild_registry() {
       drush_log(dt('Registry rebuilt w/o --fire-bazooka plus all caches cleared'));
     }
     else {
-      drush_log(dt('INFO ###---### Registry Rebuild is not supported in Drupal 8 yet! ###---### INFO'), 'warning');
+      drush_log(dt('INFO ###---### Registry Rebuild is not supported in Drupal 8/9 ###---### INFO'), 'warning');
     }
   }
 }
