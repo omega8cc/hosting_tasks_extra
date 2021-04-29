@@ -10,6 +10,8 @@ function hosting_http_basic_auth_form_alter(&$form, $form_state, $form_id) {
     $form['http_basic_auth'] = array(
       '#type' => 'fieldset',
       '#title' => t('HTTP Basic Authentication'),
+      '#collapsed' => TRUE,
+      '#collapsible' => TRUE,
       '#description' => t('Specify a password to ensure that only people that know the specifed username and password can access the site.'),
     );
 
