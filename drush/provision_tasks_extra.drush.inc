@@ -185,7 +185,7 @@ function drush_provision_tasks_extra_provision_update() {
  */
 function drush_provision_tasks_extra_provision_update_translations() {
   drush_errors_on();
-  if (drush_drupal_major_version(d()->root) == 8) {
+  if (drush_drupal_major_version(d()->root) >= 8) {
     provision_backend_invoke(d()->name, 'locale-check');
     drush_log(dt('Drush locale-check task completed'));
     provision_backend_invoke(d()->name, 'locale-update');
