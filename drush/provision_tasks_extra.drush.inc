@@ -126,11 +126,13 @@ function drush_provision_tasks_extra_provision_site_health_check() {
  */
 function drush_provision_tasks_extra_provision_flush_cache() {
   drush_errors_on();
-  if (drush_drupal_major_version(d()->root) >= 8) {
-    provision_backend_invoke(d()->name, 'cache-rebuild');
+  if (drush_drupal_major_version(d()->root) <= 7) {
+    provision_backend_invoke(d()->name, 'cache-clear all');
+    provision_backend_invoke(d()->name, 'cache-clear all');
   }
   else {
-    provision_backend_invoke(d()->name, 'cache-clear all');
+    provision_backend_invoke(d()->name, 'cache-rebuild');
+    provision_backend_invoke(d()->name, 'cache-rebuild');
   }
   drush_log(dt('All caches cleared'));
 }
