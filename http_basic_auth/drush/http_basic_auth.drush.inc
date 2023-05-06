@@ -54,7 +54,7 @@ function _http_basic_auth_create_file($uri, $data, $user, $pass) {
     provision_file()->create_dir(dirname($path), dt('Passwords'), 0711);
 
     // Generate the pass using php because nginx server may not have apache tools.
-    $pass = crypt($pass);
+    $pass = crypt($pass, time());
     $pass_string = "$user:$pass\n";
     // Save the password info to the file.
     provision_file()->file_put_contents($path, $pass_string);
