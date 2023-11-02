@@ -35,20 +35,84 @@ while [ "$#" -gt 0 ]; do
   shift
 done
 
-if [ -z "${drupal_root}" ] || [ ! -d "${drupal_root}/sites" ] || [ ! -f "${drupal_root}/core/modules/system/system.module" ] && [ ! -f "${drupal_root}/modules/system/system.module" ]; then
-  printf "Error: Please provide a valid Drupal root directory.\n"
-  exit 1
+if [ -z "${drupal_root}" ] \
+  || [ ! -d "${drupal_root}/sites" ] \
+  || [ ! -f "${drupal_root}/core/modules/system/system.module" ] \
+  && [ ! -f "${drupal_root}/modules/system/system.module" ]; then
+    printf "Error: Please provide a valid Drupal root directory.\n"
+    exit 1
 fi
 
-cd $drupal_root
+_TODAY=$(date +%y%m%d 2>&1)
+_TODAY=${_TODAY//[^0-9]/}
 
-printf "Changing permissions of all directories inside "${drupal_root}" to "750"...\n"
-find . \( -path "./sites" -prune \) -type d -exec chmod 750 '{}' \+
-find ./sites/all/ -type d -exec chmod 750 '{}' \+
-chmod 750 ./sites/all/
+### Fix permissions only once daily, unless it's Drupal 8 or newer
+if [ -e "${drupal_root}/sites/all/libraries/permissions-fixed-${_TODAY}.pid" ]; then
+  if [ -e "${drupal_root}/core/themes/olivero" ] \
+    || [ ! -e "${drupal_root}/core/themes/classy" ]; then
+    _drupal_eight_nine_ten=TRUE
+  else
+    exit 0
+  fi
+fi
 
-printf "Changing permissions of all files inside "${drupal_root}" to "640"...\n"
-find . \( -path "./sites" -prune \) -type f -exec chmod 640 '{}' \+
-find ./sites/all/ -type f -exec chmod 640 '{}' \+
+cd ${drupal_root}
+
+printf "Setting main permissions inside "${drupal_root}"...\n"
+mkdir -p ${drupal_root}/sites/all/{modules,themes,libraries,drush}
+
+### Create ctrl pid
+rm -f ${drupal_root}/sites/all/libraries/permissions-fixed*.pid
+touch ${drupal_root}/sites/all/libraries/permissions-fixed-${_TODAY}.pid
+
+printf "Setting permissions of all codebase directories inside "${drupal_root}"...\n"
+find ${drupal_root}/{modules,themes,libraries,includes,misc,profiles,core} -type d -exec chmod 02775 {} \;
+
+printf "Setting permissions of all codebase files inside "${drupal_root}"...\n"
+find ${drupal_root}/{modules,themes,libraries,includes,misc,profiles,core} -type f -exec chmod 0664 {} \;
+
+if [ -e "${drupal_root}/vendor" ]; then
+  printf "Setting permissions of all codebase directories inside "${drupal_root}/vendor"...\n"
+  find ${drupal_root}/vendor -type d -exec chmod 02775 {} \;
+  printf "Setting permissions of all codebase files inside "${drupal_root}/vendor"...\n"
+  find ${drupal_root}/vendor -type f -exec chmod 0664 {} \;
+elif [ -e "${drupal_root}/../vendor" ]; then
+  printf "Setting permissions of all codebase directories inside "${drupal_root}/../vendor"...\n"
+  find ${drupal_root}/../vendor -type d -exec chmod 02775 {} \;
+  printf "Setting permissions of all codebase files inside "${drupal_root}/../vendor"...\n"
+  find ${drupal_root}/../vendor -type f -exec chmod 0664 {} \;
+fi
+
+printf "Setting permissions of all codebase directories inside "${drupal_root}/sites/all"...\n"
+find ${drupal_root}/sites/all/{modules,themes,libraries} -type d -exec chmod 02775 {} \;
+
+printf "Setting permissions of all codebase files inside "${drupal_root}/sites/all"...\n"
+find ${drupal_root}/sites/all/{modules,themes,libraries} -type f -exec chmod 0664 {} \;
+
+chmod 0644 ${drupal_root}/*.php
+chmod 0664 ${drupal_root}/autoload.php
+chmod 0751 ${drupal_root}/sites
+chmod 0755 ${drupal_root}/sites/*
+chmod 0644 ${drupal_root}/sites/*.php
+chmod 0644 ${drupal_root}/sites/*.txt
+chmod 0644 ${drupal_root}/sites/*.yml
+chmod 0755 ${drupal_root}/sites/all/drush
+
+### Lock Local Drush and Symfony Console Input
+if [ -e "${drupal_root}/core" ]; then
+  if [ -e "${drupal_root}/vendor" ]; then
+    printf "Locking Drush and Symfony Console Input in "${drupal_root}/vendor"...\n"
+    chmod 0400 ${drupal_root}/vendor/drush
+    chmod 0400 ${drupal_root}/vendor/symfony/console/Input
+  elif [ -e "${drupal_root}/../vendor" ]; then
+    printf "Locking Drush and Symfony Console Input in "${drupal_root}/../vendor"...\n"
+    chmod 0400 ${drupal_root}/../vendor/drush
+    chmod 0400 ${drupal_root}/../vendor/symfony/console/Input
+  fi
+fi
+
+### known exceptions
+chmod -R 775 ${drupal_root}/sites/all/libraries/tcpdf/cache &> /dev/null
+chmod 0644 ${drupal_root}/.htaccess
 
 echo "Done setting proper permissions on platform files and directories."

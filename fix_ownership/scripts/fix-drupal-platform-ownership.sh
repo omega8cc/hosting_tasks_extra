@@ -46,21 +46,71 @@ while [ "$#" -gt 0 ]; do
   shift
 done
 
-if [ -z "${drupal_root}" ] || [ ! -d "${drupal_root}/sites" ] || [ ! -f "${drupal_root}/core/modules/system/system.module" ] && [ ! -f "${drupal_root}/modules/system/system.module" ]; then
-  printf "Error: Please provide a valid Drupal root directory.\n"
-  exit 1
+if [ -z "${drupal_root}" ] \
+  || [ ! -d "${drupal_root}/sites" ] \
+  || [ ! -f "${drupal_root}/core/modules/system/system.module" ] \
+  && [ ! -f "${drupal_root}/modules/system/system.module" ]; then
+    printf "Error: Please provide a valid Drupal root directory.\n"
+    exit 1
 fi
 
-if [ -z "${script_user}" ] || [[ $(id -un "${script_user}" 2> /dev/null) != "${script_user}" ]]; then
-  printf "Error: Please provide a valid user.\n"
-  exit 1
+if [ -z "${script_user}" ] \
+  || [[ $(id -un "${script_user}" 2> /dev/null) != "${script_user}" ]]; then
+    printf "Error: Please provide a valid user.\n"
+    exit 1
 fi
 
-cd $drupal_root
+_TODAY=$(date +%y%m%d 2>&1)
+_TODAY=${_TODAY//[^0-9]/}
 
-printf "Changing ownership of all contents of "${drupal_root}":\n user => "${script_user}" \t group => "${web_group}"\n"
-find . \( -path "./sites" -prune \) -exec chown ${script_user}:${web_group} '{}' \+
-chown ${script_user}:${web_group} ./sites/sites.php
-chown -R ${script_user}:${web_group} ./sites/all
+### Fix ownership only once daily, unless it's Drupal 8 or newer
+if [ -e "${drupal_root}/sites/all/libraries/ownership-fixed-${_TODAY}.pid" ]; then
+  if [ -e "${drupal_root}/core/themes/olivero" ] \
+    || [ ! -e "${drupal_root}/core/themes/classy" ]; then
+    _drupal_eight_nine_ten=TRUE
+  else
+    exit 0
+  fi
+fi
+
+cd ${drupal_root}
+
+printf "Setting ownership of "${drupal_root}" to: user => "${script_user}" group => "users"\n"
+chown ${script_user}:users ${drupal_root}
+
+### Make sure that expected sites/all sub-directories exist
+mkdir -p ${drupal_root}/sites/all/{modules,themes,libraries,drush}
+
+### Create ctrl pid
+rm -f ${drupal_root}/sites/all/libraries/ownership-fixed*.pid
+touch ${drupal_root}/sites/all/libraries/ownership-fixed-${_TODAY}.pid
+
+### BOA specific path and logic for limited user own codebases
+if [[ "${drupal_root}" =~ "/static/" ]] && [ -e "${drupal_root}/core" ]; then
+  rm -f ${drupal_root}/sites/development.services.yml
+fi
+
+if [ -e "${drupal_root}/vendor" ]; then
+  chown -R ${script_user}:users ${drupal_root}/vendor
+elif [ -e "${drupal_root}/../vendor" ]; then
+  chown -R ${script_user}:users ${drupal_root}/../vendor
+fi
+
+chown -R ${script_user}:users \
+  ${drupal_root}/sites/all/{modules,themes,libraries,drush}
+
+chown -R ${script_user}:users \
+  ${drupal_root}/{modules,themes,libraries,includes,misc,profiles,core}
+
+chown ${script_user}:users \
+  ${drupal_root}/sites/all/drush/drushrc.php \
+  ${drupal_root}/sites \
+  ${drupal_root}/sites/* \
+  ${drupal_root}/sites/sites.php \
+  ${drupal_root}/sites/all
+
+### known exceptions
+chown -R ${script_user}:www-data \
+  ${drupal_root}/sites/all/libraries/tcpdf/cache &> /dev/null
 
 echo "Done setting proper ownership of platform files and directories."
