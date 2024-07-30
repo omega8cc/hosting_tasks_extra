@@ -23,7 +23,7 @@ function drush_zz_fix_permissions_post_provision_verify() {
       $line_status = 'warning';
     }
     else { // Only log the last line as success.
-      $line_status = $index+1 == count($result) ? 'success' : 'notice';
+      $line_status = $index + 1 == count($result) ? 'success' : 'notice';
     }
     drush_log($line, $line_status);
   }

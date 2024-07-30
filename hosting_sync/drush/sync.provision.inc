@@ -5,7 +5,7 @@
  */
 function _drush_provision_sync_validate_alias($alias) {
   // We can't use drush_sitealias_load_record() because it will overwrite values loaded from the
-  // current site's drushrc.php with values from the $alias drushrc.php, and provision will 
+  // current site's drushrc.php with values from the $alias drushrc.php, and provision will
   // overwrite the current site's drushrc.php with the new values. Effectively, this causes the
   // database credentials on the destination site to get overwritten with the credentials from
   // the source site. That is no good!
@@ -16,7 +16,7 @@ function _drush_provision_sync_validate_alias($alias) {
   if (DRUSH_VERSION >= 6) {
     $result = drush_invoke_process('@none', 'site-alias', array($alias), array('format' => 'json'), FALSE);
     drush_log($result['output'], 'debug');
-    $result_arr = json_decode($result['output'], $assoc = TRUE );
+    $result_arr = json_decode($result['output'], $assoc = TRUE);
 
     if ($result['error_status'] === DRUSH_SUCCESS && !empty($result_arr[trim($alias, '@')]['uri'])) {
       return TRUE;
@@ -174,7 +174,7 @@ function drush_provision_sync($source = NULL, $destination = NULL) {
       'yes' => TRUE,
       'delete' => TRUE,
       'include-vcs' => TRUE,
-       'exclude-sites' => TRUE,
+      'exclude-sites' => TRUE,
     );
     $global_extra_options = drush_get_option('global_sync_options', array());
     $options = array_merge($default_options, $global_extra_options);

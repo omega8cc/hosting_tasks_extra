@@ -27,11 +27,11 @@ function hosting_http_basic_auth_form_alter(&$form, $form_state, $form_id) {
       '#default_value' => isset($form['#node']->http_basic_auth_password) ? $form['#node']->http_basic_auth_password : '',
       '#weight' => 1,
     );
-    
+
     // If there's already a platform (ie on the site edit page), or a platform was chosen but we are still on the form (ie  load $web_server from that.
     // @TODO: We could use Drupal Ajax to actually load the IP Whitelist field depending ont he platform.
     if (!empty($form['#node']->platform) || !empty($form_state['values']['platform'])) {
-      $platform_nid = !empty($form_state['values']['platform'])? $form_state['values']['platform']: $form['#node']->platform;
+      $platform_nid = !empty($form_state['values']['platform']) ? $form_state['values']['platform'] : $form['#node']->platform;
       $platform = node_load($platform_nid);
       $web_server = node_load($platform->web_server);
     }
@@ -119,11 +119,11 @@ function hosting_http_basic_auth_node_update($node) {
     $original = $node->original;
     // Compare old values with new.
     // If we had old values and the new are empty - we are deleting the auth.
-    if(!empty($original->http_basic_auth_username) && empty($node->http_basic_auth_username)){
+    if (!empty($original->http_basic_auth_username) && empty($node->http_basic_auth_username)) {
       hosting_http_basic_auth_delete($node);
     }
     // If the new values aren't empty, we will update accordingly.
-    elseif(!empty($node->http_basic_auth_username)){
+    elseif (!empty($node->http_basic_auth_username)) {
       hosting_http_basic_auth_update($node);
     }
   }

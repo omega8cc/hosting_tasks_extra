@@ -30,7 +30,8 @@ function http_basic_auth_provision_register_autoload() {
  * Expose the service type this extension defines to provision.
  *
  * @return
- *   An array with the service type the key, and the default implementation the value.
+ *   An array with the service type the key, and the default implementation the
+ *   value.
  */
 function http_basic_auth_provision_services() {
   http_basic_auth_provision_register_autoload();

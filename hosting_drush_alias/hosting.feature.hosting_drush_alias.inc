@@ -13,7 +13,7 @@ function hosting_drush_alias_hosting_feature() {
     'description' => t("Adds a tab to show a copy-paste able drush alias for local development."),
     'status' => HOSTING_FEATURE_DISABLED,
     'module' => 'hosting_drush_alias',
-    'group' => 'experimental'
+    'group' => 'experimental',
   );
   return $features;
 }

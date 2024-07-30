@@ -218,6 +218,7 @@ function hosting_task_update_translations_form_validate($form, &$form_state) {
 
 /**
  * Form for the Features Update task.
+ *
  * @return mixed
  */
 function hosting_task_features_update_all_form($node) {
@@ -245,6 +246,7 @@ function hosting_task_features_update_all_form_validate($form, &$form_state) {
 
 /**
  * Form for the Features Revert task.
+ *
  * @return mixed
  */
 function hosting_task_features_revert_all_form($node) {
@@ -272,8 +274,7 @@ function hosting_task_features_revert_all_form_validate($form, &$form_state) {
 /**
  * Implements hook_form_alter().
  */
-function hosting_tasks_extra_form_alter(&$form, &$form_state, $form_id)
-{
+function hosting_tasks_extra_form_alter(&$form, &$form_state, $form_id) {
   // Hosting Task Forms
   if ($form_id == 'hosting_task_confirm_form') {
     switch ($form['task']['#value']) {

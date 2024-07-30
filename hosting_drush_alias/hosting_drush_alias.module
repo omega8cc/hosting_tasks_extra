@@ -19,7 +19,7 @@ function hosting_drush_alias_menu() {
       'title' => 'Alias',
       'type' => MENU_LOCAL_TASK,
       'weight' => 3,
-    )
+    ),
   );
 }
 
@@ -28,11 +28,9 @@ function hosting_drush_alias_access($node) {
 }
 
 function hosting_drush_alias_page($site) {
-  global $user;
   global $base_url;
 
   $platform = node_load($site->platform);
-  $web_server = node_load($platform->web_server);
   $url = parse_url($base_url);
 
   $result = array();
@@ -42,18 +40,15 @@ function hosting_drush_alias_page($site) {
   $result['remote-host'] = $url['host'];
   $result['remote-user'] = 'aegir';
 
-  // Optional use the logged in hostmaster user
-  //$result['remote-user'] = $user->name;
-
   $return = '&lt;?php' . PHP_EOL . PHP_EOL;
 
-  $return .= '$aliases["' . $site->hosting_name . '"] = ' . var_export( $result, TRUE) . ';' . PHP_EOL;
+  $return .= '$aliases["' . $site->hosting_name . '"] = ' . var_export($result, TRUE) . ';' . PHP_EOL;
 
   $filename = '~/.drush/' . $site->hosting_name . '.alias.drushrc.php';
-  $instruction = "Save to <code>$filename</code>" ;
+  $instruction = "Save to <code>$filename</code>";
 
   return $instruction . '<pre><code>'
-       .  $return . PHP_EOL
-       . '</code></pre>';
+    . $return . PHP_EOL
+    . '</code></pre>';
 }
 
