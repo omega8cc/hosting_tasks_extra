@@ -62,8 +62,9 @@ function hosting_sync_hosting_task_menu_access($node, $task) {
 /**
  * Helper to get the list of sites.
  *
- * Similar to hosting_get_sites_by_status() but it calls db_rewrite_sql() so that the
- * node access rules are applied (adding support for the 'hosting_client' module).
+ * Similar to hosting_get_sites_by_status() but it calls db_rewrite_sql() so
+ * that the node access rules are applied (adding support for the
+ * 'hosting_client' module).
  */
 function _hosting_sync_get_sites($platform = NULL, $profile = NULL, $exclude_nid = NULL, $client = NULL, $status = HOSTING_SITE_ENABLED) {
   $sql = "SELECT n.nid FROM {node} n LEFT JOIN {hosting_site} s ON n.vid = s.vid WHERE n.type = 'site' AND s.status = :status";

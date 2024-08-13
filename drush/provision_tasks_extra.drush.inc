@@ -173,7 +173,7 @@ function drush_provision_tasks_extra_provision_update() {
   drush_errors_on();
   $options = d()->options;
   if (isset($options['entity_updates']) && $options['entity_updates'] && drush_drupal_major_version(d()->root) >= 8) {
-    provision_backend_invoke(d()->name, 'updatedb',  array('--entity-updates'));
+    provision_backend_invoke(d()->name, 'updatedb', array('--entity-updates'));
     drush_log(dt('Drush updatedb task completed with --entity-updates'));
   }
   else {
@@ -223,7 +223,7 @@ function drush_provision_tasks_extra_provision_update_pre_validate() {
   $backup_file = drush_provision_drupal_provision_backup_suggest_filename();
   drush_set_option('pre_update_backup_file', $backup_file);
 
-  drush_set_option('force', true);
+  drush_set_option('force', TRUE);
   $success = drush_invoke_process('@self', 'provision-backup', array($backup_file));
   if (!$success) {
     // If the backup failed, we don't want to try restoring it in the rollback.
@@ -238,7 +238,7 @@ function drush_provision_tasks_extra_provision_update_rollback() {
   $restore_file = drush_get_option('pre_update_backup_file', FALSE);
 
   if ($restore_file) {
-    drush_set_option('force', true);
+    drush_set_option('force', TRUE);
     drush_invoke_process('@self', 'provision-restore', array($restore_file));
     drush_unset_option('force');
   }
@@ -302,7 +302,7 @@ function drush_provision_tasks_extra_provision_features_revert_all() {
   // If features were specified...
   if (!empty($features)) {
     provision_process("drush {$drush_alias} features-revert {$features} {$options}", NULL, dt('Revert Features: !feature', [
-      '!feature' => $features
+      '!feature' => $features,
     ]));
   }
   else {
@@ -325,7 +325,7 @@ function drush_provision_tasks_extra_provision_features_update_all() {
     // If features were specified...
     if (!empty($features)) {
       provision_process("drush {$drush_alias} features-update {$features} -y", NULL, dt('Update Features: !feature', [
-        '!feature' => $features
+        '!feature' => $features,
       ]));
     }
     else {

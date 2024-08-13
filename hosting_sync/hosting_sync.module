@@ -49,7 +49,8 @@ function hosting_sync_permission() {
 }
 
 /**
- * Compare package schema versions between the current and target platform in temp tables
+ * Compare package schema versions between the current and target platform in
+ * temp tables
  */
 function hosting_sync_comparison($current, $target) {
 
@@ -68,7 +69,7 @@ function hosting_sync_comparison($current, $target) {
     if (isset($obj->current_schema) && ((int) $obj->target_schema > 0) && ((int) $obj->current_schema > (int) $obj->target_schema)) {
       $obj->status = 'downgrade';
     }
-    elseif ( ($obj->current_version_code > $obj->target_version_code)
+    elseif (($obj->current_version_code > $obj->target_version_code)
       || is_null($obj->target_version_code)) {
       $obj->status = 'missing';
     }
@@ -84,7 +85,7 @@ function hosting_sync_comparison($current, $target) {
   return theme("hosting_sync_comparison", array('packages' => $packages));
 }
 
-function _hosting_sync_version_display($version, $schema = null, $status = null) {
+function _hosting_sync_version_display($version, $schema = NULL, $status = NULL) {
   $status = (!is_null($status)) ? $status : 'same';
   if (is_null($version)) {
     $display = 'missing';
