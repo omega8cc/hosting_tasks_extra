@@ -83,6 +83,34 @@ elif [ -e "${drupal_root}/../vendor" ]; then
   find ${drupal_root}/../vendor -type f -exec chmod 0664 {} \;
 fi
 
+if [ -e "${drupal_root}/vendor/bin/drush" ]; then
+  mv -f ${drupal_root}/vendor/bin/drush ${drupal_root}/vendor/bin/.off-drush
+elif [ -e "${drupal_root}/../vendor/bin/drush" ]; then
+  mv -f ${drupal_root}/../vendor/bin/drush ${drupal_root}/../vendor/bin/.off-drush
+fi
+
+if [ -e "${drupal_root}/vendor/drush/drush/drush" ]; then
+  mv -f ${drupal_root}/vendor/drush/drush/drush ${drupal_root}/vendor/drush/drush/.off-drush
+elif [ -e "${drupal_root}/../vendor/drush/drush/drush" ]; then
+  mv -f ${drupal_root}/../vendor/drush/drush/drush ${drupal_root}/../vendor/drush/drush/.off-drush
+fi
+
+if [ -e "${drupal_root}/vendor/drush/drush/drush.php" ]; then
+  chmod 0775 ${drupal_root}/vendor/drush/drush/drush.php
+elif [ -e "${drupal_root}/../vendor/drush/drush/drush.php" ]; then
+  chmod 0775 ${drupal_root}/../vendor/drush/drush/drush.php
+fi
+
+[ -d "${drupal_root}" ] && chmod 02775 ${drupal_root}
+
+if [ -d "${drupal_root}/web" ]; then
+  chmod 02775 ${drupal_root}/web
+elif [ -d "${drupal_root}/docroot" ]; then
+  chmod 02775 ${drupal_root}/docroot
+elif [ -d "${drupal_root}/html" ]; then
+  chmod 02775 ${drupal_root}/html
+fi
+
 printf "Setting permissions of all codebase directories inside "${drupal_root}/sites/all"...\n"
 find ${drupal_root}/sites/all/{modules,themes,libraries} -type d -exec chmod 02775 {} \;
 
@@ -104,14 +132,16 @@ if [ -e "${drupal_root}/core" ]; then
     printf "Locking Drush and Symfony Console Input in "${drupal_root}/vendor"...\n"
     chmod 0400 ${drupal_root}/vendor/drush
     chmod 0400 ${drupal_root}/vendor/symfony/console/Input
+    chmod 0400 ${drupal_root}/vendor/symfony/console/Style
   elif [ -e "${drupal_root}/../vendor" ]; then
     printf "Locking Drush and Symfony Console Input in "${drupal_root}/../vendor"...\n"
     chmod 0400 ${drupal_root}/../vendor/drush
     chmod 0400 ${drupal_root}/../vendor/symfony/console/Input
+    chmod 0400 ${drupal_root}/../vendor/symfony/console/Style
   fi
 fi
 
-### known exceptions
+### Known exceptions
 chmod -R 775 ${drupal_root}/sites/all/libraries/tcpdf/cache &> /dev/null
 chmod 0644 ${drupal_root}/.htaccess
 
