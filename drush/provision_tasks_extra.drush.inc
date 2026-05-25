@@ -75,8 +75,16 @@ function provision_tasks_extra_drush_command() {
  */
 function drush_provision_tasks_extra_provision_site_health_check() {
   drush_errors_on();
-  $sitename = d()->name;
-  $dnameten = preg_replace('/\.(?![^.]*$)/', '-', d()->name);
+  // SECURITY: d()->name (Drush alias name) flows from the Hostmaster site
+  // node title, which is not validated against shell-unsafe characters at
+  // the UI layer. These two values are interpolated into drush_shell_exec()
+  // calls below, so escape them at the definition site. They are not used
+  // anywhere else in this function. See DECISIONS.md Decision 002.
+  // (string) casts guard against PHP 8.1+ null-to-escapeshellarg
+  // deprecation in the unlikely event preg_replace() returns null on
+  // a regex compilation edge case.
+  $sitename = escapeshellarg((string) d()->name);
+  $dnameten = escapeshellarg((string) preg_replace('/\.(?![^.]*$)/', '-', d()->name));
   $dmv = DRUSH_MAJOR_VERSION;
   drush_log(dt("This is Drush major version: %dmv", array('%dmv' => $dmv)), 'notice');
 
