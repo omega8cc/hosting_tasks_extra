@@ -21,5 +21,5 @@ This is useful for automated installation such as in the [Dockerfiles](https://g
 
 To use the standalone install script:
 
-       wget http://cgit.drupalcode.org/hosting_tasks_extra/plain/fix_permissions/scripts/standalone-install-fix-permissions-ownership.sh
+       wget https://raw.githubusercontent.com/omega8cc/hosting_tasks_extra/refs/heads/5.x-dev/fix_permissions/scripts/standalone-install-fix-permissions-ownership.sh
        sudo bash standalone-install-fix-permissions-ownership.sh
