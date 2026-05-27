@@ -149,6 +149,24 @@ function hosting_http_basic_auth_node_validate($node) {
     if (!empty($node->http_basic_auth_whitelist) && !preg_match('/^[0-9a-z \/\.:]+$/i', $node->http_basic_auth_whitelist)) {
       form_set_error('http_basic_auth_whitelist', t('The IP whitelist field contains illegal characters.'));
     }
+    // SECURITY: These three fields are interpolated into Drush subprocess
+    // commands and into Nginx config templates that pass values to shells.
+    // Reject the unsafe character set defined in DECISIONS Decision 002
+    // of the aegir-shell-injection-audit project. The backend
+    // (Provision drush_shell_exec()) now also escapes these values
+    // defensively; this UI check prevents bad data from being persisted
+    // at all and gives the user immediate feedback. The list below
+    // includes NUL/LF/CR control bytes (newline injection breaks command
+    // boundaries) plus the standard shell metacharacter set.
+    $unsafe = '/[\x00\x0A\x0D<>|&*?;!()\'"\\\\`${}]/';
+    foreach (array('http_basic_auth_username', 'http_basic_auth_password', 'http_basic_auth_message') as $field) {
+      if (!empty($node->$field) && preg_match($unsafe, $node->$field)) {
+        form_set_error($field, t(
+          '@field contains characters that are not allowed for security reasons: &lt; &gt; | &amp; * ? ; ! ( ) \' " \\ ` $ { }',
+          array('@field' => $field)
+        ));
+      }
+    }
   }
 }
 

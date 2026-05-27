@@ -9,12 +9,12 @@
 #
 # Usage:
 #
-#    wget https://raw.githubusercontent.com/drupalprojects/hosting_tasks_extra/7.x-3.x/fix_permissions/scripts/standalone-install-fix-permissions-ownership.sh
+#    wget https://raw.githubusercontent.com/omega8cc/hosting_tasks_extra/refs/heads/5.x-dev/fix_permissions/scripts/standalone-install-fix-permissions-ownership.sh
 #    sudo bash standalone-install-fix-permissions-ownership.sh
 #
 ##
 
-HOSTING_TASKS_EXTRA_VERSION=7.x-3.111
+HOSTING_TASKS_EXTRA_VERSION="refs/heads/5.x-dev"
 SUDOERS_D_PATH=/etc/sudoers.d
 SCRIPTS_DESTINATION=/usr/local/bin
 
@@ -32,7 +32,7 @@ for TYPE in ${TYPES[@]}; do
     SCRIPTS=(fix-drupal-platform-${TYPE} fix-drupal-site-${TYPE})
     for SCRIPT in ${SCRIPTS[@]}; do
       echo "Installing $SCRIPT to ${SCRIPTS_DESTINATION}/${SCRIPT}.sh..."
-      wget https://raw.githubusercontent.com/drupalprojects/hosting_tasks_extra/${HOSTING_TASKS_EXTRA_VERSION}/fix_${TYPE}/scripts/${SCRIPT}.sh -O - -q > ${SCRIPTS_DESTINATION}/${SCRIPT}.sh
+      wget https://raw.githubusercontent.com/omega8cc/hosting_tasks_extra/${HOSTING_TASKS_EXTRA_VERSION}/fix_${TYPE}/scripts/${SCRIPT}.sh -O - -q > ${SCRIPTS_DESTINATION}/${SCRIPT}.sh
       chown root:root ${SCRIPTS_DESTINATION}/${SCRIPT}.sh
       chmod u+x ${SCRIPTS_DESTINATION}/${SCRIPT}.sh
 
