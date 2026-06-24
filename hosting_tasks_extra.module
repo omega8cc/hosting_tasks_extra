@@ -14,7 +14,7 @@ function hosting_tasks_extra_hosting_tasks() {
 
   $tasks['site']['rebuild_registry'] = array(
     'title' => t('Rebuild registry'),
-    'description' => t('Rebuilds the registry and flushes all caches on this site. On Drupal 7 it will recreate registry tables from scratch. This may cause a short load peak on any busy site, so please run it only if you have a good reason to rebuild registry.'),
+    'description' => t('Rebuilds the registry (Drupal 6/7) or the service container (Drupal 8+) and flushes all caches on this site. On Drupal 7 it recreates the registry tables from scratch; on Drupal 8+ it rebuilds the compiled service container and flushes every cache (drush cr). This may cause a short load peak on any busy site, so please run it only if you have a good reason to rebuild.'),
     'dialog' => TRUE,
   );
 
