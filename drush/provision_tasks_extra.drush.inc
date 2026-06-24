@@ -160,7 +160,15 @@ function drush_provision_tasks_extra_provision_flush_cache() {
     provision_backend_invoke(d()->name, 'cache-clear all');
     provision_backend_invoke(d()->name, 'cache-clear all');
   }
+  elseif (drush_drupal_major_version(d()->root) >= 10 && function_exists('_provision_drupal_rebuild_d8plus')) {
+    // D10/D11 cannot be bootstrapped by Aegir's own Drush 8, so the
+    // 'cache-rebuild' invoke below silently no-ops there. Use the shared
+    // provision helper, which runs 'cr' via the site-local Drush. Non-fatal.
+    _provision_drupal_rebuild_d8plus();
+  }
   else {
+    // D8/D9 (and any environment without the helper): Aegir Drush 8 still
+    // bootstraps these, so the double cache-rebuild works as before.
     provision_backend_invoke(d()->name, 'cache-rebuild');
     provision_backend_invoke(d()->name, 'cache-rebuild');
   }
@@ -181,7 +189,16 @@ function drush_provision_tasks_extra_provision_rebuild_registry() {
       provision_backend_invoke(d()->name, 'registry-rebuild');
       drush_log(dt('Registry rebuilt w/o --fire-bazooka plus all caches cleared'));
     }
+    elseif (function_exists('_provision_drupal_rebuild_d8plus')) {
+      // D8+ has no registry; the equivalent is rebuilding the service container
+      // and flushing all caches (drush cr). The shared provision helper runs it
+      // via the site-local Drush on D10+ (where Aegir Drush 8 cannot bootstrap
+      // the site) and via Aegir Drush 8 'cache-rebuild' on D8/D9. Non-fatal.
+      _provision_drupal_rebuild_d8plus();
+      drush_log(dt('D8+ service container and all caches rebuilt'));
+    }
     else {
+      // Older provision without the helper: nothing safe to do on D8+.
       drush_log(dt('INFO ###---### Registry Rebuild is not supported ###---### INFO'), 'warning');
     }
   }
