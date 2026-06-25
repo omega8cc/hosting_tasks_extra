@@ -14,8 +14,13 @@ function hosting_tasks_extra_hosting_tasks() {
 
   $tasks['site']['rebuild_registry'] = array(
     'title' => t('Rebuild registry'),
-    'description' => t('Rebuilds the registry (Drupal 6/7) or the service container (Drupal 8+) and flushes all caches on this site. On Drupal 7 it recreates the registry tables from scratch; on Drupal 8+ it rebuilds the compiled service container and flushes every cache (drush cr). This may cause a short load peak on any busy site, so please run it only if you have a good reason to rebuild.'),
+    'description' => t('Rebuilds the registry and flushes all caches on this site. On Drupal 7 it recreates the registry tables from scratch. This may cause a short load peak on any busy site, so please run it only if you have a good reason to rebuild registry.'),
     'dialog' => TRUE,
+    // The registry is a Drupal 6/7 concept. On Drupal 8+ there is no registry,
+    // and "Flush all caches" already performs the equivalent service-container
+    // + cache rebuild (drush cr), so hide this legacy task on D8+ platforms to
+    // avoid a duplicate. See hosting_tasks_extra_rebuild_registry_access().
+    'access callback' => 'hosting_tasks_extra_rebuild_registry_access',
   );
 
 /*
@@ -86,6 +91,30 @@ function hosting_site_flush_cache_action($node) {
  */
 function hosting_site_rebuild_registry_action($node) {
   hosting_add_task($node->nid, 'rebuild_registry');
+}
+
+/**
+ * Access callback for the 'rebuild_registry' task.
+ *
+ * The registry is a Drupal 6/7 concept. On Drupal 8+ there is no registry, and
+ * the "Flush all caches" task already performs the equivalent service-container
+ * + cache rebuild (drush cr), so this legacy task is hidden on D8+ platforms to
+ * avoid presenting two buttons that do the same thing. D6/7 keep the standard
+ * task access. The provision-rebuild_registry command itself still works on D8+
+ * if invoked directly (CLI/automation); only the front-end button is hidden.
+ *
+ * Parses the platform's full release version (e.g. "11.1.10" -> 11), not its
+ * first character, which would misread D10/D11 as "1".
+ */
+function hosting_tasks_extra_rebuild_registry_access($node, $task) {
+  if (isset($node->type) && $node->type == 'site' && !empty($node->platform)) {
+    $platform = node_load($node->platform);
+    if (!empty($platform->release->version) && (int) $platform->release->version >= 8) {
+      return FALSE;
+    }
+  }
+  // Not a D8+ site (or version unreadable): fall back to the standard gate.
+  return hosting_task_menu_access($node, $task);
 }
 
 /**
