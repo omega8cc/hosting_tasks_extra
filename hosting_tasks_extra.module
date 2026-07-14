@@ -18,6 +18,13 @@ function hosting_tasks_extra_hosting_tasks() {
     'dialog' => TRUE,
   );
 
+  $tasks['site']['utf8mb4_convert'] = array(
+    'title' => t('Convert database to utf8mb4'),
+    'description' => t('Converts this Drupal 7 site database from 3-byte utf8 to utf8mb4 (full Unicode). Made for sites imported from older servers; databases created on this server are utf8mb4 already, and for them this task simply reports that there is nothing to convert. A fresh backup is taken first and the site stays in maintenance mode while its tables are converted. The safe workflow is to clone the site, convert the clone, inspect it, and only then convert the original.'),
+    'dialog' => TRUE,
+    'access callback' => 'hosting_tasks_extra_utf8mb4_convert_task_access',
+  );
+
 /*
   Removed to close potential attack vector.
     $tasks['site']['run_cron'] = array(
@@ -71,12 +78,46 @@ function hosting_tasks_extra_hosting_tasks() {
 }
 
 /**
+ * Access callback for the utf8mb4_convert task.
+ *
+ * The converter rides the utf8mb4_convert Drush extension, which needs a
+ * full Drupal bootstrap and D7's global $databases — Backdrop can never
+ * run it, so the task is hidden on Backdrop platforms. Core versions other
+ * than Drupal 7 are left to the backend, which fail-closes; the frontend
+ * stays version-agnostic because platform packages may be missing or stale.
+ */
+function hosting_tasks_extra_utf8mb4_convert_task_access($node, $task) {
+  if (!hosting_task_menu_access($node, $task)) {
+    return FALSE;
+  }
+  if (!isset($node->site_status) || $node->site_status != HOSTING_SITE_ENABLED) {
+    return FALSE;
+  }
+  // Guarded so this module keeps working where hosting_backdrop is absent
+  // (without it no Backdrop platform can exist in this frontend anyway).
+  if (isset($node->platform) && function_exists('hosting_backdrop_platform_is_backdrop')
+    && hosting_backdrop_platform_is_backdrop($node->platform)) {
+    return FALSE;
+  }
+  return TRUE;
+}
+
+/**
  * Callback for site action.
  *
  * @see: hosting_task_action_info().
  */
 function hosting_site_flush_cache_action($node) {
   hosting_add_task($node->nid, 'flush_cache');
+}
+
+/**
+ * Callback for site action.
+ *
+ * @see: hosting_task_action_info().
+ */
+function hosting_site_utf8mb4_convert_action($node) {
+  hosting_add_task($node->nid, 'utf8mb4_convert');
 }
 
 /**
@@ -144,6 +185,10 @@ function hosting_tasks_extra_permission() {
     'create flush_cache task' => array(
       'title' => t('create flush_cache task'),
     ),
+    'create utf8mb4_convert task' => array(
+      'title' => t('create utf8mb4_convert task'),
+      'description' => t('Convert a Drupal 7 site database from 3-byte utf8 to utf8mb4.'),
+    ),
     'create run_cron task' => array(
       'title' => t('create run_cron task'),
     ),
@@ -167,6 +212,18 @@ function hosting_tasks_extra_permission() {
       'title' => t('create site_health_check task'),
     ),
   );
+}
+
+/**
+ * Implements hosting_task_TASK_TYPE_form().
+ */
+function hosting_task_utf8mb4_convert_form($node) {
+  $form['conversion_report'] = array(
+    '#type' => 'item',
+    '#title' => t('What this task does'),
+    '#markup' => t('A fresh backup of %site is taken first. The site is then put into maintenance mode while every utf8 table and text column is converted to utf8mb4 (collation utf8mb4_unicode_ci), and brought back online once the result is verified. Nothing is changed when the database is already fully utf8mb4. On a large database the conversion can take several minutes. The safe workflow: clone this site, run the conversion on the clone, inspect it, then convert this site — or keep the converted clone.', array('%site' => $node->title)),
+  );
+  return $form;
 }
 
 /**
