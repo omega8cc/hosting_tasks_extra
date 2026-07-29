@@ -19,7 +19,7 @@ function hosting_tasks_extra_hosting_tasks() {
   );
 
   $tasks['site']['utf8mb4_convert'] = array(
-    'title' => t('Convert database to utf8mb4'),
+    'title' => t('Convert to utf8mb4'),
     'description' => t('Converts this Drupal 7 site database from 3-byte utf8 to utf8mb4 (full Unicode). Made for sites imported from older servers; databases created on this server are utf8mb4 already, and for them this task simply reports that there is nothing to convert. A fresh backup is taken first and the site stays in maintenance mode while its tables are converted. The safe workflow is to clone the site, convert the clone, inspect it, and only then convert the original.'),
     'dialog' => TRUE,
     'access callback' => 'hosting_tasks_extra_utf8mb4_convert_task_access',
