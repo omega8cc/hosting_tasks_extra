@@ -236,11 +236,36 @@ function _migrate_source_target_hosts($user) {
 
 /**
  * The front end's own database name, or '' if it cannot be determined.
+ *
+ * The hostmaster alias carries site_path but NOT db_name (verified on a live
+ * box), so the name is read out of the front end's own drushrc.php. That file
+ * is never included -- it runs code -- only regex-scanned, the way provision
+ * reads a sibling site's settings elsewhere.
+ *
+ * Reaching it at all requires the hostmaster alias, which is owner-read-only to
+ * the account user that runs Aegir tasks, so this resolves for the legitimate
+ * runner and returns '' for anyone else. An empty return is NOT fatal: on a
+ * real box the front end's database user holds global privileges, so invariant
+ * (b) refuses it independently of this check. Verified on ng019 2026-08-19 --
+ * the front-end user carries GRANT ... ON *.* WITH GRANT OPTION.
  */
 function _migrate_source_frontend_db() {
   $hostmaster = d('@hostmaster', FALSE, FALSE);
-  if (!empty($hostmaster) && !empty($hostmaster->db_name)) {
-    return $hostmaster->db_name;
+  if (empty($hostmaster) || empty($hostmaster->site_path)) {
+    return '';
+  }
+  $drushrc = $hostmaster->site_path . '/drushrc.php';
+  if (!is_readable($drushrc)) {
+    return '';
+  }
+  $contents = @file_get_contents($drushrc);
+  if ($contents === FALSE || $contents === '') {
+    return '';
+  }
+  $matches = array();
+  // Anchored at line start so a commented copy cannot shadow the assignment.
+  if (preg_match('/^\$options\[\'db_name\'\]\s*=\s*\'([A-Za-z0-9_]+)\'/m', $contents, $matches) === 1) {
+    return $matches[1];
   }
   return '';
 }
@@ -252,7 +277,9 @@ function _migrate_source_frontend_db() {
  *   TRUE only when all three hold. Anything unknown is a refusal.
  */
 function _migrate_source_source_is_grantable($db) {
-  // (c) never the front end.
+  // (c) never the front end. Note this is not the only thing standing between a
+  // tenant and the front-end database: its user holds global privileges, so (b)
+  // refuses it too. Both are kept because neither resolves in every situation.
   $frontend_db = _migrate_source_frontend_db();
   if ($frontend_db !== '' && $frontend_db === $db) {
     drush_log(dt('Migration source: refusing the Aegir front-end database as a source.'), 'error');
