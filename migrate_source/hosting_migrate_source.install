@@ -1,0 +1,77 @@
+<?php
+
+/**
+ * @file
+ * Install and update functions for the hosting_migrate_source module.
+ */
+
+/**
+ * Implements hook_schema().
+ *
+ * Keyed on vid because hosting_site is revisioned: a new revision must carry
+ * its own row or hook_node_load() (which reads the current vid) returns nothing.
+ */
+function hosting_migrate_source_schema() {
+  $schema['hosting_migrate_source'] = array(
+    'description' => 'Records which site a target site reads as its migration source.',
+    'fields' => array(
+      'vid' => array(
+        'type' => 'int',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+        'default' => 0,
+      ),
+      'nid' => array(
+        'type' => 'int',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+        'default' => 0,
+      ),
+      'source_nid' => array(
+        'description' => 'Node id of the source site, or 0 when the association is cleared.',
+        'type' => 'int',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+        'default' => 0,
+      ),
+    ),
+    'primary key' => array('vid'),
+    'indexes' => array(
+      'nid' => array('nid'),
+      'source_nid' => array('source_nid'),
+    ),
+  );
+
+  return $schema;
+}
+
+/**
+ * Create the hosting_migrate_source table on instances that predate this module.
+ */
+function hosting_migrate_source_update_7300() {
+  if (!db_table_exists('hosting_migrate_source')) {
+    $schema = hosting_migrate_source_schema();
+    db_create_table('hosting_migrate_source', $schema['hosting_migrate_source']);
+  }
+}
+
+/**
+ * Grant the migrate_source task permission on already-installed instances.
+ *
+ * The feature's role_permissions only apply at feature-enable time, so existing
+ * instances need the same grants here. Keep in sync with
+ * hosting_migrate_source_hosting_feature(). 'aegir administrator' is granted
+ * automatically by hosting_add_permissions() and is deliberately absent.
+ */
+function hosting_migrate_source_update_7301() {
+  $map = array(
+    'aegir client' => array('create migrate_source task'),
+    'aegir platform manager' => array('create migrate_source task'),
+  );
+  foreach ($map as $role_name => $perms) {
+    $role = user_role_load_by_name($role_name);
+    if ($role) {
+      user_role_grant_permissions($role->rid, $perms);
+    }
+  }
+}

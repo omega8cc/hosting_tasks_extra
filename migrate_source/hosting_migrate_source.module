@@ -1,0 +1,436 @@
+<?php
+
+/**
+ * @file
+ * Gives a site read-only access to another of the same client's sites'
+ * database, exposed to Drupal's migration tooling as the 'migrate' connection.
+ *
+ * The frontend decides WHICH NODE may be named. It does not, and cannot, decide
+ * which DATABASE that node names -- platforms live in a tenant-writable tree and
+ * site import builds nodes from whatever settings file a platform contains. The
+ * database is bounded backend-side by invariants MySQL can confirm; see
+ * drush/migrate_source.drush.inc.
+ */
+
+/**
+ * Implements hook_permission().
+ */
+function hosting_migrate_source_permission() {
+  return array(
+    'create migrate_source task' => array(
+      'title' => t('create migrate_source task'),
+      'description' => t('Give a site read-only access to another of the same client\'s sites\' database.'),
+    ),
+  );
+}
+
+/**
+ * Implements hook_hosting_tasks().
+ *
+ * 'command' and 'provision_save' are load-bearing. Without a command the task
+ * would dispatch provision-migrate_source, which does not exist. Without
+ * provision_save, hook_hosting_site_context_options() never fires and nothing
+ * reaches the backend. Riding provision-verify saves the context and
+ * regenerates settings.php in one dispatch, and adds no second entry point.
+ */
+function hosting_migrate_source_hosting_tasks() {
+  $tasks = array();
+  $tasks['site']['migrate_source'] = array(
+    'title' => t('Migration source'),
+    'description' => t('Give this site read-only access to another of your sites\' database, so Drupal\'s drush migration tools can read it. Access lasts until you remove it here.'),
+    'command' => 'provision-verify',
+    'provision_save' => TRUE,
+    'dialog' => TRUE,
+    'access callback' => 'hosting_migrate_source_task_access',
+  );
+  return $tasks;
+}
+
+/**
+ * Resolve the Aegir front-end site node id, positively.
+ *
+ * hosting_get_hostmaster_site_nid() reads a variable whose only writer is a
+ * D6->D7 update hook, so it can be NULL -- and a NULL comparison silently passes
+ * every real nid, which would let the front end be selected as a source. Callers
+ * MUST treat an empty return as "cannot proceed", never as "no exclusion needed".
+ *
+ * @return
+ *   The front-end node id, or NULL if it cannot be identified.
+ */
+function hosting_migrate_source_hostmaster_nid() {
+  $nid = hosting_get_hostmaster_site_nid();
+  if (!empty($nid)) {
+    return $nid;
+  }
+  // Fall back to positive identification through the context registry.
+  if (function_exists('hosting_context_load')) {
+    $context = hosting_context_load('hostmaster');
+    if (!empty($context->nid)) {
+      return $context->nid;
+    }
+  }
+  return NULL;
+}
+
+/**
+ * Is this platform the Aegir front end?
+ *
+ * Structural, variable-free second gate: BOA publishes every account's own
+ * front end under <account>/aegir/distro, which is the same marker BOA's own
+ * maintenance scripts key on. Fails CLOSED -- an unresolvable platform is
+ * treated as the front end.
+ */
+function hosting_migrate_source_is_frontend_platform($platform_nid) {
+  if (empty($platform_nid)) {
+    return TRUE;
+  }
+  $platform = node_load($platform_nid);
+  if (empty($platform) || !isset($platform->publish_path) || $platform->publish_path === '') {
+    return TRUE;
+  }
+  return (strpos($platform->publish_path, '/aegir/distro') !== FALSE);
+}
+
+/**
+ * Is the target site running Drupal 8 or newer?
+ *
+ * Enforced because the emitted block lands before BOA's settings chain derives
+ * a Drupal 7 site's fallback hash salt from serialize($databases): wiring a
+ * source into a D7 target would rotate its salt and invalidate every outstanding
+ * one-time login link, and rotate it back on removal. D8+ carries an explicit
+ * literal hash_salt and is immune. Fails CLOSED on an unknown version.
+ */
+function hosting_migrate_source_target_is_d8plus($node) {
+  if (empty($node->platform)) {
+    return FALSE;
+  }
+  $platform = node_load($node->platform);
+  if (empty($platform) || empty($platform->release) || empty($platform->release->version)) {
+    return FALSE;
+  }
+  $major = intval($platform->release->version);
+  return ($major >= 8);
+}
+
+/**
+ * Access callback for the migrate_source task.
+ */
+function hosting_migrate_source_task_access($node, $task) {
+  if (!hosting_task_menu_access($node, $task)) {
+    return FALSE;
+  }
+  // The base gate checks no node access for sites (its platform branch does),
+  // so the TARGET would otherwise be reachable by nid in a multi-client front
+  // end. Check it here.
+  if (!node_access('update', $node)) {
+    return FALSE;
+  }
+  if (!isset($node->site_status) || $node->site_status != HOSTING_SITE_ENABLED) {
+    return FALSE;
+  }
+  // The front end must be identifiable, or we refuse outright.
+  $hostmaster_nid = hosting_migrate_source_hostmaster_nid();
+  if (empty($hostmaster_nid) || $node->nid == $hostmaster_nid) {
+    return FALSE;
+  }
+  if (hosting_migrate_source_is_frontend_platform($node->platform)) {
+    return FALSE;
+  }
+  if (!hosting_migrate_source_target_is_d8plus($node)) {
+    return FALSE;
+  }
+  return TRUE;
+}
+
+/**
+ * Eligible source sites for a target.
+ *
+ * Scoped two independent ways -- node grants AND an explicit client match --
+ * because neither alone is sufficient: the node_access tag honours multi-client
+ * users, and the explicit condition survives a frontend where the client
+ * feature is disabled.
+ *
+ * @return
+ *   Array of nid => title, possibly empty.
+ */
+function hosting_migrate_source_options($node) {
+  $options = array();
+  $hostmaster_nid = hosting_migrate_source_hostmaster_nid();
+  if (empty($hostmaster_nid)) {
+    return $options;
+  }
+
+  $query = db_select('node', 'n');
+  $query->join('hosting_site', 's', 'n.vid = s.vid');
+  $query->fields('n', array('nid', 'title'));
+  $query->addField('s', 'platform', 'platform');
+  $query->condition('n.type', 'site');
+  $query->condition('s.status', HOSTING_SITE_ENABLED);
+  $query->condition('n.nid', $node->nid, '<>');
+  $query->condition('n.nid', $hostmaster_nid, '<>');
+  $query->condition('s.client', $node->client);
+  // A grant cannot span database servers.
+  $query->condition('s.db_server', $node->db_server);
+  $query->addTag('node_access');
+  $query->orderBy('n.title');
+
+  $result = $query->execute();
+  foreach ($result as $row) {
+    if (hosting_migrate_source_is_frontend_platform($row->platform)) {
+      continue;
+    }
+    $options[$row->nid] = $row->title;
+  }
+  return $options;
+}
+
+/**
+ * Structural eligibility of one candidate source.
+ *
+ * Deliberately free of node_access(): this is also the check used when the
+ * association is pushed to the backend, which happens inside a drush task run
+ * with no interactive user. A node_access() call there evaluates against the
+ * anonymous user and would clear every association on its next verify.
+ * Ownership is enforced at the point a human chooses the source; this function
+ * enforces everything that must remain true afterwards.
+ */
+function hosting_migrate_source_source_eligible($node, $source_nid) {
+  if (empty($source_nid) || empty($node->nid) || $source_nid == $node->nid) {
+    return FALSE;
+  }
+  $hostmaster_nid = hosting_migrate_source_hostmaster_nid();
+  if (empty($hostmaster_nid) || $source_nid == $hostmaster_nid) {
+    return FALSE;
+  }
+  $source = node_load($source_nid);
+  if (empty($source) || $source->type != 'site') {
+    return FALSE;
+  }
+  if (!isset($source->site_status) || $source->site_status != HOSTING_SITE_ENABLED) {
+    return FALSE;
+  }
+  if (!isset($source->client) || !isset($node->client) || $source->client != $node->client) {
+    return FALSE;
+  }
+  if (!isset($source->db_server) || !isset($node->db_server) || $source->db_server != $node->db_server) {
+    return FALSE;
+  }
+  if (hosting_migrate_source_is_frontend_platform($source->platform)) {
+    return FALSE;
+  }
+  return TRUE;
+}
+
+/**
+ * Re-check one candidate source for the submit path, ownership included.
+ *
+ * The form is a plain POST, so the option list is a convenience, not a control.
+ */
+function hosting_migrate_source_source_allowed($node, $source_nid) {
+  if (!hosting_migrate_source_source_eligible($node, $source_nid)) {
+    return FALSE;
+  }
+  $source = node_load($source_nid);
+  if (empty($source) || !node_access('view', $source)) {
+    return FALSE;
+  }
+  return TRUE;
+}
+
+/**
+ * Task form: pick a source, or remove the current one.
+ */
+function hosting_task_migrate_source_form($node) {
+  $form = array();
+  $options = hosting_migrate_source_options($node);
+
+  $current = isset($node->migrate_source) ? $node->migrate_source : 0;
+
+  $form['#node'] = $node;
+  $form['source'] = array(
+    '#type' => 'select',
+    '#title' => t('Migration source'),
+    '#options' => array(0 => t('- None: remove access -')) + $options,
+    '#default_value' => $current,
+    '#description' => t('The site whose database this site may read. Only your own enabled sites on the same database server are listed. Access is read-only, covers the whole source database, and lasts until you set this back to None. Disabling the source site does NOT remove the access; only deleting it does.'),
+  );
+
+  if (empty($options)) {
+    $form['source']['#description'] = t('You have no other eligible sites to use as a migration source.');
+  }
+
+  return $form;
+}
+
+/**
+ * Validate handler for the migrate_source task form.
+ */
+function hosting_task_migrate_source_form_validate(&$form, &$form_state) {
+  $node = $form['parameters']['#node'];
+  $source_nid = isset($form_state['values']['parameters']['source']) ? $form_state['values']['parameters']['source'] : 0;
+
+  // Clearing is always allowed.
+  if (empty($source_nid)) {
+    return;
+  }
+
+  // Re-assert the target as well: nothing upstream has checked it.
+  if (!node_access('update', $node)) {
+    form_set_error('source', t('You do not have permission to change this site.'));
+    return;
+  }
+  if (!hosting_migrate_source_source_allowed($node, $source_nid)) {
+    form_set_error('source', t('That site is not available as a migration source.'));
+  }
+}
+
+/**
+ * Implements hook_post_hosting_TASK_TYPE_task().
+ *
+ * The backend has already saved the context and regenerated settings.php by the
+ * time this runs; persist the association so every later verify re-emits it.
+ */
+function hosting_migrate_source_post_hosting_migrate_source_task($task, $data) {
+  if (!isset($task->ref) || $task->ref->type != 'site') {
+    return;
+  }
+  $source_nid = isset($task->task_args['source']) ? intval($task->task_args['source']) : 0;
+  // Structural check only: ownership was enforced when the human chose the
+  // source, and this runs in a drush task with no interactive user.
+  if ($source_nid && !hosting_migrate_source_source_eligible($task->ref, $source_nid)) {
+    $source_nid = 0;
+  }
+  hosting_migrate_source_write($task->ref->vid, $task->ref->nid, $source_nid);
+}
+
+/**
+ * Write (or clear) the association for one revision.
+ */
+function hosting_migrate_source_write($vid, $nid, $source_nid) {
+  db_merge('hosting_migrate_source')
+    ->key(array('vid' => $vid))
+    ->fields(array(
+      'vid' => $vid,
+      'nid' => $nid,
+      'source_nid' => $source_nid,
+    ))
+    ->execute();
+}
+
+/**
+ * Implements hook_node_insert().
+ *
+ * A new revision of an existing site must carry the association forward, but a
+ * CLONE must not: an association to another site is dark-by-design state, and a
+ * clone arriving with one would compose a connection for a brand-new, ungranted
+ * database user. hosting_clone copies only its own allow-list, so a cloned node
+ * simply has no association to carry -- this handler must not invent one.
+ */
+function hosting_migrate_source_node_insert($node) {
+  if ($node->type != 'site') {
+    return;
+  }
+  $source_nid = isset($node->migrate_source) ? intval($node->migrate_source) : 0;
+  if ($source_nid) {
+    hosting_migrate_source_write($node->vid, $node->nid, $source_nid);
+  }
+}
+
+/**
+ * Implements hook_node_update().
+ */
+function hosting_migrate_source_node_update($node) {
+  if ($node->type != 'site') {
+    return;
+  }
+  $source_nid = isset($node->migrate_source) ? intval($node->migrate_source) : 0;
+  // A revision-creating save has no row for the new vid yet; db_merge on vid
+  // covers both the update and the insert-for-new-revision case.
+  hosting_migrate_source_write($node->vid, $node->nid, $source_nid);
+}
+
+/**
+ * Implements hook_node_load().
+ */
+function hosting_migrate_source_node_load($nodes, $types) {
+  if (!in_array('site', $types)) {
+    return;
+  }
+  $vids = array();
+  foreach ($nodes as $node) {
+    if ($node->type == 'site') {
+      $vids[$node->vid] = $node->nid;
+    }
+  }
+  if (empty($vids)) {
+    return;
+  }
+  $result = db_select('hosting_migrate_source', 'm')
+    ->fields('m', array('vid', 'source_nid'))
+    ->condition('m.vid', array_keys($vids), 'IN')
+    ->execute();
+  foreach ($result as $row) {
+    $nid = $vids[$row->vid];
+    $nodes[$nid]->migrate_source = $row->source_nid;
+  }
+}
+
+/**
+ * Implements hook_node_delete().
+ *
+ * Also the teardown trigger for a platform delete, which node_delete()s every
+ * site on it without any task running.
+ */
+function hosting_migrate_source_node_delete($node) {
+  if ($node->type != 'site') {
+    return;
+  }
+  db_delete('hosting_migrate_source')
+    ->condition('nid', $node->nid)
+    ->execute();
+
+  // Anything pointing AT this site loses its source. Collect the targets first
+  // so each can be re-verified, which is what actually revokes the grant --
+  // clearing the row alone would leave the access in place until a sweep.
+  $targets = array();
+  $result = db_select('hosting_migrate_source', 'm')
+    ->fields('m', array('nid'))
+    ->condition('m.source_nid', $node->nid)
+    ->execute();
+  foreach ($result as $row) {
+    $targets[$row->nid] = $row->nid;
+  }
+
+  db_update('hosting_migrate_source')
+    ->fields(array('source_nid' => 0))
+    ->condition('source_nid', $node->nid)
+    ->execute();
+
+  foreach ($targets as $nid) {
+    // Skip a target that is itself going away -- a platform delete removes many
+    // sites at once and a verify against a deleted site is noise, not teardown.
+    $target = node_load($nid);
+    if (empty($target) || $target->type != 'site') {
+      continue;
+    }
+    if (isset($target->site_status) && $target->site_status == HOSTING_SITE_DELETED) {
+      continue;
+    }
+    if (hosting_task_outstanding($nid, 'delete')) {
+      continue;
+    }
+    hosting_add_task($nid, 'verify');
+  }
+}
+
+/**
+ * Implements hook_node_revision_delete().
+ */
+function hosting_migrate_source_node_revision_delete($node) {
+  if ($node->type != 'site') {
+    return;
+  }
+  db_delete('hosting_migrate_source')
+    ->condition('vid', $node->vid)
+    ->execute();
+}
