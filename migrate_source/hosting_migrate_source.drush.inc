@@ -57,6 +57,163 @@ function hosting_migrate_source_hosting_site_context_options(&$task) {
 }
 
 /**
+ * Implements hook_drush_command().
+ */
+function hosting_migrate_source_drush_command() {
+  $items = array();
+  $items['hosting-migrate-source-sweep'] = array(
+    'description' => 'Reconcile migration-source grants against what this Aegir instance actually intends.',
+    'callback' => 'hosting_migrate_source_sweep',
+    'options' => array(
+      'dry-run' => 'Report what would change without changing anything.',
+      'max-revokes' => 'Refuse to revoke more than this many grants in one pass (default 25). A guard against acting on corrupt or empty intent.',
+      'force' => 'Ignore the max-revokes guard.',
+    ),
+    'bootstrap' => DRUSH_BOOTSTRAP_DRUPAL_FULL,
+    'aliases' => array('hosting-mss'),
+  );
+  return $items;
+}
+
+/**
+ * Reconcile grants with intent.
+ *
+ * WHY THIS EXISTS. The verify path converges a site whenever it runs, but four
+ * things it cannot see leave grants behind:
+ *   - a deleted source's database is dropped while the grant survives, and
+ *     database names are global and derived from a 16-character truncation of
+ *     the URI, so the name can later be taken by a site in ANOTHER account;
+ *   - deleting a site revokes only its own database and skips DROP USER when
+ *     any other grant remains, so the user outlives the site still holding one;
+ *   - restore and deploy rotate the site's database user, orphaning the grant
+ *     the superseded user held;
+ *   - a crash between issuing a grant and recording it leaves a grant no
+ *     intent-driven pass can find.
+ *
+ * WHAT BOUNDS IT. This runs with the account user's connection, which holds
+ * ALL ON *.* WITH GRANT OPTION -- it could revoke anything on the box. So it
+ * never enumerates users: it enumerates GRANTS ON THE DATABASES OF THIS
+ * INSTANCE'S OWN SITES, and considers nothing else. Another account's databases
+ * are never read and never touched.
+ *
+ * WHAT IT WILL NOT DO. It never issues a GRANT. A missing grant queues a verify
+ * instead, so the backend remains the single place a grant can be created, with
+ * its invariant checks intact.
+ */
+function hosting_migrate_source_sweep() {
+  $dry = drush_get_option('dry-run', FALSE);
+  $max = (int) drush_get_option('max-revokes', 25);
+  $force = drush_get_option('force', FALSE);
+
+  // --- our own databases -------------------------------------------------
+  // Only sites of THIS frontend, and never the front end's own database.
+  $hostmaster_nid = hosting_migrate_source_hostmaster_nid();
+  if (empty($hostmaster_nid)) {
+    return drush_set_error('MIGRATE_SOURCE_NO_FRONTEND', dt('Cannot identify the Aegir front-end site; refusing to sweep.'));
+  }
+
+  $ours = array();
+  $result = db_query("SELECT n.nid, n.title, s.db_name FROM {node} n INNER JOIN {hosting_site} s ON n.vid = s.vid WHERE n.type = 'site' AND s.status <> :deleted AND n.nid <> :hm AND s.db_name <> ''", array(':deleted' => HOSTING_SITE_DELETED, ':hm' => $hostmaster_nid));
+  foreach ($result as $row) {
+    if (preg_match('/^[A-Za-z0-9_]+$/', $row->db_name) !== 1) {
+      continue;
+    }
+    $ours[$row->db_name] = $row->nid;
+  }
+  if (empty($ours)) {
+    drush_log(dt('Migration source sweep: this instance has no site databases to examine.'), 'ok');
+    return;
+  }
+
+  // --- what we intend ----------------------------------------------------
+  // Join on the CURRENT revision: the association table is keyed on vid.
+  $intended = array();
+  $result = db_query("SELECT m.nid AS target_nid, m.source_nid, ts.db_name AS target_db, ss.db_name AS source_db
+    FROM {hosting_migrate_source} m
+    INNER JOIN {node} n ON n.nid = m.nid AND n.vid = m.vid
+    INNER JOIN {hosting_site} ts ON ts.vid = n.vid
+    INNER JOIN {node} sn ON sn.nid = m.source_nid
+    INNER JOIN {hosting_site} ss ON ss.vid = sn.vid
+    WHERE m.source_nid <> 0 AND ts.status <> :deleted AND ss.status <> :deleted", array(':deleted' => HOSTING_SITE_DELETED));
+  foreach ($result as $row) {
+    if ($row->target_db === '' || $row->source_db === '') {
+      continue;
+    }
+    // key: "<grantee user>|<source database>"
+    $intended[$row->target_db . '|' . $row->source_db] = $row->target_nid;
+  }
+
+  // --- what actually exists ----------------------------------------------
+  $revokes = array();
+  foreach (array_keys($ours) as $db) {
+    $rows = db_query("SELECT User AS u, Host AS h FROM mysql.db WHERE Db = :db AND Select_priv = 'Y'", array(':db' => $db));
+    foreach ($rows as $g) {
+      // The database's own site user is always legitimate.
+      if ($g->u === $db) {
+        continue;
+      }
+      if (preg_match('/^[A-Za-z0-9_]+$/', $g->u) !== 1) {
+        drush_log(dt('Migration source sweep: skipping grantee @u on @db, not a plain identifier.', array('@u' => $g->u, '@db' => $db)), 'warning');
+        continue;
+      }
+      if (isset($intended[$g->u . '|' . $db])) {
+        continue;
+      }
+      $revokes[] = array('user' => $g->u, 'host' => $g->h, 'db' => $db);
+    }
+  }
+
+  // --- guard against acting on corrupt or empty intent --------------------
+  if (count($revokes) > $max && !$force) {
+    return drush_set_error('MIGRATE_SOURCE_TOO_MANY', dt('Migration source sweep: @n grants look unjustified, which is more than the @max guard allows. Refusing to act -- check the association table before re-running with --force.', array('@n' => count($revokes), '@max' => $max)));
+  }
+
+  foreach ($revokes as $r) {
+    if (preg_match('/^[A-Za-z0-9_.:%-]+$/', $r['host']) !== 1) {
+      drush_log(dt('Migration source sweep: skipping an unrecognised host for @u.', array('@u' => $r['user'])), 'warning');
+      continue;
+    }
+    if ($dry) {
+      drush_log(dt('Migration source sweep [dry-run]: would revoke @g read access to @db.', array('@g' => $r['user'] . '@' . $r['host'], '@db' => $r['db'])), 'ok');
+      continue;
+    }
+    db_query('REVOKE SELECT ON `' . $r['db'] . '`.* FROM `' . $r['user'] . '`@`' . $r['host'] . '`');
+    drush_log(dt('Migration source sweep: revoked @g read access to @db.', array('@g' => $r['user'] . '@' . $r['host'], '@db' => $r['db'])), 'ok');
+  }
+
+  // --- the other direction: intended but missing --------------------------
+  // Never granted here. A verify re-runs the backend converge, which owns the
+  // only path that may create a grant.
+  $queued = 0;
+  foreach ($intended as $key => $target_nid) {
+    $parts = explode('|', $key);
+    $target_db = $parts[0];
+    $source_db = $parts[1];
+    $found = db_query("SELECT COUNT(*) FROM mysql.db WHERE Db = :db AND User = :u AND Select_priv = 'Y'", array(':db' => $source_db, ':u' => $target_db))->fetchField();
+    if ($found > 0) {
+      continue;
+    }
+    if ($dry) {
+      drush_log(dt('Migration source sweep [dry-run]: would queue a verify for site @nid to restore its missing grant.', array('@nid' => $target_nid)), 'ok');
+      continue;
+    }
+    if (hosting_task_outstanding($target_nid, 'delete') || hosting_task_outstanding($target_nid, 'verify')) {
+      continue;
+    }
+    hosting_add_task($target_nid, 'verify');
+    $queued++;
+    drush_log(dt('Migration source sweep: queued a verify for site @nid to restore its missing grant.', array('@nid' => $target_nid)), 'ok');
+  }
+
+  drush_log(dt('Migration source sweep: @o databases examined, @i associations intended, @r revoked, @q verifies queued.', array(
+    '@o' => count($ours),
+    '@i' => count($intended),
+    '@r' => $dry ? 0 : count($revokes),
+    '@q' => $queued,
+  )), 'ok');
+}
+
+/**
  * Implements hook_drush_context_import().
  */
 function hosting_migrate_source_drush_context_import($context, &$node) {

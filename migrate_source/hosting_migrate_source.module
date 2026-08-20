@@ -304,6 +304,32 @@ function hosting_migrate_source_post_hosting_migrate_source_task($task, $data) {
 }
 
 /**
+ * Implements hook_post_hosting_TASK_TYPE_task().
+ *
+ * Restore deploys over the site, which rotates its database name and user, and
+ * it regenerates settings.php -- so the migrate connection comes back while the
+ * site's NEW user holds no grant on the source, and the superseded user keeps
+ * the grant it had. Unlike migrate, restore queues no verify of its own, so the
+ * wiring would stay broken until something else happened to verify the site.
+ *
+ * Queue one: the backend re-converges the grant for the current user, and the
+ * verify also refreshes the frontend's record of db_name, which restore leaves
+ * stale. The superseded user's orphan grant is the sweep's job.
+ */
+function hosting_migrate_source_post_hosting_restore_task($task, $data) {
+  if (!isset($task->ref) || $task->ref->type != 'site') {
+    return;
+  }
+  if (empty($task->ref->migrate_source)) {
+    return;
+  }
+  if (hosting_task_outstanding($task->ref->nid, 'delete')) {
+    return;
+  }
+  hosting_add_task($task->ref->nid, 'verify');
+}
+
+/**
  * Write (or clear) the association for one revision.
  */
 function hosting_migrate_source_write($vid, $nid, $source_nid) {

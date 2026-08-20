@@ -361,9 +361,14 @@ function drush_migrate_source_post_provision_verify() {
     return;
   }
 
-  $own_db = d()->db_name;
-  $user = d()->db_user;
+  // The site's own credentials come from the site OPTION context (its
+  // drushrc.php), not from the context object: the site alias deliberately
+  // carries no database credentials, so d()->db_name is empty here. This is the
+  // same accessor provision's own fetch_site_credentials() uses.
+  $own_db = drush_get_option('db_name', '', 'site');
+  $user = drush_get_option('db_user', '', 'site');
   if (!_migrate_source_valid_ident($user) || !_migrate_source_valid_ident($own_db)) {
+    drush_log(dt('Migration source: could not read this site\'s own database credentials, skipping.'), 'warning');
     return;
   }
 
