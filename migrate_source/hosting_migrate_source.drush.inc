@@ -193,6 +193,22 @@ function hosting_migrate_source_sweep() {
       if (isset($intended[$g->u . '|' . $db])) {
         continue;
       }
+      // Only ever revoke a grantee that is itself one of THIS instance's site
+      // databases -- i.e. a grantee of the shape this feature's backend issues.
+      //
+      // Without this the sweep breaks live sites. It infers the grantee from
+      // db_name, but hosting_site carries no db_user column, so "db_user equals
+      // db_name" is an assumption, not a fact -- and it is false for every
+      // IMPORTED site, because provision's import_*.inc takes db_user verbatim
+      // from the settings file it found. An imported site with db_user
+      // "legacyuser" on db_name "legacysite_0" would have had its OWN grant
+      // revoked here, with nothing to restore it. It also stops the sweep
+      // touching monitoring, backup or reporting users an operator granted by
+      // hand.
+      if (!isset($ours[$g->u])) {
+        drush_log(dt('Migration source sweep: leaving @u alone on @db -- not a site database user of this instance, so not a grant this feature could have issued.', array('@u' => $g->u, '@db' => $db)), 'warning');
+        continue;
+      }
       $revokes[] = array('user' => $g->u, 'host' => $g->h, 'db' => $g->d, 'label' => $db);
     }
   }

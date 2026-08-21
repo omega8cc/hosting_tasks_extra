@@ -16,21 +16,28 @@
  * Everything that actually bounds the database is here, and every check is
  * answered by MySQL rather than by a file anyone can author:
  *
+ *   (d) PROOF OF POSSESSION: the source site must be able to open the named
+ *       database with the credentials it records for itself. This is the ONLY
+ *       check that bounds ownership, and it runs first;
  *   (a) the source's own DB user must already hold a grant on the source
- *       database -- true for every genuine site, false for a manufactured one;
- *   (b) that user must not hold a global ON *.* grant -- otherwise naming the
- *       account superuser as the source user would satisfy (a) for anything;
+ *       database -- true for every genuine site;
+ *   (b) that user must not hold a global ON *.* grant;
  *   (c) the source must not be the front end's own database.
  *
- * BE PRECISE ABOUT WHAT THAT PROVES. Together these establish that the source is
- * a GENUINE, non-superuser site database on this server -- they do NOT establish
- * that it belongs to the requesting account, because MySQL holds no ownership
- * fact to ask. Ownership is enforced on the frontend, where the association is
- * chosen and re-validated (client, db_server, node access), and it is reconciled
- * afterwards by the sweep, which revokes any grant this instance does not
- * intend. Do not write, here or in a log line, that these checks confirm the
- * source belongs to the caller. If a future change weakens the frontend or
- * unschedules the sweep, this is the boundary that does NOT catch it.
+ * BE PRECISE ABOUT WHAT EACH PROVES. (a), (b) and (c) establish only that the
+ * source is a GENUINE, non-superuser site database on this server. They do NOT
+ * bound ownership, and believing they did was a real vulnerability: every
+ * provisioned database has a same-named user holding a non-global grant on it,
+ * so (a) and (b) pass for ANY co-hosted database including another account's. A
+ * tenant who authored a platform-side settings file naming a victim's database
+ * and let Aegir import it as a node they legitimately own was granted SELECT on
+ * that victim database. Confirmed and reproduced on ng019, 2026-08-21.
+ *
+ * The sweep does NOT compensate for that, though an earlier version of this
+ * comment said so: its notion of "intended" is keyed on the same tenant-
+ * authorable db_name, so a manufactured association is intended forever. Only
+ * (d) closes it, by asking the requester's side to prove access rather than
+ * asking MySQL a question it cannot answer.
  *
  * Underneath sits the privilege boundary itself: issuing a grant needs
  * master_db, which is readable only by the account user that runs Aegir tasks,
@@ -335,7 +342,122 @@ function _migrate_source_frontend_db() {
  * @return
  *   TRUE only when all three hold. Anything unknown is a refusal.
  */
+/**
+ * Read one $options[...] scalar out of a site's drushrc.php.
+ *
+ * Never includes the file -- it runs code, and it sits in a tenant-writable
+ * platform tree. Anchored at line start so a commented copy cannot shadow the
+ * real assignment.
+ */
+function _migrate_source_drushrc_option($site_path, $key) {
+  $file = $site_path . '/drushrc.php';
+  if (!is_readable($file)) {
+    return '';
+  }
+  $contents = @file_get_contents($file);
+  if ($contents === FALSE || $contents === '') {
+    return '';
+  }
+  $matches = array();
+  $pattern = '/^\$options\[\047' . preg_quote($key, '/') . '\047\]\s*=\s*\047([^\047]*)\047/m';
+  if (preg_match($pattern, $contents, $matches) === 1) {
+    return $matches[1];
+  }
+  return '';
+}
+
+/**
+ * (d) PROOF OF POSSESSION -- the only check that actually bounds OWNERSHIP.
+ *
+ * Everything else here establishes that the named database looks like a normal
+ * provisioned database. That is NOT the same question as "may this requester
+ * read it", and conflating the two was a real vulnerability: invariants (a) and
+ * (b) pass for ANY co-hosted database, including another account's, because
+ * every provisioned database has a same-named user holding a non-global grant
+ * on it. A tenant who authored a platform-side settings file naming a victim's
+ * database, and let Aegir import it as a site node they legitimately own, was
+ * granted SELECT on that victim database. Verified on ng019 2026-08-21.
+ *
+ * The fix is to stop asking about the database and start asking the requester's
+ * side to prove access: connect to the named database AS THE SOURCE SITE, using
+ * the credentials that site records for itself, and require the connection to
+ * succeed.
+ *
+ * Reading those credentials from a tenant-writable drushrc is safe HERE, and
+ * only here, because they are TESTED rather than trusted:
+ *   - forged password  -> the connection fails;
+ *   - the tenant's own real credentials pointed at a victim database
+ *                      -> the connection fails, they hold no grant on it;
+ *   - a genuine source -> the connection succeeds, which is exactly the fact
+ *                         we needed and could not otherwise obtain.
+ * The uri -> site_path mapping comes from the account-owned alias in ~/.drush
+ * (0440, owner oN), not from anything the tenant can write.
+ *
+ * Fails closed on every unknown.
+ */
+function _migrate_source_source_possession_proven($db) {
+  $uri = d()->migrate_source_uri;
+  if (empty($uri) || $uri == 'null') {
+    drush_log(dt('Migration source: no source site recorded, so ownership of @db could not be proven.', array('@db' => $db)), 'error');
+    return FALSE;
+  }
+
+  $source = d('@' . ltrim($uri, '@'), FALSE, FALSE);
+  if (empty($source) || empty($source->site_path)) {
+    drush_log(dt('Migration source: could not resolve the source site, so ownership of @db could not be proven.', array('@db' => $db)), 'error');
+    return FALSE;
+  }
+
+  $claimed_db = _migrate_source_drushrc_option($source->site_path, 'db_name');
+  if ($claimed_db === '' || $claimed_db !== $db) {
+    drush_log(dt('Migration source: the source site does not record @db as its own database.', array('@db' => $db)), 'error');
+    return FALSE;
+  }
+
+  $user = _migrate_source_drushrc_option($source->site_path, 'db_user');
+  $pass = _migrate_source_drushrc_option($source->site_path, 'db_passwd');
+  $host = _migrate_source_drushrc_option($source->site_path, 'db_host');
+  $port = _migrate_source_drushrc_option($source->site_path, 'db_port');
+  if ($user === '' || $pass === '') {
+    drush_log(dt('Migration source: the source site records no usable credentials, so ownership of @db could not be proven.', array('@db' => $db)), 'error');
+    return FALSE;
+  }
+  if ($host === '') {
+    $host = 'localhost';
+  }
+
+  // Connecting WITH dbname set is the proof: the server refuses the connection
+  // outright when the credentials hold no privilege on that database.
+  $dsn = 'mysql:host=' . $host . ';dbname=' . $db;
+  if ($port !== '' && preg_match('/^[0-9]+$/', $port) === 1) {
+    $dsn = 'mysql:host=' . $host . ';port=' . $port . ';dbname=' . $db;
+  }
+  $proven = FALSE;
+  try {
+    $probe = new PDO($dsn, $user, $pass, array(PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION, PDO::ATTR_TIMEOUT => 5));
+    $probe->query('SELECT 1');
+    $proven = TRUE;
+    $probe = NULL;
+  }
+  catch (Exception $e) {
+    // Deliberately not logged verbatim: the message can echo credentials.
+    $proven = FALSE;
+  }
+
+  if (!$proven) {
+    drush_log(dt('Migration source: the source site could not open @db with its own credentials, so it does not own it. Refusing.', array('@db' => $db)), 'error');
+    return FALSE;
+  }
+  return TRUE;
+}
+
 function _migrate_source_source_is_grantable($db) {
+  // (d) FIRST: ownership, the only question that actually matters. The checks
+  // below cannot answer it -- see _migrate_source_source_possession_proven().
+  if (!_migrate_source_source_possession_proven($db)) {
+    return FALSE;
+  }
+
   // (c) never the front end. Note this is not the only thing standing between a
   // tenant and the front-end database: its user holds global privileges, so (b)
   // refuses it too. Both are kept because neither resolves in every situation.
