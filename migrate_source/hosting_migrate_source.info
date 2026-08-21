@@ -2,5 +2,6 @@ name = Migration source
 description = Lets a site owner give one of their sites read-only access to another of their sites' database, for Drupal's migration tooling.
 package = Aegir Extras
 dependencies[] = hosting_site
+dependencies[] = hosting_task
 
 core = 7.x
