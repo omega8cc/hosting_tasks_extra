@@ -562,6 +562,38 @@ function drush_migrate_source_post_provision_verify() {
     return;
   }
 
+  // The GRANTEE must prove itself too, not just the source.
+  //
+  // These come from the site's own drushrc, which lives in a tenant-writable
+  // platform tree -- so naming another account's MySQL user here would have
+  // aimed both the GRANT and, worse, the revoke pass at that user. Requiring the
+  // pair to actually open this site's own database settles it with a fact:
+  // naming somebody else's user means needing somebody else's password.
+  $own_pass = drush_get_option('db_passwd', '', 'site');
+  $own_host = drush_get_option('db_host', '', 'site');
+  $own_port = drush_get_option('db_port', '', 'site');
+  if ($own_pass === '') {
+    drush_log(dt('Migration source: this site records no password for its own database, so its identity could not be proven; skipping.'), 'warning');
+    return;
+  }
+  if ($own_host === '') {
+    $own_host = 'localhost';
+  }
+  $own_dsn = 'mysql:host=' . $own_host . ';dbname=' . $own_db;
+  if ($own_port !== '' && preg_match('/^[0-9]+$/', $own_port) === 1) {
+    $own_dsn = 'mysql:host=' . $own_host . ';port=' . $own_port . ';dbname=' . $own_db;
+  }
+  try {
+    $own_probe = new PDO($own_dsn, $user, $own_pass, array(PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION, PDO::ATTR_TIMEOUT => 5));
+    $own_probe->query('SELECT 1');
+    $own_probe = NULL;
+  }
+  catch (Exception $e) {
+    // Never logged verbatim: the message can echo credentials.
+    drush_log(dt('Migration source: @u cannot open @db, so it is not this site\'s own database user. Refusing to grant or revoke on its behalf.', array('@u' => $user, '@db' => $own_db)), 'error');
+    return;
+  }
+
   $hosts = _migrate_source_target_hosts($user);
   if (empty($hosts)) {
     drush_log(dt('Migration source: no local grant hosts found for this site, skipping.'), 'warning');
