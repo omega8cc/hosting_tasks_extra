@@ -55,6 +55,16 @@ function hosting_migrate_source_hosting_site_context_options(&$task) {
     if (function_exists('hosting_migrate_source_write') && !empty($task->ref->vid)) {
       hosting_migrate_source_write($task->ref->vid, $task->ref->nid, 0);
     }
+    // The row write alone does not survive a verify: hosting_site's own
+    // post-task hook node_save()s this very ref, and hook_node_update()
+    // re-writes the association FROM THE NODE OBJECT -- which still carries
+    // the value it was loaded with, before this clear. Observed live on a
+    // client-move: the clear warned and wrote 0, and the completion save
+    // restored the old source within the same task -- leaving a record that
+    // would silently resurrect the association (and its grant) if the source
+    // ever moved back. Clearing the in-memory field makes the copy-back
+    // carry the same 0.
+    $task->ref->migrate_source = 0;
     $source_nid = 0;
   }
 
