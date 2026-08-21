@@ -227,6 +227,13 @@ function hosting_migrate_source_source_eligible($node, $source_nid) {
   if (hosting_migrate_source_is_frontend_platform($source->platform)) {
     return FALSE;
   }
+  // The backend refuses to emit on a pre-Drupal-8 target, so an association
+  // whose TARGET has moved off a Drupal 8+ platform can never be satisfied.
+  // Catch it here, where it is cleared with a warning, instead of leaving the
+  // sweep to re-queue a verify for it on every pass.
+  if (!hosting_migrate_source_target_is_d8plus($node)) {
+    return FALSE;
+  }
   return TRUE;
 }
 
@@ -254,6 +261,22 @@ function hosting_task_migrate_source_form($node) {
   $options = hosting_migrate_source_options($node);
 
   $current = isset($node->migrate_source) ? $node->migrate_source : 0;
+
+  // Keep the CURRENT source in the list even when it would no longer be offered
+  // -- a disabled source is the ordinary mid-cutover state, and this page
+  // promises that disabling does not remove access. Without this the source is
+  // simply absent from #options, so merely opening the dialog and saving would
+  // silently clear the association and revoke the grant the page says it keeps.
+  if ($current) {
+    $current_source = node_load($current);
+    if (!empty($current_source) && $current_source->type == 'site' && !isset($options[$current])) {
+      $label = $current_source->title;
+      if (isset($current_source->site_status) && $current_source->site_status != HOSTING_SITE_ENABLED) {
+        $label .= ' ' . t('(disabled)');
+      }
+      $options[$current] = $label;
+    }
+  }
 
   $form['#node'] = $node;
   $form['source'] = array(
@@ -342,12 +365,57 @@ function hosting_migrate_source_post_hosting_restore_task($task, $data) {
   //
   // Verify this site FIRST, because that is what refreshes db_name, then each
   // dependent target so its grant re-converges against the new name.
+  // Queue ONLY this site's own verify here. The dependents are queued from that
+  // verify's post-task hook instead, because "first" is not something this hook
+  // can express: the queue forks tasks and runs several at once, so queueing the
+  // dependents alongside lets them converge against the STALE db_name -- exactly
+  // the freed-name window this ordering exists to close. Chaining them off the
+  // verify makes the ordering real rather than hoped for.
   $targets = hosting_migrate_source_dependent_targets($task->ref->nid);
-
   if (!empty($task->ref->migrate_source) || !empty($targets)) {
+    if (!empty($targets)) {
+      // Hand the follow-up to this site's own verify, and ONLY to the verify
+      // this restore is about to queue.
+      $pending = variable_get('hosting_migrate_source_reconverge', array());
+      $pending[$task->ref->nid] = REQUEST_TIME;
+      variable_set('hosting_migrate_source_reconverge', $pending);
+    }
     hosting_add_task($task->ref->nid, 'verify');
   }
+}
+
+/**
+ * Implements hook_post_hosting_TASK_TYPE_task().
+ *
+ * Re-converge the sites that read THIS one, now that its own verify has
+ * refreshed the frontend's record of db_name. Queued here rather than from the
+ * restore hook so the ordering is enforced by sequence instead of assumed:
+ * tasks are forked and run concurrently, so a dependent queued at restore time
+ * could converge against the old, freed database name.
+ */
+function hosting_migrate_source_post_hosting_verify_task($task, $data) {
+  if (!isset($task->ref) || $task->ref->type != 'site') {
+    return;
+  }
+  // ONLY after a restore asked for it. Chaining off every verify would amplify
+  // ordinary maintenance into a burst of extra verifies, and two sites that read
+  // each other would queue one another forever. The marker is consumed here, so
+  // one restore produces exactly one round of re-convergence.
+  $pending = variable_get('hosting_migrate_source_reconverge', array());
+  if (!isset($pending[$task->ref->nid])) {
+    return;
+  }
+  unset($pending[$task->ref->nid]);
+  variable_set('hosting_migrate_source_reconverge', $pending);
+
+  $targets = hosting_migrate_source_dependent_targets($task->ref->nid);
   foreach ($targets as $nid) {
+    if ($nid == $task->ref->nid) {
+      continue;
+    }
+    if (hosting_task_outstanding($nid, 'delete') || hosting_task_outstanding($nid, 'verify')) {
+      continue;
+    }
     hosting_add_task($nid, 'verify');
   }
 }

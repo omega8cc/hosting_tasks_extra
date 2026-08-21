@@ -1,6 +1,13 @@
 <?php
 
 /**
+ * Consecutive sweeps that may re-queue a verify for the same missing grant
+ * before the association is left to a human. Prevents an intent the backend
+ * will never satisfy from generating a provision-verify on every pass forever.
+ */
+define('HOSTING_MIGRATE_SOURCE_MAX_RETRIES', 3);
+
+/**
  * @file
  * Frontend-side backend plumbing for the migration source association.
  */
@@ -36,10 +43,18 @@ function hosting_migrate_source_hosting_site_context_options(&$task) {
     // Say so. Clearing in silence is indistinguishable from having nothing to
     // do, which is exactly how a grant that vanished mid-migration became
     // invisible once already.
-    drush_log(dt('Migration source: source site @nid is no longer eligible for @target; clearing the association for this run.', array(
+    drush_log(dt('Migration source: source site @nid is no longer eligible for @target; clearing the association.', array(
       '@nid' => $source_nid,
       '@target' => !empty($task->ref->title) ? $task->ref->title : $task->ref->nid,
     )), 'warning');
+    // PERSIST it. Clearing only "for this run" left the stored row still naming
+    // the ineligible source, so the sweep went on believing the association was
+    // intended and re-queued a verify to restore a grant this push had just
+    // declined to ask for -- every pass, forever. Writing the row makes the
+    // record agree with what was actually pushed.
+    if (function_exists('hosting_migrate_source_write') && !empty($task->ref->vid)) {
+      hosting_migrate_source_write($task->ref->vid, $task->ref->nid, 0);
+    }
     $source_nid = 0;
   }
 
@@ -119,9 +134,107 @@ function hosting_migrate_source_drush_command() {
  * Callers pass names already validated as ^[A-Za-z0-9_]+$, so there is no
  * backslash of their own to escape first.
  */
+/**
+ * The plain name behind a stored spelling (the escape is MySQL's, not ours).
+ */
+function _hosting_migrate_source_unescape_db($db) {
+  return str_replace(array('\_', '\%'), array('_', '%'), $db);
+}
+
 function _hosting_migrate_source_db_spellings($db) {
   $escaped = str_replace(array('_', '%'), array('\_', '\%'), $db);
   return ($escaped === $db) ? array($db) : array($db, $escaped);
+}
+
+/**
+ * Prove a site's real database identity, or FALSE.
+ *
+ * Returns array('user' => ..., 'db' => ...) only when the credentials that site
+ * records for itself actually OPEN the database it claims. Memoised per pass.
+ *
+ * WHY THIS EXISTS. The sweep needs to know which MySQL users belong to this
+ * instance before it revokes anything, and the frontend has no db_user column,
+ * so the only available answers are hosting_site.db_name (a cache the module
+ * itself documents as going stale, and one a tenant can influence through an
+ * imported platform) or the site's own drushrc (which lives in a tenant-writable
+ * tree). Trusting either turned the destructive pass into something a tenant
+ * could aim: a manufactured or stale db_name pointed it at another account's
+ * database, and a manufactured db_user pointed it at another account's user.
+ *
+ * Testing the pair removes the choice. A forged password does not connect, and
+ * real credentials aimed at somebody else's database do not either, so what
+ * comes back is a fact rather than a claim. Same reasoning, and the same
+ * safety, as invariant (d) on the grant side.
+ */
+function _hosting_migrate_source_prove_site($nid) {
+  static $proven = array();
+  if (isset($proven[$nid])) {
+    return $proven[$nid];
+  }
+  $proven[$nid] = FALSE;
+
+  $site = node_load($nid);
+  if (empty($site) || $site->type != 'site' || empty($site->platform)) {
+    return FALSE;
+  }
+  $platform = node_load($site->platform);
+  if (empty($platform) || empty($platform->publish_path)) {
+    return FALSE;
+  }
+  $uri = !empty($site->hosting_name) ? $site->hosting_name : $site->title;
+  if ($uri === '' || strpos($uri, '/') !== FALSE || strpos($uri, '..') !== FALSE) {
+    return FALSE;
+  }
+  $file = $platform->publish_path . '/sites/' . $uri . '/drushrc.php';
+  if (!is_readable($file)) {
+    return FALSE;
+  }
+  $contents = @file_get_contents($file);
+  if ($contents === FALSE || $contents === '') {
+    return FALSE;
+  }
+
+  $get = '_hosting_migrate_source_opt';
+  $db = $get($contents, 'db_name');
+  $user = $get($contents, 'db_user');
+  $pass = $get($contents, 'db_passwd');
+  $host = $get($contents, 'db_host');
+  $port = $get($contents, 'db_port');
+  if ($db === '' || $user === '' || $pass === ''
+    || preg_match('/^[A-Za-z0-9_]+$/', $db) !== 1
+    || preg_match('/^[A-Za-z0-9_]+$/', $user) !== 1) {
+    return FALSE;
+  }
+  if ($host === '') {
+    $host = 'localhost';
+  }
+  $dsn = 'mysql:host=' . $host . ';dbname=' . $db;
+  if ($port !== '' && preg_match('/^[0-9]+$/', $port) === 1) {
+    $dsn = 'mysql:host=' . $host . ';port=' . $port . ';dbname=' . $db;
+  }
+  try {
+    $probe = new PDO($dsn, $user, $pass, array(PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION, PDO::ATTR_TIMEOUT => 5));
+    $probe->query('SELECT 1');
+    $probe = NULL;
+  }
+  catch (Exception $e) {
+    // Never logged verbatim: the message can echo credentials.
+    return FALSE;
+  }
+  $proven[$nid] = array('user' => $user, 'db' => $db);
+  return $proven[$nid];
+}
+
+/**
+ * One $options[...] scalar out of drushrc.php contents. Never includes the file.
+ */
+function _hosting_migrate_source_opt($contents, $key) {
+  $matches = array();
+  $pattern = '/^\$options\[\047' . preg_quote($key, '/') . '\047\]\s*=\s*\047([^\047]*)\047/m';
+  if (preg_match($pattern, $contents, $matches) === 1) {
+    return $matches[1];
+  }
+  return '';
 }
 
 function hosting_migrate_source_sweep() {
@@ -155,6 +268,7 @@ function hosting_migrate_source_sweep() {
   // to another client, or onto another database server, stops being intended
   // the moment it moves, and this pass is then what takes the grant back.
   $intended = array();
+  $intended_meta = array();
   $result = db_query("SELECT m.nid AS target_nid, m.source_nid, ts.db_name AS target_db, ss.db_name AS source_db
     FROM {hosting_migrate_source} m
     INNER JOIN {node} n ON n.nid = m.nid AND n.vid = m.vid
@@ -164,37 +278,73 @@ function hosting_migrate_source_sweep() {
     WHERE m.source_nid <> 0 AND ts.status <> :deleted AND ss.status <> :deleted
       AND ts.client = ss.client AND ts.db_server = ss.db_server", array(':deleted' => HOSTING_SITE_DELETED));
   foreach ($result as $row) {
-    if ($row->target_db === '' || $row->source_db === '') {
+    // Both ends must PROVE their identity before an association can shield a
+    // grant from revocation. Keying this on hosting_site.db_name alone let a
+    // manufactured association -- a node whose recorded database is somebody
+    // else's -- mark the resulting grant "intended" forever, so the sweep would
+    // never take it back. Proving both ends means an association that does not
+    // correspond to real, self-owned databases simply is not intended, and the
+    // grant is revoked on this pass.
+    $t = _hosting_migrate_source_prove_site($row->target_nid);
+    $sc = _hosting_migrate_source_prove_site($row->source_nid);
+    if ($t === FALSE || $sc === FALSE) {
+      drush_log(dt('Migration source sweep: association @t -> @s could not be proven on both ends; not treating it as intended.', array(
+        '@t' => $row->target_nid,
+        '@s' => $row->source_nid,
+      )), 'warning');
       continue;
     }
-    // key: "<grantee user>|<source database>"
-    $intended[$row->target_db . '|' . $row->source_db] = $row->target_nid;
+    // key: "<proven grantee user>|<proven source database>"
+    $intended[$t['user'] . '|' . $sc['db']] = $row->target_nid;
+    $intended_meta[$t['user'] . '|' . $sc['db']] = array('target_nid' => $row->target_nid, 'source_db' => $sc['db'], 'target_user' => $t['user']);
   }
 
-  // --- what actually exists ----------------------------------------------
+  // --- what actually exists: enumerate from OUR OWN PROVEN USERS ------------
+  //
+  // This pass used to enumerate grants ON our databases, taken from
+  // hosting_site.db_name. That had two separate failures. It could not see the
+  // orphan class this sweep exists for at all -- once a source site is deleted
+  // its database is dropped, so no row remains to find, while the grant on that
+  // freed name survives and can later be inherited by a site in ANOTHER account
+  // that takes the name. And it derived "ours" from a value that goes stale and
+  // that a tenant can influence through an imported platform, which pointed the
+  // destructive half at databases outside this instance.
+  //
+  // Enumerating from users we have PROVEN belong to this instance fixes both: a
+  // grant is visible whether or not its database still exists, and nothing
+  // outside this instance is ever read or touched. It also honours the rule
+  // this sweep is built on -- it never enumerates users globally, only its own.
   $revokes = array();
-  foreach (array_keys($ours) as $db) {
-    // Db comes back as STORED, which may be the escaped spelling; a REVOKE has
-    // to name the grant exactly as it was issued or MySQL reports no such grant.
-    $rows = db_query("SELECT User AS u, Host AS h, Db AS d FROM mysql.db WHERE Db IN (:dbs) AND Select_priv = 'Y'", array(':dbs' => _hosting_migrate_source_db_spellings($db)));
-    foreach ($rows as $g) {
-      // The database's own site user is always legitimate.
-      if ($g->u === $db) {
-        continue;
-      }
-      if (preg_match('/^[A-Za-z0-9_]+$/', $g->u) !== 1) {
-        drush_log(dt('Migration source sweep: skipping grantee @u on @db, not a plain identifier.', array('@u' => $g->u, '@db' => $db)), 'warning');
-        continue;
-      }
-      if (preg_match('/^[A-Za-z0-9_%\\\\]+$/', $g->d) !== 1) {
-        drush_log(dt('Migration source sweep: skipping a grant on @db, stored under an unrecognised name.', array('@db' => $db)), 'warning');
-        continue;
-      }
-      if (isset($intended[$g->u . '|' . $db])) {
-        continue;
-      }
-      $revokes[] = array('user' => $g->u, 'host' => $g->h, 'db' => $g->d, 'label' => $db);
+  $unproven = 0;
+  foreach ($ours as $db_name_hint => $nid) {
+    $identity = _hosting_migrate_source_prove_site($nid);
+    if ($identity === FALSE) {
+      $unproven++;
+      continue;
     }
+    $user = $identity['user'];
+    $own_db = $identity['db'];
+    $rows = db_query("SELECT Db AS d, Host AS h FROM mysql.db WHERE User = :u AND Select_priv = 'Y'", array(':u' => $user));
+    foreach ($rows as $g) {
+      $granted = _hosting_migrate_source_unescape_db($g->d);
+      if ($granted === $own_db) {
+        // Its own database. Always legitimate.
+        continue;
+      }
+      if (preg_match('/^[A-Za-z0-9_]+$/', $granted) !== 1) {
+        // A wildcard or otherwise unusual grant. Not a shape this feature
+        // issues, so not ours to remove -- say so rather than act.
+        drush_log(dt('Migration source sweep: leaving @u alone on @db -- not a grant shape this feature issues.', array('@u' => $user, '@db' => $g->d)), 'warning');
+        continue;
+      }
+      if (isset($intended[$user . '|' . $granted])) {
+        continue;
+      }
+      $revokes[] = array('user' => $user, 'host' => $g->h, 'db' => $g->d, 'label' => $granted);
+    }
+  }
+  if ($unproven > 0) {
+    drush_log(dt('Migration source sweep: @n site(s) could not prove their own database identity and were skipped; their grants were neither examined nor touched.', array('@n' => $unproven)), 'warning');
   }
 
   // --- guard against acting on corrupt or empty intent --------------------
@@ -235,13 +385,40 @@ function hosting_migrate_source_sweep() {
   // --- the other direction: intended but missing --------------------------
   // Never granted here. A verify re-runs the backend converge, which owns the
   // only path that may create a grant.
+  //
+  // BOUNDED. An association the backend will never satisfy -- a target that has
+  // moved off a Drupal 8+ platform, a source that cannot prove ownership -- used
+  // to re-queue a full provision-verify on every pass, forever, with nothing
+  // recording that it never worked. On an hourly schedule that is a permanent
+  // load generator nobody attributes to this feature. After a few consecutive
+  // failures the association is left alone and said so once.
   $queued = 0;
+  $abandoned = 0;
+  $attempts = variable_get('hosting_migrate_source_retries', array());
+  $seen = array();
   foreach ($intended as $key => $target_nid) {
-    $parts = explode('|', $key);
-    $target_db = $parts[0];
-    $source_db = $parts[1];
-    $found = db_query("SELECT COUNT(*) FROM mysql.db WHERE Db IN (:dbs) AND User = :u AND Select_priv = 'Y'", array(':dbs' => _hosting_migrate_source_db_spellings($source_db), ':u' => $target_db))->fetchField();
+    $meta = $intended_meta[$key];
+    $found = db_query("SELECT COUNT(*) FROM mysql.db WHERE Db IN (:dbs) AND User = :u AND Select_priv = 'Y'", array(
+      ':dbs' => _hosting_migrate_source_db_spellings($meta['source_db']),
+      ':u' => $meta['target_user'],
+    ))->fetchField();
     if ($found > 0) {
+      // Converged: forget any history so a later genuine failure starts fresh.
+      unset($attempts[$key]);
+      continue;
+    }
+    $seen[$key] = TRUE;
+    $tries = isset($attempts[$key]) ? (int) $attempts[$key] : 0;
+    if ($tries >= HOSTING_MIGRATE_SOURCE_MAX_RETRIES) {
+      $abandoned++;
+      if ($tries == HOSTING_MIGRATE_SOURCE_MAX_RETRIES) {
+        drush_log(dt('Migration source sweep: site @nid still has no grant on @db after @n attempts; leaving it to a human rather than re-queueing a verify every pass. Clear or re-set the source to try again.', array(
+          '@nid' => $target_nid,
+          '@db' => $meta['source_db'],
+          '@n' => $tries,
+        )), 'warning');
+        $attempts[$key] = $tries + 1;
+      }
       continue;
     }
     if ($dry) {
@@ -251,17 +428,28 @@ function hosting_migrate_source_sweep() {
     if (hosting_task_outstanding($target_nid, 'delete') || hosting_task_outstanding($target_nid, 'verify')) {
       continue;
     }
+    $attempts[$key] = $tries + 1;
     hosting_add_task($target_nid, 'verify');
     $queued++;
     drush_log(dt('Migration source sweep: queued a verify for site @nid to restore its missing grant.', array('@nid' => $target_nid)), 'ok');
   }
+  // Drop history for associations that no longer exist at all.
+  foreach (array_keys($attempts) as $key) {
+    if (!isset($seen[$key])) {
+      unset($attempts[$key]);
+    }
+  }
+  if (!$dry) {
+    variable_set('hosting_migrate_source_retries', $attempts);
+  }
 
-  drush_log(dt('Migration source sweep: @o databases examined, @i associations intended, @r revoked, @f revokes failed, @q verifies queued.', array(
+  drush_log(dt('Migration source sweep: @o databases examined, @i associations intended, @r revoked, @f revokes failed, @q verifies queued, @a abandoned.', array(
     '@o' => count($ours),
     '@i' => count($intended),
     '@r' => $dry ? 0 : (count($revokes) - $failed),
     '@f' => $failed,
     '@q' => $queued,
+    '@a' => $abandoned,
   )), 'ok');
 }
 
