@@ -22,6 +22,16 @@
  *       account superuser as the source user would satisfy (a) for anything;
  *   (c) the source must not be the front end's own database.
  *
+ * BE PRECISE ABOUT WHAT THAT PROVES. Together these establish that the source is
+ * a GENUINE, non-superuser site database on this server -- they do NOT establish
+ * that it belongs to the requesting account, because MySQL holds no ownership
+ * fact to ask. Ownership is enforced on the frontend, where the association is
+ * chosen and re-validated (client, db_server, node access), and it is reconciled
+ * afterwards by the sweep, which revokes any grant this instance does not
+ * intend. Do not write, here or in a log line, that these checks confirm the
+ * source belongs to the caller. If a future change weakens the frontend or
+ * unschedules the sweep, this is the boundary that does NOT catch it.
+ *
  * Underneath sits the privilege boundary itself: issuing a grant needs
  * master_db, which is readable only by the account user that runs Aegir tasks,
  * not by the tenant's shell or web identity (proven on ng019, 2026-08-19). That
@@ -173,21 +183,57 @@ function _migrate_source_show_grants($user, $host) {
 }
 
 /**
+ * Escape a database name for the ON clause of a GRANT or REVOKE.
+ *
+ * MySQL reads _ and % in that position as LIKE wildcards, so an unescaped name
+ * grants on a PATTERN rather than on one database: a grant on `site_0` also
+ * covers `siteX0` for any X. BOA mints exactly such names -- provision's
+ * suggest_db_name() appends _<n> whenever a 16-character truncation collides --
+ * so this escape is what keeps a grant to the one database it names. Verified
+ * live on Percona 5.7.44 and 8.4.10 (2026-08-20): a grant on `wcq_a`.* read
+ * wcqxa on both.
+ *
+ * Both spellings must keep matching FOREVER: grants issued before this escaping
+ * existed are stored unescaped and stay that way until revoked.
+ * _migrate_source_unescape_db() is the other half, and the sweep carries its own
+ * copy of the same idea in _hosting_migrate_source_db_spellings().
+ */
+function _migrate_source_escape_db($db) {
+  return str_replace(array('_', '%'), array('\_', '\%'), $db);
+}
+
+/**
+ * Strip GRANT escaping from a database name read back out of MySQL.
+ */
+function _migrate_source_unescape_db($db) {
+  return str_replace(array('\_', '\%'), array('_', '%'), $db);
+}
+
+/**
  * Does this set of grant statements include one on `$db`.*?
  *
  * Matches the ON clause only, never the TO clause: Percona 5.7 renders the
  * grantee 'u'@'h' and 8.x renders it `u`@`h`, so a whole-statement match is
  * non-idempotent on one of the two. Provision's own revoke() matches the same
  * way.
+ *
+ * Accepts the escaped and unescaped spelling of the name, because a grant issued
+ * before the escaping existed is still a grant.
  */
 function _migrate_source_grants_include_db($rows, $db) {
   if (!is_array($rows)) {
     return FALSE;
   }
-  $pattern = '/^GRANT .+ ON `' . preg_quote($db, '/') . '`\.\*/';
+  $patterns = array('/^GRANT .+ ON `' . preg_quote($db, '/') . '`\.\*/');
+  $escaped = _migrate_source_escape_db($db);
+  if ($escaped !== $db) {
+    $patterns[] = '/^GRANT .+ ON `' . preg_quote($escaped, '/') . '`\.\*/';
+  }
   foreach ($rows as $statement) {
-    if (preg_match($pattern, $statement) === 1) {
-      return TRUE;
+    foreach ($patterns as $pattern) {
+      if (preg_match($pattern, $statement) === 1) {
+        return TRUE;
+      }
     }
   }
   return FALSE;
@@ -315,7 +361,7 @@ function _migrate_source_source_is_grantable($db) {
   }
 
   if (!$found) {
-    drush_log(dt('Migration source: could not confirm the source database belongs to one of your sites.'), 'error');
+    drush_log(dt('Migration source: @db does not look like a live site database on this server (no site user of its own holds a grant on it), so it was not wired up.', array('@db' => $db)), 'error');
     return FALSE;
   }
 
@@ -337,14 +383,18 @@ function _migrate_source_revoke_others($user, $hosts, $own_db, $keep_db) {
     }
     foreach ($rows as $statement) {
       $matches = array();
-      if (preg_match('/^GRANT SELECT ON `([A-Za-z0-9_]+)`\.\* /', $statement, $matches) !== 1) {
+      // Backslash is in the class because an escaped grant reads back escaped.
+      if (preg_match('/^GRANT SELECT ON `([A-Za-z0-9_%\\\\]+)`\.\* /', $statement, $matches) !== 1) {
         continue;
       }
-      $granted_db = $matches[1];
+      // Compare on the plain name, but REVOKE with the spelling MySQL stored --
+      // revoking a differently-spelled name is simply a grant that does not exist.
+      $granted_raw = $matches[1];
+      $granted_db = _migrate_source_unescape_db($granted_raw);
       if ($granted_db === $own_db || $granted_db === $keep_db) {
         continue;
       }
-      d()->service('db')->query("REVOKE SELECT ON `%s`.* FROM `%s`@`%s`", $granted_db, $user, $host);
+      d()->service('db')->query("REVOKE SELECT ON `%s`.* FROM `%s`@`%s`", $granted_raw, $user, $host);
       drush_log(dt('Migration source: revoked read access to @db.', array('@db' => $granted_db)), 'ok');
     }
   }
@@ -391,7 +441,11 @@ function drush_migrate_source_post_provision_verify() {
     $wanted = '';
   }
 
-  // Clear anything that is no longer wanted first, then add what is.
+  // Clear anything that is no longer wanted first, then add what is. $wanted is
+  // threaded through as keep_db, and that is the ONLY reason revoke-then-grant
+  // is idempotent rather than a revoke followed by a re-grant on every run. It
+  // holds only because every gate that can zero $wanted runs ABOVE this line --
+  // a gate added below it would revoke and immediately re-grant, once per verify.
   _migrate_source_revoke_others($user, $hosts, $own_db, $wanted);
 
   if ($wanted === '') {
@@ -406,7 +460,9 @@ function drush_migrate_source_post_provision_verify() {
     if (_migrate_source_grants_include_db($rows, $wanted)) {
       continue;
     }
-    $ok = d()->service('db')->query("GRANT SELECT ON `%s`.* TO `%s`@`%s`", $wanted, $user, $host);
+    // Escaped: an unescaped _ would make this a grant on a PATTERN of database
+    // names rather than on the one named. See _migrate_source_escape_db().
+    $ok = d()->service('db')->query("GRANT SELECT ON `%s`.* TO `%s`@`%s`", _migrate_source_escape_db($wanted), $user, $host);
     if ($ok === FALSE) {
       drush_log(dt('Migration source: failed to grant read access to @db.', array('@db' => $wanted)), 'error');
     }

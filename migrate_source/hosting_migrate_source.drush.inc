@@ -33,6 +33,13 @@ function hosting_migrate_source_hosting_site_context_options(&$task) {
   // with no interactive user, where node_access() would evaluate against the
   // anonymous user and clear every association.
   if ($source_nid && !hosting_migrate_source_source_eligible($task->ref, $source_nid)) {
+    // Say so. Clearing in silence is indistinguishable from having nothing to
+    // do, which is exactly how a grant that vanished mid-migration became
+    // invisible once already.
+    drush_log(dt('Migration source: source site @nid is no longer eligible for @target; clearing the association for this run.', array(
+      '@nid' => $source_nid,
+      '@target' => !empty($task->ref->title) ? $task->ref->title : $task->ref->nid,
+    )), 'warning');
     $source_nid = 0;
   }
 
@@ -100,6 +107,23 @@ function hosting_migrate_source_drush_command() {
  * instead, so the backend remains the single place a grant can be created, with
  * its invariant checks intact.
  */
+/**
+ * Both spellings a database name can have in MySQL's privilege tables.
+ *
+ * GRANT reads _ and % in a database name as LIKE wildcards, so the backend
+ * escapes them when it issues one -- but every grant issued before that change
+ * is stored unescaped, and both must keep matching here forever. A sweep that
+ * knew only one spelling would silently ignore half the grants it exists to
+ * find, which is worse than not sweeping at all.
+ *
+ * Callers pass names already validated as ^[A-Za-z0-9_]+$, so there is no
+ * backslash of their own to escape first.
+ */
+function _hosting_migrate_source_db_spellings($db) {
+  $escaped = str_replace(array('_', '%'), array('\_', '\%'), $db);
+  return ($escaped === $db) ? array($db) : array($db, $escaped);
+}
+
 function hosting_migrate_source_sweep() {
   $dry = drush_get_option('dry-run', FALSE);
   $max = (int) drush_get_option('max-revokes', 25);
@@ -126,7 +150,10 @@ function hosting_migrate_source_sweep() {
   }
 
   // --- what we intend ----------------------------------------------------
-  // Join on the CURRENT revision: the association table is keyed on vid.
+  // Join on the CURRENT revision: the association table is keyed on vid. The
+  // client and db_server equality carry the rest of the intent: a source moved
+  // to another client, or onto another database server, stops being intended
+  // the moment it moves, and this pass is then what takes the grant back.
   $intended = array();
   $result = db_query("SELECT m.nid AS target_nid, m.source_nid, ts.db_name AS target_db, ss.db_name AS source_db
     FROM {hosting_migrate_source} m
@@ -134,7 +161,8 @@ function hosting_migrate_source_sweep() {
     INNER JOIN {hosting_site} ts ON ts.vid = n.vid
     INNER JOIN {node} sn ON sn.nid = m.source_nid
     INNER JOIN {hosting_site} ss ON ss.vid = sn.vid
-    WHERE m.source_nid <> 0 AND ts.status <> :deleted AND ss.status <> :deleted", array(':deleted' => HOSTING_SITE_DELETED));
+    WHERE m.source_nid <> 0 AND ts.status <> :deleted AND ss.status <> :deleted
+      AND ts.client = ss.client AND ts.db_server = ss.db_server", array(':deleted' => HOSTING_SITE_DELETED));
   foreach ($result as $row) {
     if ($row->target_db === '' || $row->source_db === '') {
       continue;
@@ -146,7 +174,9 @@ function hosting_migrate_source_sweep() {
   // --- what actually exists ----------------------------------------------
   $revokes = array();
   foreach (array_keys($ours) as $db) {
-    $rows = db_query("SELECT User AS u, Host AS h FROM mysql.db WHERE Db = :db AND Select_priv = 'Y'", array(':db' => $db));
+    // Db comes back as STORED, which may be the escaped spelling; a REVOKE has
+    // to name the grant exactly as it was issued or MySQL reports no such grant.
+    $rows = db_query("SELECT User AS u, Host AS h, Db AS d FROM mysql.db WHERE Db IN (:dbs) AND Select_priv = 'Y'", array(':dbs' => _hosting_migrate_source_db_spellings($db)));
     foreach ($rows as $g) {
       // The database's own site user is always legitimate.
       if ($g->u === $db) {
@@ -156,14 +186,19 @@ function hosting_migrate_source_sweep() {
         drush_log(dt('Migration source sweep: skipping grantee @u on @db, not a plain identifier.', array('@u' => $g->u, '@db' => $db)), 'warning');
         continue;
       }
+      if (preg_match('/^[A-Za-z0-9_%\\\\]+$/', $g->d) !== 1) {
+        drush_log(dt('Migration source sweep: skipping a grant on @db, stored under an unrecognised name.', array('@db' => $db)), 'warning');
+        continue;
+      }
       if (isset($intended[$g->u . '|' . $db])) {
         continue;
       }
-      $revokes[] = array('user' => $g->u, 'host' => $g->h, 'db' => $db);
+      $revokes[] = array('user' => $g->u, 'host' => $g->h, 'db' => $g->d, 'label' => $db);
     }
   }
 
   // --- guard against acting on corrupt or empty intent --------------------
+  $failed = 0;
   if (count($revokes) > $max && !$force) {
     return drush_set_error('MIGRATE_SOURCE_TOO_MANY', dt('Migration source sweep: @n grants look unjustified, which is more than the @max guard allows. Refusing to act -- check the association table before re-running with --force.', array('@n' => count($revokes), '@max' => $max)));
   }
@@ -174,11 +209,27 @@ function hosting_migrate_source_sweep() {
       continue;
     }
     if ($dry) {
-      drush_log(dt('Migration source sweep [dry-run]: would revoke @g read access to @db.', array('@g' => $r['user'] . '@' . $r['host'], '@db' => $r['db'])), 'ok');
+      drush_log(dt('Migration source sweep [dry-run]: would revoke @g read access to @db.', array('@g' => $r['user'] . '@' . $r['host'], '@db' => $r['label'])), 'ok');
       continue;
     }
-    db_query('REVOKE SELECT ON `' . $r['db'] . '`.* FROM `' . $r['user'] . '`@`' . $r['host'] . '`');
-    drush_log(dt('Migration source sweep: revoked @g read access to @db.', array('@g' => $r['user'] . '@' . $r['host'], '@db' => $r['db'])), 'ok');
+    // One REVOKE that fails must not take the pass down with it. D7 db_query()
+    // rethrows PDOException, and a grant revoked concurrently between the
+    // enumeration above and this line -- the target's own verify does exactly
+    // that, and BOA boxes run verify storms -- would otherwise skip every later
+    // revoke AND the whole missing-grant pass below. Exception, never Throwable:
+    // Throwable is PHP 7.0+ and would fatal on the 5.6 floor.
+    try {
+      db_query('REVOKE SELECT ON `' . $r['db'] . '`.* FROM `' . $r['user'] . '`@`' . $r['host'] . '`');
+      drush_log(dt('Migration source sweep: revoked @g read access to @db.', array('@g' => $r['user'] . '@' . $r['host'], '@db' => $r['label'])), 'ok');
+    }
+    catch (Exception $e) {
+      $failed++;
+      drush_log(dt('Migration source sweep: could not revoke @g on @db (@msg); continuing.', array(
+        '@g' => $r['user'] . '@' . $r['host'],
+        '@db' => $r['label'],
+        '@msg' => $e->getMessage(),
+      )), 'warning');
+    }
   }
 
   // --- the other direction: intended but missing --------------------------
@@ -189,7 +240,7 @@ function hosting_migrate_source_sweep() {
     $parts = explode('|', $key);
     $target_db = $parts[0];
     $source_db = $parts[1];
-    $found = db_query("SELECT COUNT(*) FROM mysql.db WHERE Db = :db AND User = :u AND Select_priv = 'Y'", array(':db' => $source_db, ':u' => $target_db))->fetchField();
+    $found = db_query("SELECT COUNT(*) FROM mysql.db WHERE Db IN (:dbs) AND User = :u AND Select_priv = 'Y'", array(':dbs' => _hosting_migrate_source_db_spellings($source_db), ':u' => $target_db))->fetchField();
     if ($found > 0) {
       continue;
     }
@@ -205,10 +256,11 @@ function hosting_migrate_source_sweep() {
     drush_log(dt('Migration source sweep: queued a verify for site @nid to restore its missing grant.', array('@nid' => $target_nid)), 'ok');
   }
 
-  drush_log(dt('Migration source sweep: @o databases examined, @i associations intended, @r revoked, @q verifies queued.', array(
+  drush_log(dt('Migration source sweep: @o databases examined, @i associations intended, @r revoked, @f revokes failed, @q verifies queued.', array(
     '@o' => count($ours),
     '@i' => count($intended),
-    '@r' => $dry ? 0 : count($revokes),
+    '@r' => $dry ? 0 : (count($revokes) - $failed),
+    '@f' => $failed,
     '@q' => $queued,
   )), 'ok');
 }
