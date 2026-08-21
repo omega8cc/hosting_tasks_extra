@@ -206,7 +206,16 @@ function hosting_migrate_source_source_eligible($node, $source_nid) {
   if (empty($source) || $source->type != 'site') {
     return FALSE;
   }
-  if (!isset($source->site_status) || $source->site_status != HOSTING_SITE_ENABLED) {
+  // A DISABLED source keeps its access by design: the promise the task form
+  // makes is that only deleting the source removes it. Its database is still
+  // live (disable stops the site, not the database), so nothing forces a
+  // revocation, and requiring ENABLED here would make the target's next verify
+  // silently revoke mid-migration. Only DELETED is refused. Newly CHOOSING a
+  // disabled source stays impossible -- hosting_migrate_source_options() lists
+  // enabled sites only, which is what the form copy describes.
+  if (!isset($source->site_status)
+    || ($source->site_status != HOSTING_SITE_ENABLED
+      && $source->site_status != HOSTING_SITE_DISABLED)) {
     return FALSE;
   }
   if (!isset($source->client) || !isset($node->client) || $source->client != $node->client) {
@@ -252,7 +261,7 @@ function hosting_task_migrate_source_form($node) {
     '#title' => t('Migration source'),
     '#options' => array(0 => t('- None: remove access -')) + $options,
     '#default_value' => $current,
-    '#description' => t('The site whose database this site may read. Only your own enabled sites on the same database server are listed. Access is read-only, covers the whole source database, and lasts until you set this back to None. Disabling the source site does NOT remove the access; only deleting it does.'),
+    '#description' => t('The site whose database this site may read. Only your own enabled sites on the same database server are listed. Access is read-only, covers the whole source database, and lasts until you set this back to None. Deleting the source site, or moving it to another client, also ends it. Disabling the source site does NOT remove the access.'),
   );
 
   if (empty($options)) {
@@ -320,13 +329,102 @@ function hosting_migrate_source_post_hosting_restore_task($task, $data) {
   if (!isset($task->ref) || $task->ref->type != 'site') {
     return;
   }
-  if (empty($task->ref->migrate_source)) {
-    return;
-  }
   if (hosting_task_outstanding($task->ref->nid, 'delete')) {
     return;
   }
-  hosting_add_task($task->ref->nid, 'verify');
+
+  // The restored site may be a SOURCE as well as a target, and that case is the
+  // dangerous one. Restore rotates this site's database name and drops the old
+  // one, but nothing refreshes the frontend's record of db_name -- so every
+  // association naming this site still names a freed, globally reusable name,
+  // and MySQL keeps other grantees' rows across DROP DATABASE. Left alone, the
+  // targets' next verifies re-grant onto whatever site takes that name next.
+  //
+  // Verify this site FIRST, because that is what refreshes db_name, then each
+  // dependent target so its grant re-converges against the new name.
+  $targets = hosting_migrate_source_dependent_targets($task->ref->nid);
+
+  if (!empty($task->ref->migrate_source) || !empty($targets)) {
+    hosting_add_task($task->ref->nid, 'verify');
+  }
+  foreach ($targets as $nid) {
+    hosting_add_task($nid, 'verify');
+  }
+}
+
+/**
+ * Implements hook_post_hosting_TASK_TYPE_task().
+ *
+ * The teardown trigger for the ordinary Delete task. hook_node_delete() does NOT
+ * fire for it: hosting_site_post_hosting_delete_task() marks the node DELETED and
+ * node_save()s it, and the only node_delete() of a site node in the fork comes
+ * from a platform delete or the task garbage collector. Without this hook the
+ * targets keep SELECT on a dropped -- and reusable -- database name until their
+ * next verify, and BOA runs no routine site verifies.
+ *
+ * Only the DEPENDENTS are cleared here. This site's own association row is left
+ * to hook_node_update(), which reruns from the node_save() the delete task makes;
+ * deleting the row here would simply be rewritten by it.
+ */
+function hosting_migrate_source_post_hosting_delete_task($task, $data) {
+  if (!isset($task->ref) || $task->ref->type != 'site') {
+    return;
+  }
+  hosting_migrate_source_clear_source($task->ref->nid);
+}
+
+/**
+ * Targets wired to one source, filtered to those worth verifying.
+ *
+ * Skips targets that are themselves going away: a platform delete removes many
+ * sites at once, and a verify queued against a deleted site is noise, not
+ * teardown.
+ */
+function hosting_migrate_source_dependent_targets($source_nid) {
+  $targets = array();
+  if (empty($source_nid)) {
+    return $targets;
+  }
+  $result = db_select('hosting_migrate_source', 'm')
+    ->fields('m', array('nid'))
+    ->condition('m.source_nid', $source_nid)
+    ->execute();
+  foreach ($result as $row) {
+    $target = node_load($row->nid);
+    if (empty($target) || $target->type != 'site') {
+      continue;
+    }
+    if (isset($target->site_status) && $target->site_status == HOSTING_SITE_DELETED) {
+      continue;
+    }
+    if (hosting_task_outstanding($row->nid, 'delete')) {
+      continue;
+    }
+    $targets[$row->nid] = $row->nid;
+  }
+  return $targets;
+}
+
+/**
+ * Clear every association naming this source, and queue the verifies that revoke.
+ *
+ * Collect the targets BEFORE clearing: the row is what identifies them, and
+ * clearing alone would leave the access in place until a sweep.
+ */
+function hosting_migrate_source_clear_source($source_nid) {
+  if (empty($source_nid)) {
+    return;
+  }
+  $targets = hosting_migrate_source_dependent_targets($source_nid);
+
+  db_update('hosting_migrate_source')
+    ->fields(array('source_nid' => 0))
+    ->condition('source_nid', $source_nid)
+    ->execute();
+
+  foreach ($targets as $nid) {
+    hosting_add_task($nid, 'verify');
+  }
 }
 
 /**
@@ -415,38 +513,59 @@ function hosting_migrate_source_node_delete($node) {
     ->condition('nid', $node->nid)
     ->execute();
 
-  // Anything pointing AT this site loses its source. Collect the targets first
-  // so each can be re-verified, which is what actually revokes the grant --
-  // clearing the row alone would leave the access in place until a sweep.
-  $targets = array();
-  $result = db_select('hosting_migrate_source', 'm')
-    ->fields('m', array('nid'))
-    ->condition('m.source_nid', $node->nid)
-    ->execute();
-  foreach ($result as $row) {
-    $targets[$row->nid] = $row->nid;
-  }
+  // Anything pointing AT this site loses its source.
+  hosting_migrate_source_clear_source($node->nid);
+}
 
-  db_update('hosting_migrate_source')
-    ->fields(array('source_nid' => 0))
-    ->condition('source_nid', $node->nid)
-    ->execute();
+/**
+ * Implements hook_hosting_queues().
+ *
+ * Arms the reconciliation sweep. The backend's grant invariants establish that a
+ * source is a genuine, non-superuser site database on this server -- they do not
+ * and cannot establish, from MySQL alone, that it belongs to the requester. This
+ * sweep is the control that closes that gap, and until it is on a queue it runs
+ * only when an operator types it, leaving every grant it exists to reclaim -- an
+ * orphan on a dropped source database, a superseded user after a restore, a
+ * source moved to another client -- outstanding for an unbounded time. On the
+ * queue the exposure is bounded by one interval instead.
+ *
+ * SERIAL with a single item: one whole-instance reconciliation per run, not
+ * per-site work to spread across threads. Frequency is tunable in the panel's
+ * queue settings like any other.
+ */
+function hosting_migrate_source_hosting_queues() {
+  $queue['migrate_source'] = array(
+    'name' => t('Migration source grants'),
+    'description' => t('Reconcile migration-source database grants against what this Aegir instance intends.'),
+    'type' => HOSTING_QUEUE_TYPE_SERIAL,
+    'frequency' => strtotime('1 hour', 0),
+    'items' => 1,
+    'total_items' => 1,
+    'singular' => t('sweep'),
+    'plural' => t('sweeps'),
+  );
+  return $queue;
+}
 
-  foreach ($targets as $nid) {
-    // Skip a target that is itself going away -- a platform delete removes many
-    // sites at once and a verify against a deleted site is noise, not teardown.
-    $target = node_load($nid);
-    if (empty($target) || $target->type != 'site') {
-      continue;
+/**
+ * Queue callback, dispatched by name as hosting_<queue>_queue().
+ *
+ * The sweep itself lives in the module's .drush.inc, which drush loads for its
+ * own commands; the queue runner is a drush context too, but load it defensively
+ * rather than fatal inside a queue run if that ever stops being true.
+ */
+function hosting_migrate_source_queue() {
+  if (!function_exists('hosting_migrate_source_sweep')) {
+    $file = drupal_get_path('module', 'hosting_migrate_source') . '/hosting_migrate_source.drush.inc';
+    if (file_exists($file)) {
+      require_once $file;
     }
-    if (isset($target->site_status) && $target->site_status == HOSTING_SITE_DELETED) {
-      continue;
-    }
-    if (hosting_task_outstanding($nid, 'delete')) {
-      continue;
-    }
-    hosting_add_task($nid, 'verify');
   }
+  if (!function_exists('hosting_migrate_source_sweep')) {
+    watchdog('hosting_migrate_source', 'Migration source sweep is queued but its command file could not be loaded.', array(), WATCHDOG_WARNING);
+    return;
+  }
+  hosting_migrate_source_sweep();
 }
 
 /**
