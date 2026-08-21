@@ -89,6 +89,31 @@ function hosting_migrate_source_hosting_site_context_options(&$task) {
 }
 
 /**
+ * Implements drush_hook_pre_hosting_task().
+ *
+ * Record a migrate target's about-to-be-superseded database name BEFORE the
+ * task dispatches. It cannot be recorded afterwards: hosting_migrate's own
+ * post-task hook refreshes the frontend record to the NEW name before this
+ * module's hooks run (module order), so a post-task recording captures the
+ * live name instead of the superseded one -- observed live on a rename. If
+ * the migrate then fails, a still-live name sits on the record; that is the
+ * safe direction, since a proven user outranks the record and the entry
+ * expires.
+ */
+function drush_hosting_migrate_source_pre_hosting_task() {
+  $task = &drush_get_context('HOSTING_TASK');
+  if (!isset($task->ref) || !isset($task->ref->type) || $task->ref->type != 'site') {
+    return;
+  }
+  if (!isset($task->task_type) || $task->task_type != 'migrate') {
+    return;
+  }
+  if (!empty($task->ref->db_name) && function_exists('hosting_migrate_source_record_former_name')) {
+    hosting_migrate_source_record_former_name($task->ref->db_name);
+  }
+}
+
+/**
  * Implements hook_drush_command().
  */
 function hosting_migrate_source_drush_command() {
