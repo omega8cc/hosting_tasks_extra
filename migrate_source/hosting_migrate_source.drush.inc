@@ -89,7 +89,11 @@ function hosting_migrate_source_drush_command() {
     'options' => array(
       'dry-run' => 'Report what would change without changing anything.',
       'max-revokes' => 'Refuse to revoke more than this many grants in one pass (default 25). A guard against acting on corrupt or empty intent.',
-      'force' => 'Ignore the max-revokes guard.',
+      // NOT --force: the queue command this sweep is armed on
+      // (hosting-migrate_source) documents --force as its queue-lock bypass,
+      // and options are global to a drush invocation -- so an operator
+      // unsticking the queue would have disarmed the max-revokes guard.
+      'force-revokes' => 'Ignore the max-revokes guard.',
     ),
     'bootstrap' => DRUSH_BOOTSTRAP_DRUPAL_FULL,
     'aliases' => array('hosting-mss'),
@@ -114,9 +118,11 @@ function hosting_migrate_source_drush_command() {
  *
  * WHAT BOUNDS IT. This runs with the account user's connection, which holds
  * ALL ON *.* WITH GRANT OPTION -- it could revoke anything on the box. So it
- * never enumerates users: it enumerates GRANTS ON THE DATABASES OF THIS
- * INSTANCE'S OWN SITES, and considers nothing else. Another account's databases
- * are never read and never touched.
+ * never enumerates globally: one direction reads the grants HELD BY THIS
+ * INSTANCE'S OWN PROVEN USERS, the other direction the grants ON ITS OWN
+ * PROVEN DATABASES, and the second may revoke only a grantee this instance's
+ * own records name as a former site database. Another account's databases and
+ * users are never read and never touched.
  *
  * WHAT IT WILL NOT DO. It never issues a GRANT. A missing grant queues a verify
  * instead, so the backend remains the single place a grant can be created, with
@@ -240,7 +246,7 @@ function _hosting_migrate_source_opt($contents, $key) {
 function hosting_migrate_source_sweep() {
   $dry = drush_get_option('dry-run', FALSE);
   $max = (int) drush_get_option('max-revokes', 25);
-  $force = drush_get_option('force', FALSE);
+  $force = drush_get_option('force-revokes', FALSE);
 
   // --- our own databases -------------------------------------------------
   // Only sites of THIS frontend, and never the front end's own database.
@@ -249,18 +255,50 @@ function hosting_migrate_source_sweep() {
     return drush_set_error('MIGRATE_SOURCE_NO_FRONTEND', dt('Cannot identify the Aegir front-end site; refusing to sweep.'));
   }
 
+  // Every drop is counted: a site this loop cannot key never reaches the
+  // proving pass, so its user's grants go unexamined, and a blind spot that
+  // does not show up in any number is one nobody sizes.
   $ours = array();
-  $result = db_query("SELECT n.nid, n.title, s.db_name FROM {node} n INNER JOIN {hosting_site} s ON n.vid = s.vid WHERE n.type = 'site' AND s.status <> :deleted AND n.nid <> :hm AND s.db_name <> ''", array(':deleted' => HOSTING_SITE_DELETED, ':hm' => $hostmaster_nid));
+  $cand_empty = 0;
+  $cand_invalid = 0;
+  $cand_dup = 0;
+  $result = db_query("SELECT n.nid, n.title, s.db_name FROM {node} n INNER JOIN {hosting_site} s ON n.vid = s.vid WHERE n.type = 'site' AND s.status <> :deleted AND n.nid <> :hm", array(':deleted' => HOSTING_SITE_DELETED, ':hm' => $hostmaster_nid));
   foreach ($result as $row) {
+    if ((string) $row->db_name === '') {
+      // Routine for a site not yet installed; counted, not warned per site.
+      $cand_empty++;
+      continue;
+    }
     if (preg_match('/^[A-Za-z0-9_]+$/', $row->db_name) !== 1) {
+      $cand_invalid++;
+      drush_log(dt('Migration source sweep: site @nid records a database name that is not a plain identifier; it was not examined.', array('@nid' => $row->nid)), 'warning');
+      continue;
+    }
+    if (isset($ours[$row->db_name])) {
+      $cand_dup++;
+      drush_log(dt('Migration source sweep: sites @first and @nid both record database @db; only @first was examined.', array(
+        '@first' => $ours[$row->db_name],
+        '@nid' => $row->nid,
+        '@db' => $row->db_name,
+      )), 'warning');
       continue;
     }
     $ours[$row->db_name] = $row->nid;
   }
   if (empty($ours)) {
-    drush_log(dt('Migration source sweep: this instance has no site databases to examine.'), 'ok');
+    drush_log(dt('Migration source sweep: this instance has no examinable site databases (@e without a recorded name, @v invalid, @d duplicates).', array(
+      '@e' => $cand_empty,
+      '@v' => $cand_invalid,
+      '@d' => $cand_dup,
+    )), 'ok');
     return;
   }
+
+  // Every identity proven anywhere in this pass, keyed for the reclaim pass
+  // below: a proven user's grants are reconciled by the user-side enumeration,
+  // so the database-side pass must never touch them a second time.
+  $proven_users = array();
+  $proven_dbs = array();
 
   // --- what we intend ----------------------------------------------------
   // Join on the CURRENT revision: the association table is keyed on vid. The
@@ -297,6 +335,10 @@ function hosting_migrate_source_sweep() {
     // key: "<proven grantee user>|<proven source database>"
     $intended[$t['user'] . '|' . $sc['db']] = $row->target_nid;
     $intended_meta[$t['user'] . '|' . $sc['db']] = array('target_nid' => $row->target_nid, 'source_db' => $sc['db'], 'target_user' => $t['user']);
+    $proven_users[$t['user']] = TRUE;
+    $proven_users[$sc['user']] = TRUE;
+    $proven_dbs[$t['db']] = $row->target_nid;
+    $proven_dbs[$sc['db']] = $row->source_nid;
   }
 
   // --- what actually exists: enumerate from OUR OWN PROVEN USERS ------------
@@ -324,6 +366,8 @@ function hosting_migrate_source_sweep() {
     }
     $user = $identity['user'];
     $own_db = $identity['db'];
+    $proven_users[$user] = TRUE;
+    $proven_dbs[$own_db] = $nid;
     $rows = db_query("SELECT Db AS d, Host AS h FROM mysql.db WHERE User = :u AND Select_priv = 'Y'", array(':u' => $user));
     foreach ($rows as $g) {
       $granted = _hosting_migrate_source_unescape_db($g->d);
@@ -347,10 +391,94 @@ function hosting_migrate_source_sweep() {
     drush_log(dt('Migration source sweep: @n site(s) could not prove their own database identity and were skipped; their grants were neither examined nor touched.', array('@n' => $unproven)), 'warning');
   }
 
+  // --- the orphan classes no current user holds ----------------------------
+  //
+  // Two leftovers are invisible to the pass above because their grantee is
+  // nobody's CURRENT proven user: the user of a deleted target site, which
+  // provision keeps alive precisely because the SELECT grant on the source is
+  // still on it, and a user that a restore or deploy has superseded. Both hold
+  // a grant on a database that still lives here, so they are found from the
+  // other direction: enumerate grants ON this instance's proven databases.
+  //
+  // The destructive half stays bounded the same way as everything else in this
+  // pass -- by proof and by this instance's own records, never by how a grant
+  // merely looks. A row is revoked only when ALL of these hold:
+  //   - the host is loopback, the only place this feature ever grants;
+  //   - the privilege set is exactly SELECT, the only shape it ever issues;
+  //   - the grantee is not a proven user of this instance (those grants were
+  //     reconciled above) and not the database's own same-named user (the
+  //     provision convention -- that user is legitimate even while its site
+  //     cannot currently prove itself);
+  //   - the grantee is on this instance's OWN record of former database
+  //     names. That record has three sources: a deleted site's surviving
+  //     {hosting_site} row, a superseded revision (for forks that keep them),
+  //     and the names hosting_migrate_source_record_former_name() writes at
+  //     the moment a restore or migrate rotates them -- necessary because this
+  //     fork updates the site's single revision in place, so the rotated-away
+  //     name survives in no other record. The record is what keeps an
+  //     operator's monitoring or backup user out of reach: such a user is
+  //     never a name this instance minted for a site, so the sweep can report
+  //     it but structurally cannot revoke it.
+  // Anything that fails only the last test is said out loud and left alone.
+  $former = array();
+  $result = db_query("SELECT DISTINCT s.db_name FROM {hosting_site} s INNER JOIN {node} n ON n.nid = s.nid WHERE n.type = 'site' AND n.nid <> :hm AND s.db_name <> '' AND (s.status = :deleted OR s.vid <> n.vid)", array(':hm' => $hostmaster_nid, ':deleted' => HOSTING_SITE_DELETED));
+  foreach ($result as $row) {
+    if (preg_match('/^[A-Za-z0-9_]+$/', $row->db_name) === 1) {
+      $former[$row->db_name] = TRUE;
+    }
+  }
+  foreach (array_keys(variable_get('hosting_migrate_source_former_names', array())) as $name) {
+    if (preg_match('/^[A-Za-z0-9_]+$/', $name) === 1) {
+      $former[$name] = TRUE;
+    }
+  }
+
+  $left_to_human = 0;
+  if (!empty($proven_dbs)) {
+    $spellings = array();
+    foreach (array_keys($proven_dbs) as $db) {
+      foreach (_hosting_migrate_source_db_spellings($db) as $spelling) {
+        $spellings[] = $spelling;
+      }
+    }
+    // SELECT * so the privilege shape can be checked against every *_priv
+    // column this server version actually has.
+    $rows = db_query("SELECT * FROM mysql.db WHERE Db IN (:dbs) AND User <> '' AND Host IN ('localhost', '127.0.0.1') AND Select_priv = 'Y'", array(':dbs' => $spellings));
+    foreach ($rows as $g) {
+      $g = (array) $g;
+      $granted = _hosting_migrate_source_unescape_db($g['Db']);
+      $grantee = $g['User'];
+      if (isset($proven_users[$grantee])) {
+        continue;
+      }
+      if ($grantee === $granted) {
+        continue;
+      }
+      $select_only = TRUE;
+      foreach ($g as $column => $value) {
+        if (substr($column, -5) === '_priv' && $column !== 'Select_priv' && $value === 'Y') {
+          $select_only = FALSE;
+          break;
+        }
+      }
+      if (!$select_only || preg_match('/^[A-Za-z0-9_]+$/', $grantee) !== 1) {
+        drush_log(dt('Migration source sweep: leaving @u alone on @db -- not a grant shape this feature issues.', array('@u' => $grantee, '@db' => $g['Db'])), 'warning');
+        continue;
+      }
+      if (!isset($former[$grantee])) {
+        $left_to_human++;
+        drush_log(dt('Migration source sweep: @u holds a read grant on @db but is not on this instance\'s record of its own former databases; leaving it to a human.', array('@u' => $grantee, '@db' => $g['Db'])), 'warning');
+        continue;
+      }
+      $revokes[] = array('user' => $grantee, 'host' => $g['Host'], 'db' => $g['Db'], 'label' => $granted, 'former' => TRUE);
+    }
+  }
+
   // --- guard against acting on corrupt or empty intent --------------------
   $failed = 0;
+  $reclaimed = 0;
   if (count($revokes) > $max && !$force) {
-    return drush_set_error('MIGRATE_SOURCE_TOO_MANY', dt('Migration source sweep: @n grants look unjustified, which is more than the @max guard allows. Refusing to act -- check the association table before re-running with --force.', array('@n' => count($revokes), '@max' => $max)));
+    return drush_set_error('MIGRATE_SOURCE_TOO_MANY', dt('Migration source sweep: @n grants look unjustified, which is more than the @max guard allows. Refusing to act -- check the association table before re-running with --force-revokes.', array('@n' => count($revokes), '@max' => $max)));
   }
 
   foreach ($revokes as $r) {
@@ -359,7 +487,12 @@ function hosting_migrate_source_sweep() {
       continue;
     }
     if ($dry) {
-      drush_log(dt('Migration source sweep [dry-run]: would revoke @g read access to @db.', array('@g' => $r['user'] . '@' . $r['host'], '@db' => $r['label'])), 'ok');
+      if (!empty($r['former'])) {
+        drush_log(dt('Migration source sweep [dry-run]: would revoke the stale read grant former site user @g holds on @db.', array('@g' => $r['user'] . '@' . $r['host'], '@db' => $r['label'])), 'ok');
+      }
+      else {
+        drush_log(dt('Migration source sweep [dry-run]: would revoke @g read access to @db.', array('@g' => $r['user'] . '@' . $r['host'], '@db' => $r['label'])), 'ok');
+      }
       continue;
     }
     // One REVOKE that fails must not take the pass down with it. D7 db_query()
@@ -370,7 +503,13 @@ function hosting_migrate_source_sweep() {
     // Throwable is PHP 7.0+ and would fatal on the 5.6 floor.
     try {
       db_query('REVOKE SELECT ON `' . $r['db'] . '`.* FROM `' . $r['user'] . '`@`' . $r['host'] . '`');
-      drush_log(dt('Migration source sweep: revoked @g read access to @db.', array('@g' => $r['user'] . '@' . $r['host'], '@db' => $r['label'])), 'ok');
+      if (!empty($r['former'])) {
+        $reclaimed++;
+        drush_log(dt('Migration source sweep: revoked the stale read grant former site user @g held on @db.', array('@g' => $r['user'] . '@' . $r['host'], '@db' => $r['label'])), 'ok');
+      }
+      else {
+        drush_log(dt('Migration source sweep: revoked @g read access to @db.', array('@g' => $r['user'] . '@' . $r['host'], '@db' => $r['label'])), 'ok');
+      }
     }
     catch (Exception $e) {
       $failed++;
@@ -443,13 +582,18 @@ function hosting_migrate_source_sweep() {
     variable_set('hosting_migrate_source_retries', $attempts);
   }
 
-  drush_log(dt('Migration source sweep: @o databases examined, @i associations intended, @r revoked, @f revokes failed, @q verifies queued, @a abandoned.', array(
+  drush_log(dt('Migration source sweep: @o databases examined, @i associations intended, @r revoked (@s from former site users), @f revokes failed, @q verifies queued, @a abandoned, @h grants left to a human, @e sites without a recorded database name, @v with an invalid one, @d duplicate names skipped.', array(
     '@o' => count($ours),
     '@i' => count($intended),
     '@r' => $dry ? 0 : (count($revokes) - $failed),
+    '@s' => $reclaimed,
     '@f' => $failed,
     '@q' => $queued,
     '@a' => $abandoned,
+    '@h' => $left_to_human,
+    '@e' => $cand_empty,
+    '@v' => $cand_invalid,
+    '@d' => $cand_dup,
   )), 'ok');
 }
 
