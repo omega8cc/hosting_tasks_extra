@@ -352,6 +352,16 @@ function hosting_migrate_source_post_hosting_restore_task($task, $data) {
   if (!isset($task->ref) || $task->ref->type != 'site') {
     return;
   }
+  // Restore has just rotated this site's database name and user, and the value
+  // still in the record IS the superseded name -- the queued verify overwrites
+  // it, and the frontend keeps no revision of the old value. This is therefore
+  // the only moment the name can enter the instance's own record of its former
+  // databases, which is what entitles the sweep to reclaim the superseded
+  // user's leftover grants. Recorded before every early return: the rotation
+  // happened regardless of what this hook decides to queue.
+  if (!empty($task->ref->db_name)) {
+    hosting_migrate_source_record_former_name($task->ref->db_name);
+  }
   if (hosting_task_outstanding($task->ref->nid, 'delete')) {
     return;
   }
@@ -439,6 +449,54 @@ function hosting_migrate_source_post_hosting_delete_task($task, $data) {
     return;
   }
   hosting_migrate_source_clear_source($task->ref->nid);
+}
+
+/**
+ * Implements hook_post_hosting_TASK_TYPE_task() for migrate.
+ *
+ * Migrate runs a deploy that mints the site a fresh database name and user, so
+ * the recorded name is superseded here exactly as it is on restore, and is
+ * recorded for the same reason. Nothing else is queued from this hook: the
+ * re-convergence story after a migrate is the sweep's, by design.
+ */
+function hosting_migrate_source_post_hosting_migrate_task($task, $data) {
+  if (!isset($task->ref) || $task->ref->type != 'site') {
+    return;
+  }
+  if (!empty($task->ref->db_name)) {
+    hosting_migrate_source_record_former_name($task->ref->db_name);
+  }
+}
+
+/**
+ * Record a database name this instance is superseding or has just superseded.
+ *
+ * The sweep may revoke a grantee only when this instance's own records name it
+ * as a former site database. Deleted sites keep their final name on their
+ * surviving {hosting_site} row, but a restore or migrate rotates the name with
+ * no revision left behind -- so the moment of rotation writes it here instead.
+ *
+ * Bounded both ways: entries expire after 90 days and the list is capped at 200
+ * names, oldest first. Both bounds fail safe -- a name that ages out moves the
+ * grantee from "revoked" to "reported for a human", never the reverse.
+ */
+function hosting_migrate_source_record_former_name($db_name) {
+  if (!is_string($db_name) || $db_name === ''
+    || preg_match('/^[A-Za-z0-9_]+$/', $db_name) !== 1) {
+    return;
+  }
+  $former = variable_get('hosting_migrate_source_former_names', array());
+  $former[$db_name] = REQUEST_TIME;
+  foreach ($former as $name => $stamp) {
+    if ($stamp < REQUEST_TIME - 7776000) {
+      unset($former[$name]);
+    }
+  }
+  if (count($former) > 200) {
+    asort($former);
+    $former = array_slice($former, count($former) - 200, NULL, TRUE);
+  }
+  variable_set('hosting_migrate_source_former_names', $former);
 }
 
 /**
