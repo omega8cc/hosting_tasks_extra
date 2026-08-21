@@ -183,6 +183,19 @@ function _migrate_source_show_grants($user, $host) {
 }
 
 /**
+ * NEVER pass an escaped database name through this service's %s placeholder.
+ *
+ * provision's query() renders %s as substr(PDO::quote($v), 1, -1), and PDO's
+ * MySQL quoting escapes the backslash -- so the `foo\_bar` this file produces
+ * arrives at the server as `foo\\_bar`, which is a grant on a name containing a
+ * literal backslash and grants access to NOTHING. Measured on ng019 2026-08-21:
+ * the resulting grant let the user read neither foo_bar nor its wildcard
+ * neighbour. The escaped identifier is therefore interpolated directly, which is
+ * safe only because _migrate_source_valid_ident() has already constrained the
+ * name to ^[A-Za-z0-9_]+$ -- keep that check in front of every such call.
+ */
+
+/**
  * Escape a database name for the ON clause of a GRANT or REVOKE.
  *
  * MySQL reads _ and % in that position as LIKE wildcards, so an unescaped name
@@ -394,7 +407,12 @@ function _migrate_source_revoke_others($user, $hosts, $own_db, $keep_db) {
       if ($granted_db === $own_db || $granted_db === $keep_db) {
         continue;
       }
-      d()->service('db')->query("REVOKE SELECT ON `%s`.* FROM `%s`@`%s`", $granted_raw, $user, $host);
+      if (!_migrate_source_valid_ident($granted_db)) {
+        continue;
+      }
+      // Interpolated for the same reason as the GRANT above: %s would
+      // double-escape the backslash and revoke a grant that does not exist.
+      d()->service('db')->query("REVOKE SELECT ON `" . $granted_raw . "`.* FROM `%s`@`%s`", $user, $host);
       drush_log(dt('Migration source: revoked read access to @db.', array('@db' => $granted_db)), 'ok');
     }
   }
@@ -461,8 +479,10 @@ function drush_migrate_source_post_provision_verify() {
       continue;
     }
     // Escaped: an unescaped _ would make this a grant on a PATTERN of database
-    // names rather than on the one named. See _migrate_source_escape_db().
-    $ok = d()->service('db')->query("GRANT SELECT ON `%s`.* TO `%s`@`%s`", _migrate_source_escape_db($wanted), $user, $host);
+    // names rather than on the one named. See _migrate_source_escape_db(). The
+    // name is interpolated, NOT passed as %s -- %s would double-escape it into a
+    // grant on nothing at all.
+    $ok = d()->service('db')->query("GRANT SELECT ON `" . _migrate_source_escape_db($wanted) . "`.* TO `%s`@`%s`", $user, $host);
     if ($ok === FALSE) {
       drush_log(dt('Migration source: failed to grant read access to @db.', array('@db' => $wanted)), 'error');
     }
