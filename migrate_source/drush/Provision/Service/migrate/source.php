@@ -17,6 +17,11 @@ class Provision_Service_migrate_source extends Provision_Service {
   static function subscribe_site($context) {
     $context->setProperty('migrate_source_db');
     $context->setProperty('migrate_source_uri');
+    // The one-way latch recording that this site was wired up at least once.
+    // No 'null' counterpart on purpose: the frontend only ever sets it, and
+    // provision-save retains an option it is not told about, so the site
+    // alias itself carries it forward.
+    $context->setProperty('migrate_source_wired');
   }
 
 }

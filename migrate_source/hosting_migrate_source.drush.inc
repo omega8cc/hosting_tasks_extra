@@ -86,6 +86,16 @@ function hosting_migrate_source_hosting_site_context_options(&$task) {
   // string would be retained.
   $task->context_options['migrate_source_db'] = ($db_name === '') ? 'null' : $db_name;
   $task->context_options['migrate_source_uri'] = ($uri === '') ? 'null' : $uri;
+
+  // The latch the backend's revoke pass reads. Emitted ONLY when a source is
+  // actually being pushed, and never unset -- retention is the whole point,
+  // since provision-save keeps an option it is not told about, so the alias
+  // carries the latch through the very push that CLEARS the association, which
+  // is the push whose revoke has to run. Nothing clears it: a grant issued once
+  // can still be outstanding.
+  if ($db_name !== '') {
+    $task->context_options['migrate_source_wired'] = '1';
+  }
 }
 
 /**
