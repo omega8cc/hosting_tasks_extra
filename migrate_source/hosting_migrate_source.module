@@ -646,13 +646,21 @@ function hosting_migrate_source_node_delete($node) {
  * SERIAL with a single item: one whole-instance reconciliation per run, not
  * per-site work to spread across threads. Frequency is tunable in the panel's
  * queue settings like any other.
+ *
+ * DAILY, deliberately. A sweep pass can race the instance's own verifies --
+ * both revoke the same rows -- and while the sweep tolerates losing such a
+ * race, the right cadence is rare and quiet, not hourly. On BOA boxes the
+ * sweep runs from the nightly maintenance window inside a box-wide task-queue
+ * pause that removes the race entirely, and that runner keeps THIS queue
+ * switched off per instance; the registration remains for plain Aegir
+ * installs, where daily is the fallback cadence.
  */
 function hosting_migrate_source_hosting_queues() {
   $queue['migrate_source'] = array(
     'name' => t('Migration source grants'),
     'description' => t('Reconcile migration-source database grants against what this Aegir instance intends.'),
     'type' => HOSTING_QUEUE_TYPE_SERIAL,
-    'frequency' => strtotime('1 hour', 0),
+    'frequency' => strtotime('1 day', 0),
     'items' => 1,
     'total_items' => 1,
     'singular' => t('sweep'),
