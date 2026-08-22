@@ -207,6 +207,21 @@ function _hosting_migrate_source_db_spellings($db) {
  * comes back is a fact rather than a claim. Same reasoning, and the same
  * safety, as invariant (d) on the grant side.
  */
+/**
+ * TRUE when a drushrc db_host/db_port pair names this box's own MySQL server.
+ * Mirror of the backend helper; PHP 5.6-safe.
+ */
+function _hosting_migrate_source_local_db_endpoint($host, $port) {
+  $h = strtolower(trim((string) $host));
+  if ($h !== '' && $h !== 'localhost' && $h !== '127.0.0.1' && $h !== '::1') {
+    return FALSE;
+  }
+  if ($port !== '' && preg_match('/^[0-9]{1,5}$/', (string) $port) !== 1) {
+    return FALSE;
+  }
+  return TRUE;
+}
+
 function _hosting_migrate_source_prove_site($nid) {
   static $proven = array();
   if (isset($proven[$nid])) {
@@ -249,8 +264,14 @@ function _hosting_migrate_source_prove_site($nid) {
   if ($host === '') {
     $host = 'localhost';
   }
+  // Loopback only: the pair is taken as proof that $user belongs to THIS
+  // instance on THIS server, which a tenant-reachable foreign server would
+  // fake for any name. Same rule as the backend possession probe.
+  if (!_hosting_migrate_source_local_db_endpoint($host, $port)) {
+    return FALSE;
+  }
   $dsn = 'mysql:host=' . $host . ';dbname=' . $db;
-  if ($port !== '' && preg_match('/^[0-9]+$/', $port) === 1) {
+  if ($port !== '') {
     $dsn = 'mysql:host=' . $host . ';port=' . $port . ';dbname=' . $db;
   }
   try {
@@ -403,23 +424,34 @@ function hosting_migrate_source_sweep() {
     $own_db = $identity['db'];
     $proven_users[$user] = TRUE;
     $proven_dbs[$own_db] = $nid;
-    $rows = db_query("SELECT Db AS d, Host AS h FROM mysql.db WHERE User = :u AND Select_priv = 'Y'", array(':u' => $user));
+    // SELECT * and loopback hosts only, exactly like the former-user pass
+    // below: a row carrying more than SELECT, or held at a remote host, is not
+    // a grant this feature ever issued, so it is not ours to touch.
+    $rows = db_query("SELECT * FROM mysql.db WHERE User = :u AND Host IN ('localhost', '127.0.0.1') AND Select_priv = 'Y'", array(':u' => $user));
     foreach ($rows as $g) {
-      $granted = _hosting_migrate_source_unescape_db($g->d);
+      $g = (array) $g;
+      $granted = _hosting_migrate_source_unescape_db($g['Db']);
       if ($granted === $own_db) {
         // Its own database. Always legitimate.
         continue;
       }
-      if (preg_match('/^[A-Za-z0-9_]+$/', $granted) !== 1) {
-        // A wildcard or otherwise unusual grant. Not a shape this feature
-        // issues, so not ours to remove -- say so rather than act.
-        drush_log(dt('Migration source sweep: leaving @u alone on @db -- not a grant shape this feature issues.', array('@u' => $user, '@db' => $g->d)), 'warning');
+      $select_only = TRUE;
+      foreach ($g as $column => $value) {
+        if (substr($column, -5) === '_priv' && $column !== 'Select_priv' && $value === 'Y') {
+          $select_only = FALSE;
+          break;
+        }
+      }
+      if (!$select_only || preg_match('/^[A-Za-z0-9_]+$/', $granted) !== 1) {
+        // A wildcard, a multi-privilege or otherwise unusual grant. Not a shape
+        // this feature issues, so not ours to remove -- say so rather than act.
+        drush_log(dt('Migration source sweep: leaving @u alone on @db -- not a grant shape this feature issues.', array('@u' => $user, '@db' => $g['Db'])), 'warning');
         continue;
       }
       if (isset($intended[$user . '|' . $granted])) {
         continue;
       }
-      $revokes[] = array('user' => $user, 'host' => $g->h, 'db' => $g->d, 'label' => $granted);
+      $revokes[] = array('user' => $user, 'host' => $g['Host'], 'db' => $g['Db'], 'label' => $granted);
     }
   }
   if ($unproven > 0) {

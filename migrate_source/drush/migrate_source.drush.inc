@@ -395,6 +395,23 @@ function _migrate_source_drushrc_option($site_path, $key) {
  *
  * Fails closed on every unknown.
  */
+/**
+ * TRUE when a drushrc db_host/db_port pair names this box's own MySQL server.
+ *
+ * Shared by every probe that turns "the credentials connect" into "this user
+ * belongs here": the claim only holds against the local server. PHP 5.6-safe.
+ */
+function _migrate_source_local_db_endpoint($host, $port) {
+  $h = strtolower(trim((string) $host));
+  if ($h !== '' && $h !== 'localhost' && $h !== '127.0.0.1' && $h !== '::1') {
+    return FALSE;
+  }
+  if ($port !== '' && preg_match('/^[0-9]{1,5}$/', (string) $port) !== 1) {
+    return FALSE;
+  }
+  return TRUE;
+}
+
 function _migrate_source_source_possession_proven($db) {
   $uri = d()->migrate_source_uri;
   if (empty($uri) || $uri == 'null') {
@@ -425,11 +442,20 @@ function _migrate_source_source_possession_proven($db) {
   if ($host === '') {
     $host = 'localhost';
   }
+  // The probe proves possession of a database on THIS box's server, so the
+  // tenant-writable host/port must not be allowed to point it anywhere else:
+  // a server the tenant runs (or a unix_socket= smuggled through the DSN)
+  // would happily accept any credentials for a database named like the
+  // victim's. Loopback only, digits-only port; anything else fails closed.
+  if (!_migrate_source_local_db_endpoint($host, $port)) {
+    drush_log(dt('Migration source: the source site records a non-local database host (@h), so ownership of @db could not be proven.', array('@h' => $host, '@db' => $db)), 'error');
+    return FALSE;
+  }
 
   // Connecting WITH dbname set is the proof: the server refuses the connection
   // outright when the credentials hold no privilege on that database.
   $dsn = 'mysql:host=' . $host . ';dbname=' . $db;
-  if ($port !== '' && preg_match('/^[0-9]+$/', $port) === 1) {
+  if ($port !== '') {
     $dsn = 'mysql:host=' . $host . ';port=' . $port . ';dbname=' . $db;
   }
   $proven = FALSE;
@@ -579,8 +605,15 @@ function drush_migrate_source_post_provision_verify() {
   if ($own_host === '') {
     $own_host = 'localhost';
   }
+  // Same loopback rule as the possession probe: naming somebody else's user
+  // must mean needing somebody else's password ON THIS SERVER, not a server
+  // the tenant reaches through a tenant-writable db_host.
+  if (!_migrate_source_local_db_endpoint($own_host, $own_port)) {
+    drush_log(dt('Migration source: this site records a non-local database host (@h), so its identity could not be proven; skipping.', array('@h' => $own_host)), 'warning');
+    return;
+  }
   $own_dsn = 'mysql:host=' . $own_host . ';dbname=' . $own_db;
-  if ($own_port !== '' && preg_match('/^[0-9]+$/', $own_port) === 1) {
+  if ($own_port !== '') {
     $own_dsn = 'mysql:host=' . $own_host . ';port=' . $own_port . ';dbname=' . $own_db;
   }
   try {
