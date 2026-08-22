@@ -31,7 +31,7 @@
  * so (a) and (b) pass for ANY co-hosted database including another account's. A
  * tenant who authored a platform-side settings file naming a victim's database
  * and let Aegir import it as a node they legitimately own was granted SELECT on
- * that victim database. Confirmed and reproduced on ng019, 2026-08-21.
+ * that victim database. Confirmed and reproduced on a test box, 2026-08-21.
  *
  * The sweep does NOT compensate for that, though an earlier version of this
  * comment said so: its notion of "intended" is keyed on the same tenant-
@@ -41,10 +41,10 @@
  *
  * Underneath sits the privilege boundary itself: issuing a grant needs
  * master_db, which is readable only by the account user that runs Aegir tasks,
- * not by the tenant's shell or web identity (proven on ng019, 2026-08-19). That
- * boundary is why a tenant cannot simply invoke this code themselves -- but it
- * is deliberately NOT the only defence, because it came within one failed
- * password rotation of not holding.
+ * not by the tenant's shell or web identity (proven on a test box, 2026-08-19).
+ * That boundary is why a tenant cannot simply invoke this code themselves --
+ * but it is deliberately NOT the only defence, because it came within one
+ * failed password rotation of not holding.
  */
 
 /**
@@ -113,6 +113,24 @@ function _migrate_source_wanted_db() {
     return '';
   }
   return $db;
+}
+
+/**
+ * Has this feature ever wired this site up?
+ *
+ * The site alias IS the latch. The frontend emits migrate_source_wired only
+ * when it is pushing a source, and provision-save retains an option it is not
+ * told about, so the value survives every later push -- including the one that
+ * clears the association, which is exactly the push whose revoke must run.
+ *
+ * Absent means "not proven", never "no": a site wired before this latch existed
+ * re-latches on its next frontend push, and until then its stale grants are the
+ * sweep's to reclaim. Erring that way costs a bounded delay; erring the other
+ * way is the destructive mistake.
+ */
+function _migrate_source_ever_wired() {
+  $wired = d()->migrate_source_wired;
+  return (!empty($wired) && $wired != 'null');
 }
 
 /**
@@ -195,11 +213,12 @@ function _migrate_source_show_grants($user, $host) {
  * provision's query() renders %s as substr(PDO::quote($v), 1, -1), and PDO's
  * MySQL quoting escapes the backslash -- so the `foo\_bar` this file produces
  * arrives at the server as `foo\\_bar`, which is a grant on a name containing a
- * literal backslash and grants access to NOTHING. Measured on ng019 2026-08-21:
- * the resulting grant let the user read neither foo_bar nor its wildcard
- * neighbour. The escaped identifier is therefore interpolated directly, which is
- * safe only because _migrate_source_valid_ident() has already constrained the
- * name to ^[A-Za-z0-9_]+$ -- keep that check in front of every such call.
+ * literal backslash and grants access to NOTHING. Measured on a test box
+ * 2026-08-21: the resulting grant let the user read neither foo_bar nor its
+ * wildcard neighbour. The escaped identifier is therefore interpolated
+ * directly, which is safe only because _migrate_source_valid_ident() has
+ * already constrained the name to ^[A-Za-z0-9_]+$ -- keep that check in front
+ * of every such call.
  */
 
 /**
@@ -210,8 +229,8 @@ function _migrate_source_show_grants($user, $host) {
  * covers `siteX0` for any X. BOA mints exactly such names -- provision's
  * suggest_db_name() appends _<n> whenever a 16-character truncation collides --
  * so this escape is what keeps a grant to the one database it names. Verified
- * live on Percona 5.7.44 and 8.4.10 (2026-08-20): a grant on `wcq_a`.* read
- * wcqxa on both.
+ * live on Percona 5.7.44 and 8.4.10 (2026-08-20): a grant on `site_a`.* read
+ * sitexa on both.
  *
  * Both spellings must keep matching FOREVER: grants issued before this escaping
  * existed are stored unescaped and stay that way until revoked.
@@ -312,8 +331,8 @@ function _migrate_source_target_hosts($user) {
  * the account user that runs Aegir tasks, so this resolves for the legitimate
  * runner and returns '' for anyone else. An empty return is NOT fatal: on a
  * real box the front end's database user holds global privileges, so invariant
- * (b) refuses it independently of this check. Verified on ng019 2026-08-19 --
- * the front-end user carries GRANT ... ON *.* WITH GRANT OPTION.
+ * (b) refuses it independently of this check. Verified on a test box
+ * 2026-08-19 -- the front-end user carries GRANT ... ON *.* WITH GRANT OPTION.
  */
 function _migrate_source_frontend_db() {
   $hostmaster = d('@hostmaster', FALSE, FALSE);
@@ -376,7 +395,7 @@ function _migrate_source_drushrc_option($site_path, $key) {
  * every provisioned database has a same-named user holding a non-global grant
  * on it. A tenant who authored a platform-side settings file naming a victim's
  * database, and let Aegir import it as a site node they legitimately own, was
- * granted SELECT on that victim database. Verified on ng019 2026-08-21.
+ * granted SELECT on that victim database. Verified on a test box 2026-08-21.
  *
  * The fix is to stop asking about the database and start asking the requester's
  * side to prove access: connect to the named database AS THE SOURCE SITE, using
@@ -395,6 +414,23 @@ function _migrate_source_drushrc_option($site_path, $key) {
  *
  * Fails closed on every unknown.
  */
+/**
+ * TRUE when a drushrc db_host/db_port pair names this box's own MySQL server.
+ *
+ * Shared by every probe that turns "the credentials connect" into "this user
+ * belongs here": the claim only holds against the local server. PHP 5.6-safe.
+ */
+function _migrate_source_local_db_endpoint($host, $port) {
+  $h = strtolower(trim((string) $host));
+  if ($h !== '' && $h !== 'localhost' && $h !== '127.0.0.1' && $h !== '::1') {
+    return FALSE;
+  }
+  if ($port !== '' && preg_match('/^[0-9]{1,5}$/', (string) $port) !== 1) {
+    return FALSE;
+  }
+  return TRUE;
+}
+
 function _migrate_source_source_possession_proven($db) {
   $uri = d()->migrate_source_uri;
   if (empty($uri) || $uri == 'null') {
@@ -425,11 +461,20 @@ function _migrate_source_source_possession_proven($db) {
   if ($host === '') {
     $host = 'localhost';
   }
+  // The probe proves possession of a database on THIS box's server, so the
+  // tenant-writable host/port must not be allowed to point it anywhere else:
+  // a server the tenant runs (or a unix_socket= smuggled through the DSN)
+  // would happily accept any credentials for a database named like the
+  // victim's. Loopback only, digits-only port; anything else fails closed.
+  if (!_migrate_source_local_db_endpoint($host, $port)) {
+    drush_log(dt('Migration source: the source site records a non-local database host (@h), so ownership of @db could not be proven.', array('@h' => $host, '@db' => $db)), 'error');
+    return FALSE;
+  }
 
   // Connecting WITH dbname set is the proof: the server refuses the connection
   // outright when the credentials hold no privilege on that database.
   $dsn = 'mysql:host=' . $host . ';dbname=' . $db;
-  if ($port !== '' && preg_match('/^[0-9]+$/', $port) === 1) {
+  if ($port !== '') {
     $dsn = 'mysql:host=' . $host . ';port=' . $port . ';dbname=' . $db;
   }
   $proven = FALSE;
@@ -579,8 +624,15 @@ function drush_migrate_source_post_provision_verify() {
   if ($own_host === '') {
     $own_host = 'localhost';
   }
+  // Same loopback rule as the possession probe: naming somebody else's user
+  // must mean needing somebody else's password ON THIS SERVER, not a server
+  // the tenant reaches through a tenant-writable db_host.
+  if (!_migrate_source_local_db_endpoint($own_host, $own_port)) {
+    drush_log(dt('Migration source: this site records a non-local database host (@h), so its identity could not be proven; skipping.', array('@h' => $own_host)), 'warning');
+    return;
+  }
   $own_dsn = 'mysql:host=' . $own_host . ';dbname=' . $own_db;
-  if ($own_port !== '' && preg_match('/^[0-9]+$/', $own_port) === 1) {
+  if ($own_port !== '') {
     $own_dsn = 'mysql:host=' . $own_host . ';port=' . $own_port . ';dbname=' . $own_db;
   }
   try {
@@ -611,6 +663,21 @@ function drush_migrate_source_post_provision_verify() {
   }
   if ($wanted !== '' && !_migrate_source_source_is_grantable($wanted)) {
     $wanted = '';
+  }
+
+  // Nothing to converge on a site this feature has never wired up, and the
+  // revoke pass below must not run there. It is driven from MySQL's own state
+  // and holds no record of which grants this feature issued, so on an untouched
+  // site it would reach a read-only grant an operator made by hand -- and it
+  // would do so on EVERY verify of EVERY site, because enabling the feature
+  // puts this directory on the aegir drushrc include list instance-wide. Sites
+  // the feature HAS touched converge exactly as before, teardown included.
+  //
+  // A return, never a gate that zeroes $wanted -- see the note below. It cannot
+  // fire while $wanted is set: a site with a source is by definition one this
+  // feature has wired up.
+  if ($wanted === '' && !_migrate_source_ever_wired()) {
+    return;
   }
 
   // Clear anything that is no longer wanted first, then add what is. $wanted is
