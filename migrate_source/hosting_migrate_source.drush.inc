@@ -512,12 +512,16 @@ function hosting_migrate_source_sweep() {
   // --- guard against acting on corrupt or empty intent --------------------
   $failed = 0;
   $reclaimed = 0;
+  $host_skipped = 0;
   if (count($revokes) > $max && !$force) {
     return drush_set_error('MIGRATE_SOURCE_TOO_MANY', dt('Migration source sweep: @n grants look unjustified, which is more than the @max guard allows. Refusing to act -- check the association table before re-running with --force-revokes.', array('@n' => count($revokes), '@max' => $max)));
   }
 
   foreach ($revokes as $r) {
     if (preg_match('/^[A-Za-z0-9_.:%-]+$/', $r['host']) !== 1) {
+      // Tallied: the summary derives "revoked" by subtraction, so an
+      // uncounted skip would be reported as revoked.
+      $host_skipped++;
       drush_log(dt('Migration source sweep: skipping an unrecognised host for @u.', array('@u' => $r['user'])), 'warning');
       continue;
     }
@@ -617,12 +621,13 @@ function hosting_migrate_source_sweep() {
     variable_set('hosting_migrate_source_retries', $attempts);
   }
 
-  drush_log(dt('Migration source sweep: @o databases examined, @i associations intended, @r revoked (@s from former site users), @f revokes failed, @q verifies queued, @a abandoned, @h grants left to a human, @e sites without a recorded database name, @v with an invalid one, @d duplicate names skipped.', array(
+  drush_log(dt('Migration source sweep: @o databases examined, @i associations intended, @r revoked (@s from former site users), @f revokes failed, @k skipped on an unrecognised host, @q verifies queued, @a abandoned, @h grants left to a human, @e sites without a recorded database name, @v with an invalid one, @d duplicate names skipped.', array(
     '@o' => count($ours),
     '@i' => count($intended),
-    '@r' => $dry ? 0 : (count($revokes) - $failed),
+    '@r' => $dry ? 0 : (count($revokes) - $failed - $host_skipped),
     '@s' => $reclaimed,
     '@f' => $failed,
+    '@k' => $host_skipped,
     '@q' => $queued,
     '@a' => $abandoned,
     '@h' => $left_to_human,
