@@ -193,6 +193,24 @@ function _migrate_source_show_grants($user, $host) {
   if (!_migrate_source_valid_ident($user) || !_migrate_source_valid_host($host)) {
     return FALSE;
   }
+  // SHOW GRANTS for an account that does not exist is a server error (1141),
+  // and provision's query() logs every failed statement as a warning, which
+  // ends the whole task in the warning state. The hostmaster site is the
+  // standing case: its DB user is minted by the install, not by provision's
+  // grant(), so it has no 127.0.0.1 account for the loopback probe to find and
+  // every one of its verifies went yellow. Ask mysql.user first; an absent
+  // account is simply "no grants here". If that lookup itself fails, fall
+  // through to SHOW GRANTS exactly as before.
+  $exists = d()->service('db')->query("SELECT COUNT(*) AS n FROM mysql.user WHERE User = '%s' AND Host = '%s'", $user, $host);
+  if ($exists !== FALSE) {
+    foreach ($exists as $row) {
+      $values = array_values((array) $row);
+      if (isset($values[0]) && (int) $values[0] === 0) {
+        return FALSE;
+      }
+      break;
+    }
+  }
   $result = d()->service('db')->query("SHOW GRANTS FOR `%s`@`%s`", $user, $host);
   if ($result === FALSE) {
     return FALSE;
