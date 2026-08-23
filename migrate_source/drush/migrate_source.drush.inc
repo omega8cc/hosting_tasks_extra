@@ -386,6 +386,23 @@ function _migrate_source_drushrc_option($site_path, $key) {
 }
 
 /**
+ * TRUE when a drushrc db_host/db_port pair names this box's own MySQL server.
+ *
+ * Shared by every probe that turns "the credentials connect" into "this user
+ * belongs here": the claim only holds against the local server. PHP 5.6-safe.
+ */
+function _migrate_source_local_db_endpoint($host, $port) {
+  $h = strtolower(trim((string) $host));
+  if ($h !== '' && $h !== 'localhost' && $h !== '127.0.0.1' && $h !== '::1') {
+    return FALSE;
+  }
+  if ($port !== '' && preg_match('/^[0-9]{1,5}$/', (string) $port) !== 1) {
+    return FALSE;
+  }
+  return TRUE;
+}
+
+/**
  * (d) PROOF OF POSSESSION -- the only check that actually bounds OWNERSHIP.
  *
  * Everything else here establishes that the named database looks like a normal
@@ -414,22 +431,6 @@ function _migrate_source_drushrc_option($site_path, $key) {
  *
  * Fails closed on every unknown.
  */
-/**
- * TRUE when a drushrc db_host/db_port pair names this box's own MySQL server.
- *
- * Shared by every probe that turns "the credentials connect" into "this user
- * belongs here": the claim only holds against the local server. PHP 5.6-safe.
- */
-function _migrate_source_local_db_endpoint($host, $port) {
-  $h = strtolower(trim((string) $host));
-  if ($h !== '' && $h !== 'localhost' && $h !== '127.0.0.1' && $h !== '::1') {
-    return FALSE;
-  }
-  if ($port !== '' && preg_match('/^[0-9]{1,5}$/', (string) $port) !== 1) {
-    return FALSE;
-  }
-  return TRUE;
-}
 
 function _migrate_source_source_possession_proven($db) {
   $uri = d()->migrate_source_uri;

@@ -198,6 +198,21 @@ function _hosting_migrate_source_db_spellings($db) {
 }
 
 /**
+ * TRUE when a drushrc db_host/db_port pair names this box's own MySQL server.
+ * Mirror of the backend helper; PHP 5.6-safe.
+ */
+function _hosting_migrate_source_local_db_endpoint($host, $port) {
+  $h = strtolower(trim((string) $host));
+  if ($h !== '' && $h !== 'localhost' && $h !== '127.0.0.1' && $h !== '::1') {
+    return FALSE;
+  }
+  if ($port !== '' && preg_match('/^[0-9]{1,5}$/', (string) $port) !== 1) {
+    return FALSE;
+  }
+  return TRUE;
+}
+
+/**
  * Prove a site's real database identity, or FALSE.
  *
  * Returns array('user' => ..., 'db' => ...) only when the credentials that site
@@ -217,20 +232,6 @@ function _hosting_migrate_source_db_spellings($db) {
  * comes back is a fact rather than a claim. Same reasoning, and the same
  * safety, as invariant (d) on the grant side.
  */
-/**
- * TRUE when a drushrc db_host/db_port pair names this box's own MySQL server.
- * Mirror of the backend helper; PHP 5.6-safe.
- */
-function _hosting_migrate_source_local_db_endpoint($host, $port) {
-  $h = strtolower(trim((string) $host));
-  if ($h !== '' && $h !== 'localhost' && $h !== '127.0.0.1' && $h !== '::1') {
-    return FALSE;
-  }
-  if ($port !== '' && preg_match('/^[0-9]{1,5}$/', (string) $port) !== 1) {
-    return FALSE;
-  }
-  return TRUE;
-}
 
 function _hosting_migrate_source_prove_site($nid) {
   static $proven = array();
