@@ -163,6 +163,22 @@ function drush_provision_tasks_extra_provision_site_health_check() {
  */
 function drush_provision_tasks_extra_provision_flush_cache() {
   drush_errors_on();
+  // Grav site (DB-less capsule): flush through Grav's own CLI. Checked
+  // BEFORE the Drupal version probe, which reads a Grav root as "0" and
+  // would misroute into a Drupal cache-clear that cannot bootstrap.
+  // Guarded like _provision_drupal_rebuild_d8plus below: the helpers ship
+  // with the provision grav layer and this file must work without them.
+  if (function_exists('provision_platform_is_grav')
+    && function_exists('_provision_grav_cli')
+    && provision_platform_is_grav(d())) {
+    if (_provision_grav_cli('grav', 'clearcache -n')) {
+      drush_log(dt('All caches cleared (grav clearcache)'));
+    }
+    else {
+      drush_set_error('PROVISION_GRAV_FLUSH_FAILED', dt('grav clearcache failed; see the task log.'));
+    }
+    return;
+  }
   if (drush_drupal_major_version(d()->root) <= 7) {
     provision_backend_invoke(d()->name, 'cache-clear all');
     provision_backend_invoke(d()->name, 'cache-clear all');
@@ -187,6 +203,14 @@ function drush_provision_tasks_extra_provision_flush_cache() {
  */
 function drush_provision_tasks_extra_provision_rebuild_registry() {
   drush_errors_on();
+  // No registry and no service container on a Grav site; the frontend hides
+  // the task there, and this guard keeps a directly-invoked run honest
+  // instead of misrouting through the Drupal version probe.
+  if (function_exists('provision_platform_is_grav')
+    && provision_platform_is_grav(d())) {
+    drush_log(dt('Registry rebuild does not apply to Grav sites; nothing to do.'), 'warning');
+    return;
+  }
   if (d()->type === 'site') {
     if (drush_drupal_major_version(d()->root) == 7) {
       provision_backend_invoke(d()->name, 'registry-rebuild --fire-bazooka');

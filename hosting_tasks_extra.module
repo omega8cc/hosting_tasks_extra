@@ -14,6 +14,7 @@ function hosting_tasks_extra_hosting_tasks() {
 
   $tasks['site']['rebuild_registry'] = array(
     'title' => t('Rebuild registry'),
+    'access callback' => 'hosting_tasks_extra_rebuild_registry_task_access',
     'description' => t('Rebuilds the registry (Drupal 6/7) or the service container (Drupal 8+) and flushes all caches on this site. On Drupal 7 it recreates the registry tables from scratch; on Drupal 8+ it rebuilds the compiled service container and flushes every cache (drush cr). This may cause a short load peak on any busy site, so please run it only if you have a good reason to rebuild.'),
     'dialog' => TRUE,
   );
@@ -97,6 +98,11 @@ function hosting_tasks_extra_utf8mb4_convert_task_access($node, $task) {
   // (without it no Backdrop platform can exist in this frontend anyway).
   if (isset($node->platform) && function_exists('hosting_backdrop_platform_is_backdrop')
     && hosting_backdrop_platform_is_backdrop($node->platform)) {
+    return FALSE;
+  }
+  // Same shape for Grav: a DB-less capsule has no database to convert.
+  if (isset($node->platform) && function_exists('hosting_grav_platform_is_grav')
+    && hosting_grav_platform_is_grav($node->platform)) {
     return FALSE;
   }
   return TRUE;
@@ -352,4 +358,22 @@ function hosting_tasks_extra_form_alter(&$form, &$form_state, $form_id) {
 
     }
   }
+}
+
+/**
+ * Access callback for the rebuild_registry task.
+ *
+ * Hidden on Grav sites: no registry and no service container exist there
+ * (the backend command also refuses honestly if invoked directly). Guarded
+ * so this module keeps working where hosting_grav is absent.
+ */
+function hosting_tasks_extra_rebuild_registry_task_access($node, $task) {
+  if (!hosting_task_menu_access($node, $task)) {
+    return FALSE;
+  }
+  if (isset($node->platform) && function_exists('hosting_grav_platform_is_grav')
+    && hosting_grav_platform_is_grav($node->platform)) {
+    return FALSE;
+  }
+  return TRUE;
 }
