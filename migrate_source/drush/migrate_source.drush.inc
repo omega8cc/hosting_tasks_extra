@@ -615,6 +615,16 @@ function drush_migrate_source_post_provision_verify() {
     return;
   }
 
+  // A foreign-CMS site (a DB-less capsule) has no database credentials BY
+  // CONSTRUCTION -- nothing to catalogue and nothing to warn about, so skip
+  // silently instead of logging the missing-credentials warning on every
+  // verify. function_exists: the union helper ships with provision, and this
+  // file must stay loadable without it.
+  if (function_exists('provision_platform_is_foreign_cms')
+    && provision_platform_is_foreign_cms(d())) {
+    return;
+  }
+
   // The site's own credentials come from the site OPTION context (its
   // drushrc.php), not from the context object: the site alias deliberately
   // carries no database credentials, so d()->db_name is empty here. This is the
