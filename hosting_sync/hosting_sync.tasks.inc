@@ -47,6 +47,18 @@ function hosting_sync_hosting_task_menu_access($node, $task) {
       return FALSE;
     }
 
+    // provision-sync is Drupal-shaped end to end: sql-drop/sql-sync, rsync of
+    // sites/<uri>/{files,private/files,modules,themes,libraries}, then
+    // registry-rebuild / updatedb / features-revert-all. None of that exists
+    // for a foreign-CMS site (a Grav capsule has no database at all).
+    // hosting_sync does not depend on hosting_tasks_extra, so the union is
+    // inlined; inert where those frontend modules are absent.
+    if (!empty($node->platform)
+      && ((function_exists('hosting_grav_platform_is_grav') && hosting_grav_platform_is_grav($node->platform))
+        || (function_exists('hosting_txp_platform_is_txp') && hosting_txp_platform_is_txp($node->platform)))) {
+      return FALSE;
+    }
+
     // If we are deleted or in the process of deleting, we can't sync!
     if (hosting_task_outstanding($node->nid, 'delete') || ($node->site_status == HOSTING_SITE_DELETED)) {
       return FALSE;

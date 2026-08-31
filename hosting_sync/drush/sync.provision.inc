@@ -42,6 +42,14 @@ function _drush_provision_sync_validate_alias($alias) {
  * Implements hook_TASK_NAME_validate().
  */
 function drush_provision_sync_validate($source = NULL, $destination = NULL) {
+  // Sync is Drupal-shaped (sql-sync plus sites/<uri>/{files,modules,themes,
+  // libraries} rsync, then registry/updatedb/features passes) and does not
+  // apply to a foreign-CMS site. The frontend hides the task; this keeps a
+  // direct invoke honest. Inert where the provision predicate is absent.
+  if (function_exists('provision_platform_is_foreign_cms') && provision_platform_is_foreign_cms(d())) {
+    return drush_set_error('PROVISION_SYNC_FOREIGN_CMS', dt('Sync does not apply to this site: it is Drupal-shaped end to end and this site does not run Drupal.'));
+  }
+
   // Fail if no source
   if (empty($source) && !($source = drush_get_option('source'))) {
     return drush_set_error('DRUSH_TARGET_NOT_FOUND', dt('Source not found. You must enter a source alias to sync from'));
