@@ -8,6 +8,7 @@ function hosting_tasks_extra_hosting_tasks() {
 
   $tasks['site']['flush_cache'] = array(
     'title' => t('Flush all caches'),
+    'access callback' => 'hosting_tasks_extra_flush_cache_task_access',
     'description' => t('Flushes all caches on this site. This may cause a short load peak on any busy site, so please run it only if you have a good reason to flush caches on demand instead of allowing the site cron to flush them, when scheduled.'),
     'dialog' => TRUE,
   );
@@ -79,6 +80,48 @@ function hosting_tasks_extra_hosting_tasks() {
 }
 
 /**
+ * Is this site on a foreign-CMS (non-Drupal-lineage) platform?
+ */
+function hosting_tasks_extra_site_is_foreign_cms($node) {
+  // Union-shaped, the same idiom as the hosting_cron guard: each foreign-CMS
+  // frontend module contributes its predicate and the whole test is inert
+  // where those modules are absent. Backdrop is deliberately NOT in the
+  // union -- it runs the Drupal-shaped tasks and carries its own per-task
+  // guards where they differ.
+  if (empty($node->platform)) {
+    return FALSE;
+  }
+  if (function_exists('hosting_grav_platform_is_grav')
+    && hosting_grav_platform_is_grav($node->platform)) {
+    return TRUE;
+  }
+  if (function_exists('hosting_txp_platform_is_txp')
+    && hosting_txp_platform_is_txp($node->platform)) {
+    return TRUE;
+  }
+  return FALSE;
+}
+
+/**
+ * Access callback for the flush_cache task.
+ *
+ * Grav keeps the button: the backend routes it through grav clearcache.
+ * Textpattern keeps no server-side cache at all, and the Drupal path would
+ * clear only Drush's own cache while logging success -- hide it rather than
+ * ship that.
+ */
+function hosting_tasks_extra_flush_cache_task_access($node, $task) {
+  if (!hosting_task_menu_access($node, $task)) {
+    return FALSE;
+  }
+  if (isset($node->platform) && function_exists('hosting_txp_platform_is_txp')
+    && hosting_txp_platform_is_txp($node->platform)) {
+    return FALSE;
+  }
+  return TRUE;
+}
+
+/**
  * Access callback for the utf8mb4_convert task.
  *
  * The converter rides the utf8mb4_convert Drush extension, which needs a
@@ -100,9 +143,9 @@ function hosting_tasks_extra_utf8mb4_convert_task_access($node, $task) {
     && hosting_backdrop_platform_is_backdrop($node->platform)) {
     return FALSE;
   }
-  // Same shape for Grav: a DB-less capsule has no database to convert.
-  if (isset($node->platform) && function_exists('hosting_grav_platform_is_grav')
-    && hosting_grav_platform_is_grav($node->platform)) {
+  // The converter is Drupal-7-shaped end to end; a foreign-CMS site either
+  // has no database at all (Grav) or was created utf8mb4 from birth (TXP).
+  if (hosting_tasks_extra_site_is_foreign_cms($node)) {
     return FALSE;
   }
   return TRUE;
@@ -363,16 +406,15 @@ function hosting_tasks_extra_form_alter(&$form, &$form_state, $form_id) {
 /**
  * Access callback for the rebuild_registry task.
  *
- * Hidden on Grav sites: no registry and no service container exist there
- * (the backend command also refuses honestly if invoked directly). Guarded
- * so this module keeps working where hosting_grav is absent.
+ * Hidden on foreign-CMS sites (Grav, Textpattern): no registry and no
+ * service container exist there (the backend command also refuses honestly
+ * if invoked directly). Inert where those frontend modules are absent.
  */
 function hosting_tasks_extra_rebuild_registry_task_access($node, $task) {
   if (!hosting_task_menu_access($node, $task)) {
     return FALSE;
   }
-  if (isset($node->platform) && function_exists('hosting_grav_platform_is_grav')
-    && hosting_grav_platform_is_grav($node->platform)) {
+  if (hosting_tasks_extra_site_is_foreign_cms($node)) {
     return FALSE;
   }
   return TRUE;
