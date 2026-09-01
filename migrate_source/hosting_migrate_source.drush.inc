@@ -165,9 +165,12 @@ function hosting_migrate_source_drush_command() {
  * ALL ON *.* WITH GRANT OPTION -- it could revoke anything on the box. So it
  * never enumerates globally: one direction reads the grants HELD BY THIS
  * INSTANCE'S OWN PROVEN USERS, the other direction the grants ON ITS OWN
- * PROVEN DATABASES, and the second may revoke only a grantee this instance's
- * own records name as a former site database. Another account's databases and
- * users are never read and never touched.
+ * PROVEN DATABASES. Both are bounded by this instance's own records as well as
+ * by proof: the first may revoke only on a database this instance records for a
+ * site of its own, live or former -- a grant one of our users holds on anything
+ * else is reported and left -- and the second only from a grantee those records
+ * name as a former site database. Another account's databases and users are
+ * never read and never touched.
  *
  * WHAT IT WILL NOT DO. It never issues a GRANT. A missing grant queues a verify
  * instead, so the backend remains the single place a grant can be created, with
@@ -233,6 +236,27 @@ function _hosting_migrate_source_local_db_endpoint($host, $port) {
  * safety, as invariant (d) on the grant side.
  */
 
+/**
+ * The database a site claims for itself when its probe could NOT be completed.
+ *
+ * Two failures reach the same FALSE and mean opposite things. An access-family
+ * refusal IS an answer: the credentials that site records do not open the
+ * database it claims, so the pair is not ours. A connect timeout, a 1040, a
+ * server restart mid-pass answer nothing at all -- and a caller that revokes on
+ * the strength of the second takes a live association's grant away on a blip.
+ * Set by the probe, read by the one caller that can act destructively on the
+ * difference.
+ *
+ * Returns '' when the answer was a real one, or when there was no probe.
+ */
+function _hosting_migrate_source_probe_unknown($nid, $db = NULL) {
+  static $unknown = array();
+  if ($db !== NULL) {
+    $unknown[$nid] = $db;
+  }
+  return isset($unknown[$nid]) ? $unknown[$nid] : '';
+}
+
 function _hosting_migrate_source_prove_site($nid) {
   static $proven = array();
   if (isset($proven[$nid])) {
@@ -292,6 +316,17 @@ function _hosting_migrate_source_prove_site($nid) {
   }
   catch (Exception $e) {
     // Never logged verbatim: the message can echo credentials.
+    //
+    // Classify it, though. 1044/1045/1049 -- no access to that database, bad
+    // credentials, no such database -- are the server ANSWERING that this pair
+    // is not ours. Anything else (the 5s connect timeout above, a 1040, a
+    // socket that is not there, a non-PDO failure) is the server not being
+    // reachable to ask. Remember which, so a caller that would revoke on the
+    // strength of this FALSE can tell the two apart.
+    $code = ($e instanceof PDOException && isset($e->errorInfo[1])) ? (int) $e->errorInfo[1] : 0;
+    if ($code !== 1044 && $code !== 1045 && $code !== 1049) {
+      _hosting_migrate_source_probe_unknown($nid, $db);
+    }
     return FALSE;
   }
   $proven[$nid] = array('user' => $user, 'db' => $db);
@@ -374,6 +409,14 @@ function hosting_migrate_source_sweep() {
   // the moment it moves, and this pass is then what takes the grant back.
   $intended = array();
   $intended_meta = array();
+  // Pairs whose SOURCE could not be asked on this pass. Not intent -- a stay of
+  // execution, so a connection blip does not cost a live association its grant.
+  // Only what is shielded NOW is written back, so a source that answers again
+  // resets its own count and one that never answers runs out of passes.
+  $shield = array();
+  $shield_tries = variable_get('hosting_migrate_source_shielded', array());
+  $shield_next = array();
+  $shielded = 0;
   $result = db_query("SELECT m.nid AS target_nid, m.source_nid, ts.db_name AS target_db, ss.db_name AS source_db
     FROM {hosting_migrate_source} m
     INNER JOIN {node} n ON n.nid = m.nid AND n.vid = m.vid
@@ -393,6 +436,34 @@ function hosting_migrate_source_sweep() {
     $t = _hosting_migrate_source_prove_site($row->target_nid);
     $sc = _hosting_migrate_source_prove_site($row->source_nid);
     if ($t === FALSE || $sc === FALSE) {
+      // An unprovable TARGET is already safe: the pass below never enumerates
+      // its user, so nothing of its is revoked. An unprovable SOURCE is not --
+      // the target's user IS enumerated, and its grant on that source database
+      // is then revoked for want of an entry here. That is right when the
+      // source ANSWERED (the association does not correspond to a real,
+      // self-owned database, which is the case this proof exists for) and wrong
+      // when it could not be asked at all. Shield that one pair instead, on the
+      // database the source's own drushrc names, and only while the count below
+      // allows: a source that is permanently unaskable is still reclaimed, a
+      // few passes late. Cheaper than revoking a live grant on a blip.
+      $src_db = ($t === FALSE) ? '' : _hosting_migrate_source_probe_unknown($row->source_nid);
+      if ($src_db !== '' && preg_match('/^[A-Za-z0-9_]+$/', $src_db) === 1) {
+        $key = $t['user'] . '|' . $src_db;
+        $tries = isset($shield_tries[$key]) ? (int) $shield_tries[$key] : 0;
+        if ($tries < HOSTING_MIGRATE_SOURCE_MAX_RETRIES) {
+          $shield[$key] = TRUE;
+          $shield_next[$key] = $tries + 1;
+          $shielded++;
+          drush_log(dt('Migration source sweep: source site @s could not be asked whether it still owns @db, so association @t -> @s is neither proven nor disproven; leaving the grant in place this pass (@n of @m).', array(
+            '@t' => $row->target_nid,
+            '@s' => $row->source_nid,
+            '@db' => $src_db,
+            '@n' => $tries + 1,
+            '@m' => HOSTING_MIGRATE_SOURCE_MAX_RETRIES,
+          )), 'warning');
+          continue;
+        }
+      }
       drush_log(dt('Migration source sweep: association @t -> @s could not be proven on both ends; not treating it as intended.', array(
         '@t' => $row->target_nid,
         '@s' => $row->source_nid,
@@ -407,6 +478,30 @@ function hosting_migrate_source_sweep() {
     $proven_dbs[$t['db']] = $row->target_nid;
     $proven_dbs[$sc['db']] = $row->source_nid;
   }
+  if (!$dry) {
+    variable_set('hosting_migrate_source_shielded', $shield_next);
+  }
+
+  // This instance's own record of the database names it has minted for its own
+  // sites and no longer runs. Built here, ahead of BOTH passes that read it --
+  // the pass further down documents where its three sources come from. It reads
+  // frontend tables only, so the order is free.
+  $former = array();
+  $result = db_query("SELECT DISTINCT s.db_name FROM {hosting_site} s INNER JOIN {node} n ON n.nid = s.nid WHERE n.type = 'site' AND n.nid <> :hm AND s.db_name <> '' AND (s.status = :deleted OR s.vid <> n.vid)", array(':hm' => $hostmaster_nid, ':deleted' => HOSTING_SITE_DELETED));
+  foreach ($result as $row) {
+    if (preg_match('/^[A-Za-z0-9_]+$/', $row->db_name) === 1) {
+      $former[$row->db_name] = TRUE;
+    }
+  }
+  foreach (array_keys(variable_get('hosting_migrate_source_former_names', array())) as $name) {
+    if (preg_match('/^[A-Za-z0-9_]+$/', $name) === 1) {
+      $former[$name] = TRUE;
+    }
+  }
+
+  // Counted by both passes below: a grant this sweep can see but holds no
+  // record that would justify touching.
+  $left_to_human = 0;
 
   // --- what actually exists: enumerate from OUR OWN PROVEN USERS ------------
   //
@@ -459,7 +554,23 @@ function hosting_migrate_source_sweep() {
         drush_log(dt('Migration source sweep: leaving @u alone on @db -- not a grant shape this feature issues.', array('@u' => $user, '@db' => $g['Db'])), 'warning');
         continue;
       }
-      if (isset($intended[$user . '|' . $granted])) {
+      if (isset($intended[$user . '|' . $granted]) || isset($shield[$user . '|' . $granted])) {
+        continue;
+      }
+      // Bounded by this instance's own records, the way the pass below is. This
+      // one enumerates from a proven user of ours, which establishes the
+      // GRANTEE -- it establishes nothing about the database granted, so a
+      // read-only grant an operator made by hand, on something this instance
+      // never minted for a site, was being taken away silently and never given
+      // back. Not a scope test on the database: revoking our user's grant on a
+      // name that now belongs elsewhere is the orphan class this sweep exists
+      // for. Every one of those still comes back -- a crash-before-record grant
+      // sits on a live source database, so does a source that moved to another
+      // client, and a dropped source's name survives in the former-names
+      // record. Only names this instance has never recorded are report-only.
+      if (!isset($proven_dbs[$granted]) && !isset($ours[$granted]) && !isset($former[$granted])) {
+        $left_to_human++;
+        drush_log(dt('Migration source sweep: @u holds a read grant on @db, which is not a database name this instance has ever recorded for a site of its own; leaving it to a human.', array('@u' => $user, '@db' => $g['Db'])), 'warning');
         continue;
       }
       $revokes[] = array('user' => $user, 'host' => $g['Host'], 'db' => $g['Db'], 'label' => $granted);
@@ -498,20 +609,8 @@ function hosting_migrate_source_sweep() {
   //     never a name this instance minted for a site, so the sweep can report
   //     it but structurally cannot revoke it.
   // Anything that fails only the last test is said out loud and left alone.
-  $former = array();
-  $result = db_query("SELECT DISTINCT s.db_name FROM {hosting_site} s INNER JOIN {node} n ON n.nid = s.nid WHERE n.type = 'site' AND n.nid <> :hm AND s.db_name <> '' AND (s.status = :deleted OR s.vid <> n.vid)", array(':hm' => $hostmaster_nid, ':deleted' => HOSTING_SITE_DELETED));
-  foreach ($result as $row) {
-    if (preg_match('/^[A-Za-z0-9_]+$/', $row->db_name) === 1) {
-      $former[$row->db_name] = TRUE;
-    }
-  }
-  foreach (array_keys(variable_get('hosting_migrate_source_former_names', array())) as $name) {
-    if (preg_match('/^[A-Za-z0-9_]+$/', $name) === 1) {
-      $former[$name] = TRUE;
-    }
-  }
-
-  $left_to_human = 0;
+  // $former and $left_to_human are built above the pass before this one, which
+  // reads them too.
   if (!empty($proven_dbs)) {
     $spellings = array();
     foreach (array_keys($proven_dbs) as $db) {
@@ -664,9 +763,10 @@ function hosting_migrate_source_sweep() {
     variable_set('hosting_migrate_source_retries', $attempts);
   }
 
-  drush_log(dt('Migration source sweep: @o databases examined, @i associations intended, @r revoked (@s from former site users), @f revokes failed, @k skipped on an unrecognised host, @q verifies queued, @a abandoned, @h grants left to a human, @e sites without a recorded database name, @v with an invalid one, @d duplicate names skipped.', array(
+  drush_log(dt('Migration source sweep: @o databases examined, @i associations intended, @c shielded (their source could not be asked), @r revoked (@s from former site users), @f revokes failed, @k skipped on an unrecognised host, @q verifies queued, @a abandoned, @h grants left to a human, @e sites without a recorded database name, @v with an invalid one, @d duplicate names skipped.', array(
     '@o' => count($ours),
     '@i' => count($intended),
+    '@c' => $shielded,
     '@r' => $dry ? 0 : (count($revokes) - $failed - $host_skipped),
     '@s' => $reclaimed,
     '@f' => $failed,

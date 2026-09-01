@@ -625,6 +625,23 @@ function drush_migrate_source_post_provision_verify() {
     return;
   }
 
+  // Nothing to converge, and nothing to SAY, on a site this feature has never
+  // wired up. Enabling the feature puts this directory on the aegir drushrc
+  // include list instance-wide, so every gate below runs on every verify of
+  // every site -- and each gate that fails logs a warning or an error, which the
+  // frontend's log parser turns into a permanently yellow (or red) Verify task
+  // on a site that was never going to be touched anyway. The same defect the
+  // SHOW GRANTS path was silenced for, one layer out.
+  //
+  // Read here rather than at the revoke pass so the identifier warning inside
+  // it is still emitted exactly once. Every gate that can ZERO $wanted still
+  // runs below, and the check ahead of the revoke pass stays where it is to
+  // cover them: this one only fires when $wanted was already empty.
+  $wanted = _migrate_source_wanted_db();
+  if ($wanted === '' && !_migrate_source_ever_wired()) {
+    return;
+  }
+
   // The site's own credentials come from the site OPTION context (its
   // drushrc.php), not from the context object: the site alias deliberately
   // carries no database credentials, so d()->db_name is empty here. This is the
@@ -680,8 +697,6 @@ function drush_migrate_source_post_provision_verify() {
     drush_log(dt('Migration source: no local grant hosts found for this site, skipping.'), 'warning');
     return;
   }
-
-  $wanted = _migrate_source_wanted_db();
 
   // Never grant onto ourselves, and never emit a self-referential wiring.
   if ($wanted === $own_db) {
