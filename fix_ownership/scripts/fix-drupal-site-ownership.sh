@@ -33,16 +33,41 @@ fi
 #     This is compatible with any root-managed symlinks within the tree —
 #     their own metadata is adjusted but their targets are never followed.
 _validate_path_prefix() {
-  local _resolved
+  # Scope the resolved path to the SUDO caller's OWN home tree (aegir ->
+  # /var/aegir, Octopus oN -> /data/disk/oN), not merely "some BOA tree": a
+  # tenant must not drive this root-run chown against another tenant's
+  # /data/disk/oM/ files. Validating the realpath (not the raw arg) also defeats
+  # a symlink planted inside the caller's own tree that points out to another
+  # tenant. A direct root run (no SUDO_USER) is trusted and keeps the historical
+  # BOA-tree allowlist.
+  local _resolved _caller _home
   _resolved=$(realpath -e -- "$1" 2>/dev/null) || {
     printf "Error: path does not resolve: %s\n" "$1" >&2
     exit 1
   }
-  case "${_resolved}/" in
-    /var/aegir/*|/data/disk/*|/home/*)
-      ;;
+  _caller="${SUDO_USER:-}"
+  if [ -z "${_caller}" ]; then
+    case "${_resolved}/" in
+      /var/aegir/*|/data/disk/*|/home/*) return 0 ;;
+      *)
+        printf "Error: path outside allowed roots (/var/aegir, /data/disk, /home): %s\n" "${_resolved}" >&2
+        exit 1
+        ;;
+    esac
+  fi
+  _home=$(getent passwd "${_caller}" 2>/dev/null | cut -d: -f6)
+  _home="${_home%/}"
+  case "${_home}" in
+    /var/aegir|/data/disk/*) ;;
     *)
-      printf "Error: path outside allowed roots (/var/aegir, /data/disk, /home): %s\n" "${_resolved}" >&2
+      printf "Error: unexpected sudo caller '%s' (home '%s'); refusing.\n" "${_caller}" "${_home}" >&2
+      exit 1
+      ;;
+  esac
+  case "${_resolved}/" in
+    "${_home}"/*) ;;
+    *)
+      printf "Error: path '%s' is outside the caller's own tree (%s).\n" "${_resolved}" "${_home}" >&2
       exit 1
       ;;
   esac
@@ -71,6 +96,66 @@ while [ "$#" -gt 0 ]; do
   esac
   shift
 done
+
+# --- Grav 2 site capsule (boa-grav D-003) ------------------------------------
+# A capsule is a full Grav install at sites/<uri>/ with no settings.php;
+# detect it positively and run the capsule ownership model instead of
+# refusing (union seam: further foreign-CMS branches join here the same way).
+if [ -n "${site_path}" ] \
+  && [ -f "${site_path}/bin/grav" ] \
+  && [ -f "${site_path}/system/defines.php" ] \
+  && [ ! -f "${site_path}/settings.php" ]; then
+  if [ -z "${script_user}" ] \
+    || [[ $(id -un "${script_user}" 2> /dev/null) != "${script_user}" ]]; then
+    printf "Error: Please provide a valid user.\n"
+    exit 1
+  fi
+  _validate_path_prefix "${site_path}"
+  # Capsule ownership model (spike-proven): code <user>:users; the writable
+  # set <user>:<web_group> so FPM writes via GROUP (version-flip-immune).
+  printf "Setting Grav ownership of %s to: user => %s group => users\n" "${site_path}" "${script_user}"
+  chown -h -R ${script_user}:users ${site_path}
+  for _wd in user cache logs tmp backup images assets; do
+    [ -d "${site_path}/${_wd}" ] || continue
+    chown -h -R ${script_user}:${web_group:-www-data} "${site_path}/${_wd}"
+  done
+  # The root .env drops its world bit under D-008, so FPM's read comes via
+  # the web group -- the code pass above homed it to :users.
+  [ -f "${site_path}/.env" ] \
+    && chown -h ${script_user}:${web_group:-www-data} "${site_path}/.env"
+  echo "Done setting proper ownership of files and directories (Grav site)."
+  exit 0
+fi
+
+# --- Textpattern multisite site (boa-txp D-002) -------------------------------
+# A TXP site is sites/<uri>/{admin,private,public} with no settings.php; detect
+# it positively and run the TXP ownership model instead of refusing (union seam
+# shared with the Grav branch above; further foreign CMSes join the same way).
+if [ -n "${site_path}" ] \
+  && [ -f "${site_path}/public/index.php" ] \
+  && [ -f "${site_path}/public/css.php" ] \
+  && [ -d "${site_path}/admin" ] \
+  && [ ! -f "${site_path}/settings.php" ]; then
+  if [ -z "${script_user}" ] \
+    || [[ $(id -un "${script_user}" 2> /dev/null) != "${script_user}" ]]; then
+    printf "Error: Please provide a valid user.\n"
+    exit 1
+  fi
+  _validate_path_prefix "${site_path}"
+  # Code <user>:users; the writable set and the credential store
+  # <user>:<web_group> so FPM reaches them via GROUP (version-flip-immune: a
+  # box-default PHP bump changes the pool USER, never its www-data group).
+  # -h keeps the four load-bearing admin symlinks as symlinks and never
+  # follows them into the shared core.
+  printf "Setting Textpattern ownership of %s to: user => %s group => users\n" "${site_path}" "${script_user}"
+  chown -h -R ${script_user}:users ${site_path}
+  for _wd in tmp modules admin/plugins public/files public/images public/themes private; do
+    [ -d "${site_path}/${_wd}" ] || continue
+    chown -h -R ${script_user}:${web_group:-www-data} "${site_path}/${_wd}"
+  done
+  echo "Done setting proper ownership of files and directories (Textpattern site)."
+  exit 0
+fi
 
 if [ -z "${site_path}" ] || [ ! -f "${site_path}/settings.php" ]; then
   printf "Error: Please provide a valid Drupal site directory.\n"
