@@ -193,9 +193,10 @@ function drush_provision_tasks_extra_provision_flush_cache() {
     provision_backend_invoke(d()->name, 'cache-clear all');
   }
   elseif (drush_drupal_major_version(d()->root) >= 10 && function_exists('_provision_drupal_rebuild_d8plus')) {
-    // D10/D11 cannot be bootstrapped by Aegir's own Drush 8, so the
-    // 'cache-rebuild' invoke below silently no-ops there. Use the shared
-    // provision helper, which runs 'cr' via the site-local Drush. Non-fatal.
+    // D10/D11 must not be rebuilt by Aegir's own Drush 8, and on a locked
+    // platform no site-local Drush loads under PHP 8 either. The shared
+    // provision helper rebuilds the container and flushes every cache by core
+    // itself, Drush-free, whatever the lock state. Non-fatal, never silent.
     _provision_drupal_rebuild_d8plus();
   }
   else {
@@ -231,9 +232,11 @@ function drush_provision_tasks_extra_provision_rebuild_registry() {
     }
     elseif (function_exists('_provision_drupal_rebuild_d8plus')) {
       // D8+ has no registry; the equivalent is rebuilding the service container
-      // and flushing all caches (drush cr). The shared provision helper runs it
-      // via the site-local Drush on D10+ (where Aegir Drush 8 cannot bootstrap
-      // the site) and via Aegir Drush 8 'cache-rebuild' on D8/D9. Non-fatal.
+      // and flushing all caches (what drush cr does). The shared provision
+      // helper does it by core itself, Drush-free, on D10+ (no site-local Drush
+      // loads on a locked platform under PHP 8, and Aegir Drush 8 must not be
+      // the compiler) and via Aegir Drush 8 'cache-rebuild' on D8/D9.
+      // Non-fatal, never silent.
       _provision_drupal_rebuild_d8plus();
       drush_log(dt('D8+ service container and all caches rebuilt'));
     }
