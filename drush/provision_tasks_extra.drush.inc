@@ -197,7 +197,12 @@ function drush_provision_tasks_extra_provision_flush_cache() {
     // platform no site-local Drush loads under PHP 8 either. The shared
     // provision helper rebuilds the container and flushes every cache by core
     // itself, Drush-free, whatever the lock state. Non-fatal, never silent.
-    _provision_drupal_rebuild_d8plus();
+    // A rebuild the helper reports as not done (FALSE) already carries its
+    // REBUILD/CORE warning, which the success line below would contradict;
+    // an older provision returns nothing and keeps the old reporting.
+    if (_provision_drupal_rebuild_d8plus() === FALSE) {
+      return;
+    }
   }
   else {
     // D8/D9 (and any environment without the helper): Aegir Drush 8 still
@@ -237,8 +242,9 @@ function drush_provision_tasks_extra_provision_rebuild_registry() {
       // loads on a locked platform under PHP 8, and Aegir Drush 8 must not be
       // the compiler) and via Aegir Drush 8 'cache-rebuild' on D8/D9.
       // Non-fatal, never silent.
-      _provision_drupal_rebuild_d8plus();
-      drush_log(dt('D8+ service container and all caches rebuilt'));
+      if (_provision_drupal_rebuild_d8plus() !== FALSE) {
+        drush_log(dt('D8+ service container and all caches rebuilt'));
+      }
     }
     else {
       // Older provision without the helper: nothing safe to do on D8+.
