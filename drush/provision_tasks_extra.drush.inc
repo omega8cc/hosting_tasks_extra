@@ -268,6 +268,33 @@ function drush_provision_tasks_extra_provision_run_cron() {
 function drush_provision_tasks_extra_provision_update() {
   drush_errors_on();
   $options = d()->options;
+  if (drush_drupal_major_version(d()->root) >= 10) {
+    // Drupal 10+: Aegir's own Drush 8 must never run updatedb here -- it is
+    // version-mismatched for D10+, its FULL bootstrap is read-only
+    // introspection on a locked platform, and the container it would compile
+    // carries Drush 8 service definitions (the same rule the deploy follows,
+    // deploy.provision.inc DEPLOY4b). The shared provision helper takes the
+    // deploy's own window instead: a real unlock when the platform is locked,
+    // the site-local Drush updatedb by --root/--uri, a real re-lock, then
+    // core's own Drush-free container rebuild. It logs UPDATE2 .. UPDATE10
+    // and a WARNING when the updates did not run or did not complete, which
+    // the success line below must not contradict. An older provision without
+    // the helper keeps the updates for the operator rather than running the
+    // wrong Drush.
+    if (!function_exists('_provision_drupal_site_local_updatedb')) {
+      drush_log(dt('Drush updatedb skipped: Aegir Drush 8 must not run updatedb on Drupal 10+, and this provision carries no site-local updatedb helper; apply the pending database updates by hand'), 'warning');
+      return;
+    }
+    if (isset($options['entity_updates']) && $options['entity_updates']) {
+      // Automatic entity schema updates left core in Drupal 8.7 and the option
+      // with them; the site-local Drush would refuse it.
+      drush_log(dt('--entity-updates does not exist on Drupal 10+; running plain updatedb'), 'notice');
+    }
+    if (_provision_drupal_site_local_updatedb('UPDATE') === TRUE) {
+      drush_log(dt('Site-local Drush updatedb task completed'));
+    }
+    return;
+  }
   if (isset($options['entity_updates']) && $options['entity_updates'] && drush_drupal_major_version(d()->root) >= 8) {
     provision_backend_invoke(d()->name, 'updatedb', array('--entity-updates'));
     drush_log(dt('Drush updatedb task completed with --entity-updates'));
