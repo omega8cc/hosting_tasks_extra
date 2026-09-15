@@ -27,6 +27,10 @@ function provision_tasks_extra_drush_command() {
     'description' => dt('Runs db updates on a site'),
     'bootstrap' => DRUSH_BOOTSTRAP_DRUPAL_ROOT,
   );
+  $items['provision-site_local_updatedb'] = array(
+    'description' => dt('Applies a Drupal 10+ site\'s pending database updates with its site-local Drush (no backup, no maintenance mode); what provision-update and provision-sync run on Drupal 10+'),
+    'bootstrap' => DRUSH_BOOTSTRAP_DRUPAL_ROOT,
+  );
   $items['provision-update_translations'] = array(
     'description' => dt('Update translations on a site'),
     'bootstrap' => DRUSH_BOOTSTRAP_DRUPAL_FULL,
@@ -302,6 +306,30 @@ function drush_provision_tasks_extra_provision_update() {
   else {
     provision_backend_invoke(d()->name, 'updatedb');
     drush_log(dt('Drush updatedb task completed w/o --entity-updates'));
+  }
+}
+
+/**
+ * Implements the provision-site_local_updatedb command.
+ *
+ * The deploy's Drupal 10+ updatedb window (unlock if locked, site-local
+ * updatedb, re-lock, core rebuild) as a command of its own, so a task that
+ * updates a site it has just written (provision-sync's destination) can run it
+ * in that site's context without provision-update's backup and maintenance
+ * mode. Aegir's Drush 8 never runs updatedb on Drupal 10+.
+ */
+function drush_provision_tasks_extra_provision_site_local_updatedb() {
+  drush_errors_on();
+  if (drush_drupal_major_version(d()->root) < 10) {
+    drush_log(dt('Not a Drupal 10+ site; Aegir Drush 8 updatedb applies (provision-update)'), 'warning');
+    return;
+  }
+  if (!function_exists('_provision_drupal_site_local_updatedb')) {
+    drush_log(dt('Drush updatedb skipped: Aegir Drush 8 must not run updatedb on Drupal 10+, and this provision carries no site-local updatedb helper; apply the pending database updates by hand'), 'warning');
+    return;
+  }
+  if (_provision_drupal_site_local_updatedb('UPDATE') === TRUE) {
+    drush_log(dt('Site-local Drush updatedb task completed'));
   }
 }
 
