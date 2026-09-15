@@ -27,6 +27,10 @@ function provision_tasks_extra_drush_command() {
     'description' => dt('Runs db updates on a site'),
     'bootstrap' => DRUSH_BOOTSTRAP_DRUPAL_ROOT,
   );
+  $items['provision-site_local_updatedb'] = array(
+    'description' => dt('Applies a Drupal 10+ site\'s pending database updates with its site-local Drush (no backup, no maintenance mode); what provision-update and provision-sync run on Drupal 10+'),
+    'bootstrap' => DRUSH_BOOTSTRAP_DRUPAL_ROOT,
+  );
   $items['provision-update_translations'] = array(
     'description' => dt('Update translations on a site'),
     'bootstrap' => DRUSH_BOOTSTRAP_DRUPAL_FULL,
@@ -268,6 +272,40 @@ function drush_provision_tasks_extra_provision_run_cron() {
 function drush_provision_tasks_extra_provision_update() {
   drush_errors_on();
   $options = d()->options;
+  if (drush_drupal_major_version(d()->root) >= 10) {
+    // Drupal 10+: Aegir's own Drush 8 must never run updatedb here -- it is
+    // version-mismatched for D10+, its FULL bootstrap is read-only
+    // introspection on a locked platform, and the container it would compile
+    // carries Drush 8 service definitions (the same rule the deploy follows,
+    // deploy.provision.inc DEPLOY4b). The shared provision helper takes the
+    // deploy's own window instead: a real unlock when the platform is locked,
+    // the site-local Drush updatedb by --root/--uri, a real re-lock, then
+    // core's own Drush-free container rebuild. It logs UPDATE2 .. UPDATE10
+    // and a WARNING when the updates did not run or did not complete, which
+    // the success line below must not contradict. An older provision without
+    // the helper keeps the updates for the operator rather than running the
+    // wrong Drush.
+    if (!function_exists('_provision_drupal_site_local_updatedb')) {
+      drush_log(dt('Drush updatedb skipped: Aegir Drush 8 must not run updatedb on Drupal 10+, and this provision carries no site-local updatedb helper; apply the pending database updates by hand'), 'warning');
+      return;
+    }
+    if (isset($options['entity_updates']) && $options['entity_updates']) {
+      // Automatic entity schema updates left core in Drupal 8.7 and the option
+      // with them; the site-local Drush would refuse it.
+      drush_log(dt('--entity-updates does not exist on Drupal 10+; running plain updatedb'), 'notice');
+    }
+    $updated = _provision_drupal_site_local_updatedb('UPDATE');
+    if ($updated === TRUE) {
+      drush_log(dt('Site-local Drush updatedb task completed'));
+      return;
+    }
+    // The task's own net -- the pre-update backup taken in pre_validate --
+    // is restored by the rollback hook, and Drush runs that hook only on an
+    // error. Updates that did not run (no executable site-local Drush) or
+    // did not complete must fail the task, as they did when Aegir Drush 8
+    // ran them here; the helper logged the UPDATE4b/UPDATE9 warning above.
+    return drush_set_error('PROVISION_UPDATEDB_FAILED', dt('The site-local Drush updatedb did not run or did not complete (see the UPDATE4b/UPDATE9 warning above); the pre-update backup is restored'));
+  }
   if (isset($options['entity_updates']) && $options['entity_updates'] && drush_drupal_major_version(d()->root) >= 8) {
     provision_backend_invoke(d()->name, 'updatedb', array('--entity-updates'));
     drush_log(dt('Drush updatedb task completed with --entity-updates'));
@@ -276,6 +314,35 @@ function drush_provision_tasks_extra_provision_update() {
     provision_backend_invoke(d()->name, 'updatedb');
     drush_log(dt('Drush updatedb task completed w/o --entity-updates'));
   }
+}
+
+/**
+ * Implements the provision-site_local_updatedb command.
+ *
+ * The deploy's Drupal 10+ updatedb window (unlock if locked, site-local
+ * updatedb, re-lock, core rebuild) as a command of its own, so a task that
+ * updates a site it has just written (provision-sync's destination) can run it
+ * in that site's context without provision-update's backup and maintenance
+ * mode. Aegir's Drush 8 never runs updatedb on Drupal 10+.
+ */
+function drush_provision_tasks_extra_provision_site_local_updatedb() {
+  drush_errors_on();
+  if (drush_drupal_major_version(d()->root) < 10) {
+    drush_log(dt('Not a Drupal 10+ site; Aegir Drush 8 updatedb applies (provision-update)'), 'warning');
+    return;
+  }
+  if (!function_exists('_provision_drupal_site_local_updatedb')) {
+    drush_log(dt('Drush updatedb skipped: Aegir Drush 8 must not run updatedb on Drupal 10+, and this provision carries no site-local updatedb helper; apply the pending database updates by hand'), 'warning');
+    return;
+  }
+  $updated = _provision_drupal_site_local_updatedb('UPDATE');
+  if ($updated === TRUE) {
+    drush_log(dt('Site-local Drush updatedb task completed'));
+    return;
+  }
+  // provision-sync's own rollback (the destination's pre-sync backup) fires
+  // only on an error from the commands it invokes.
+  return drush_set_error('PROVISION_UPDATEDB_FAILED', dt('The site-local Drush updatedb did not run or did not complete (see the UPDATE4b/UPDATE9 warning above)'));
 }
 
 /**
@@ -320,7 +387,13 @@ function drush_provision_tasks_extra_provision_update_pre_validate() {
   drush_set_option('pre_update_backup_file', $backup_file);
 
   drush_set_option('force', TRUE);
-  $success = drush_invoke_process('@self', 'provision-backup', array($backup_file));
+  // A safety copy the rollback restores must be self-contained, with the
+  // database inside the archive (the mode the restore pre-hook forces for its
+  // own copy): the modeless fast path dumps only to the shared, rotating
+  // tmp_expim store and packs a files-only archive, which the restore then
+  // reports as carrying no database dump. Dispatched by alias name, so the
+  // child has a real context (see the rollback below).
+  $success = provision_backend_invoke(d()->name, 'provision-backup', array($backup_file), array('selected_backup_mode' => 'site_files_with_mysqldump'));
   if (!$success) {
     // If the backup failed, we don't want to try restoring it in the rollback.
     drush_set_option('pre_update_backup_file', FALSE);
@@ -335,7 +408,12 @@ function drush_provision_tasks_extra_provision_update_rollback() {
 
   if ($restore_file) {
     drush_set_option('force', TRUE);
-    drush_invoke_process('@self', 'provision-restore', array($restore_file));
+    // provision_backend_invoke(), which dispatches USING the alias name, not
+    // drush_invoke_process('@self'): a child dispatched by root/uri alone has
+    // no alias, provision's context in it defaults to '@self', and the
+    // restore's own nested deploy then dispatches to an alias nothing can
+    // find -- so this restore always failed (safely, the site kept).
+    provision_backend_invoke(d()->name, 'provision-restore', array($restore_file), array('force' => TRUE));
     drush_unset_option('force');
   }
 
@@ -605,7 +683,10 @@ function drush_provision_tasks_extra_provision_utf8mb4_convert() {
   include_once($provision_dir . '/platform/backup.provision.inc');
   $backup_file = drush_provision_drupal_provision_backup_suggest_filename();
   drush_set_option('force', TRUE);
-  $success = drush_invoke_process('@self', 'provision-backup', array($backup_file));
+  // Restorable mode (database inside the archive), as for the update task's
+  // safety copy: this is the copy an operator restores by hand if the
+  // conversion goes wrong, and the fast path's files-only archive cannot.
+  $success = provision_backend_invoke(d()->name, 'provision-backup', array($backup_file), array('selected_backup_mode' => 'site_files_with_mysqldump'));
   drush_unset_option('force');
   // No drush_get_error() here: that flag is process-sticky, so a
   // recoverable error logged by an earlier step would misfire as a backup

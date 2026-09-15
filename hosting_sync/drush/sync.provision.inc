@@ -212,7 +212,15 @@ function drush_provision_sync($source = NULL, $destination = NULL) {
   // update db, unless option is false.
   if (drush_get_option('updatedb')) {
     drush_log(dt('Updating database...'), 'ok');
-    provision_backend_invoke($destination, 'updatedb');
+    if (drush_drupal_major_version(d($destination)->root) >= 10) {
+      // Aegir's Drush 8 must not run updatedb on Drupal 10+ (the rule the
+      // deploy and provision-update follow): the destination applies its own
+      // updates through the site-local window, in its own context.
+      provision_backend_invoke($destination, 'provision-site_local_updatedb');
+    }
+    else {
+      provision_backend_invoke($destination, 'updatedb');
+    }
   }
   else {
     drush_log(dt('Skipped updating database...'), 'ok');
