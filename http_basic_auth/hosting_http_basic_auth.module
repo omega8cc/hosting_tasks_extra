@@ -151,8 +151,8 @@ function hosting_http_basic_auth_node_validate($node) {
     }
     // SECURITY: These three fields are interpolated into Drush subprocess
     // commands and into Nginx config templates that pass values to shells.
-    // Reject the unsafe character set defined in DECISIONS Decision 002
-    // of the aegir-shell-injection-audit project. The backend
+    // Reject the shell-unsafe character set in $unsafe below.
+    // The backend
     // (Provision drush_shell_exec()) now also escapes these values
     // defensively; this UI check prevents bad data from being persisted
     // at all and gives the user immediate feedback. The list below
