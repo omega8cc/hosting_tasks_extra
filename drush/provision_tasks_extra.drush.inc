@@ -90,7 +90,7 @@ function drush_provision_tasks_extra_provision_site_health_check() {
   // node title, which is not validated against shell-unsafe characters at
   // the UI layer. These two values are interpolated into drush_shell_exec()
   // calls below, so escape them at the definition site. They are not used
-  // anywhere else in this function. See DECISIONS.md Decision 002.
+  // anywhere else in this function.
   // (string) casts guard against PHP 8.1+ null-to-escapeshellarg
   // deprecation in the unlikely event preg_replace() returns null on
   // a regex compilation edge case.
