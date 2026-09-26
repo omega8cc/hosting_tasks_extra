@@ -4,7 +4,7 @@
  */
 
 /**
- * Implements drush_HOOK_pre_COMMAND().
+ * Implements drush_HOOK_post_COMMAND().
  */
 function drush_zz_fix_ownership_post_provision_verify() {
   if (d()->type === 'platform') {
@@ -32,7 +32,7 @@ function drush_zz_fix_ownership_post_provision_verify() {
 /**
  * Implements hook_provision_drupal_chgrp_directories_alter().
  */
-function zz_fix_permissions_provision_drupal_chgrp_directories_alter(&$chgrp, $url) {
+function zz_fix_ownership_provision_drupal_chgrp_directories_alter(&$chgrp, $url) {
   // We only handle chgrp's for 'verify' tasks, atm.
   $cmd = drush_get_command();
   if ($cmd['command'] === 'provision-verify') {

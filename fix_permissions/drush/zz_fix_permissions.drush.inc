@@ -4,7 +4,7 @@
  */
 
 /**
- * Implements drush_HOOK_pre_COMMAND().
+ * Implements drush_HOOK_post_COMMAND().
  */
 function drush_zz_fix_permissions_post_provision_verify() {
   if (d()->type === 'platform') {
