@@ -14,7 +14,7 @@ function hosting_fix_permissions_hosting_feature() {
     'status' => HOSTING_FEATURE_DISABLED,
     'module' => 'fix_permissions',
     'group' => 'experimental',
-    'enable' => 'hosting_fix_permission_feature_enable_callback',
+    'enable' => 'hosting_fix_permissions_feature_enable_callback',
   );
   return $features;
 }

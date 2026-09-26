@@ -13,6 +13,10 @@ On Debian and Ubuntu systems, run `sudo bash scripts/install.sh` in order to
 deploy these scripts, and set up the proper sudoers entry. Other Unixes may
 require slightly different steps to add the sudoers entry.
 
+On a BOA server, do not run it: BOA installs and maintains these scripts and
+their sudoers entries itself, and the install scripts, the standalone one
+included, refuse to run there.
+
 ## Standalone Install Script for both Fix Ownership and Fix Permissions
 
 There is a now an install script that can be run by itself (without the rest of the module code) to install all of the Fix Permissions and Fix Ownership scripts.
