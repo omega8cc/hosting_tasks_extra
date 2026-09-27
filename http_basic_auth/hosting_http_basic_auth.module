@@ -167,6 +167,15 @@ function hosting_http_basic_auth_node_validate($node) {
         ));
       }
     }
+    // The password file ends the username at the first ':' and skips a line
+    // that starts with '#'.
+    if (!empty($node->http_basic_auth_username) && (strpos($node->http_basic_auth_username, ':') !== FALSE || strpos($node->http_basic_auth_username, '#') === 0)) {
+      form_set_error('http_basic_auth_username', t('The username may not contain a colon or start with #.'));
+    }
+    // nginx reads the message 'off' as turning basic authentication off.
+    if (isset($node->http_basic_auth_message) && $node->http_basic_auth_message === 'off') {
+      form_set_error('http_basic_auth_message', t('The message may not be "off".'));
+    }
   }
 }
 
