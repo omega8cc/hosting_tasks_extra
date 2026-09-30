@@ -161,10 +161,12 @@ function hosting_migrate_source_drush_command() {
  *   - a crash between issuing a grant and recording it leaves a grant no
  *     intent-driven pass can find.
  *
- * WHAT BOUNDS IT. This runs with the account user's connection, which holds
- * ALL ON *.* WITH GRANT OPTION -- it could revoke anything on the box. So it
- * never enumerates globally: one direction reads the grants HELD BY THIS
- * INSTANCE'S OWN PROVEN USERS, the other direction the grants ON ITS OWN
+ * WHAT BOUNDS IT. The front end's own database user holds its own database
+ * only, so the privilege tables are read, and grants revoked, on a connection
+ * of the instance's database user: the admin credential provision grants with,
+ * which holds ALL ON *.* WITH GRANT OPTION -- it could revoke anything on the
+ * box. So it never enumerates globally: one direction reads the grants HELD BY
+ * THIS INSTANCE'S OWN PROVEN USERS, the other direction the grants ON ITS OWN
  * PROVEN DATABASES. Both are bounded by this instance's own records as well as
  * by proof: the first may revoke only on a database this instance records for a
  * site of its own, live or former -- a grant one of our users holds on anything
@@ -334,6 +336,96 @@ function _hosting_migrate_source_prove_site($nid) {
 }
 
 /**
+ * A connection to the privilege tables as the instance's database user, or FALSE.
+ *
+ * The front end's database user holds its own database only, so mysql.db and
+ * REVOKE are out of its reach. The instance user can do both: its credential
+ * is the master_db of the db server the front end's own database lives on --
+ * the server whose tables this sweep has always read -- taken from that
+ * server's alias through drush's alias API, the way provision reads it.
+ * Loopback only, like every probe in this file.
+ *
+ * $why is set on FALSE. Neither it nor anything logged here carries the
+ * credential: a PDO error can echo the user and the endpoint, so only its code
+ * is kept.
+ */
+function _hosting_migrate_source_instance_db($hostmaster_nid, &$why) {
+  $why = '';
+  $hm = node_load($hostmaster_nid);
+  $server = (!empty($hm) && !empty($hm->db_server)) ? node_load($hm->db_server) : FALSE;
+  if (empty($server) || $server->type != 'server' || empty($server->hosting_name)
+    || preg_match('/^[A-Za-z0-9_.-]+$/', $server->hosting_name) !== 1) {
+    $why = 'the front end\'s database server could not be identified';
+    return FALSE;
+  }
+  if (!function_exists('drush_sitealias_get_record')) {
+    $why = 'the drush alias API is not loaded';
+    return FALSE;
+  }
+  $record = drush_sitealias_get_record('@' . $server->hosting_name);
+  $url = (is_array($record) && isset($record['master_db'])) ? (string) $record['master_db'] : '';
+  $parts = ($url === '') ? FALSE : parse_url($url);
+  if (!is_array($parts) || !isset($parts['scheme']) || $parts['scheme'] !== 'mysql'
+    || !isset($parts['user']) || $parts['user'] === ''
+    || !isset($parts['pass']) || $parts['pass'] === ''
+    || !isset($parts['host']) || $parts['host'] === '') {
+    $why = 'the alias of server ' . $server->hosting_name . ' carries no usable admin credential';
+    return FALSE;
+  }
+  $host = urldecode($parts['host']);
+  // The port as provision takes it: the server's db_port property first.
+  $port = '';
+  if (isset($record['db_port']) && preg_match('/^[0-9]{1,5}$/', (string) $record['db_port']) === 1) {
+    $port = (string) $record['db_port'];
+  }
+  elseif (isset($parts['port'])) {
+    $port = (string) $parts['port'];
+  }
+  if (!_hosting_migrate_source_local_db_endpoint($host, $port)) {
+    $why = 'server ' . $server->hosting_name . ' is not this box\'s own database server';
+    return FALSE;
+  }
+  $dsn = 'mysql:host=' . $host;
+  if ($port !== '') {
+    $dsn .= ';port=' . $port;
+  }
+  $options = array(PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION, PDO::ATTR_TIMEOUT => 5);
+  // Matches provision's own connection options; it takes effect only where
+  // this PHP build's PDO defines it.
+  if (defined('PDO::MYSQL_ATTR_GET_SERVER_PUBLIC_KEY')) {
+    $options[PDO::MYSQL_ATTR_GET_SERVER_PUBLIC_KEY] = TRUE;
+  }
+  try {
+    $idb = new PDO($dsn, urldecode($parts['user']), urldecode($parts['pass']), $options);
+  }
+  catch (Exception $e) {
+    $code = ($e instanceof PDOException && isset($e->errorInfo[1])) ? (int) $e->errorInfo[1] : 0;
+    $why = 'the instance database user could not connect' . ($code ? ' (MySQL error ' . $code . ')' : '');
+    return FALSE;
+  }
+  return $idb;
+}
+
+/**
+ * Every row of one privilege-table read on the instance connection, or FALSE.
+ *
+ * Positional placeholders bound by PDO. FALSE is never "no rows": the caller
+ * stops the pass on it, before anything is revoked or queued.
+ */
+function _hosting_migrate_source_idb_rows($idb, $sql, $args) {
+  try {
+    $stmt = $idb->prepare($sql);
+    $stmt->execute($args);
+    $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    $stmt->closeCursor();
+    return $rows;
+  }
+  catch (Exception $e) {
+    return FALSE;
+  }
+}
+
+/**
  * One $options[...] scalar out of drushrc.php contents. Never includes the file.
  */
 function _hosting_migrate_source_opt($contents, $key) {
@@ -394,6 +486,14 @@ function hosting_migrate_source_sweep() {
       '@d' => $cand_dup,
     )), 'ok');
     return;
+  }
+
+  // Opened before any state is written, and closed on every way out below.
+  // No connection, no pass: nothing is read, revoked or queued.
+  $why = '';
+  $idb = _hosting_migrate_source_instance_db($hostmaster_nid, $why);
+  if ($idb === FALSE) {
+    return drush_set_error('MIGRATE_SOURCE_NO_INSTANCE_DB', dt('Migration source sweep: @why, so the privilege tables cannot be read; nothing was examined or revoked.', array('@why' => $why)));
   }
 
   // Every identity proven anywhere in this pass, keyed for the reclaim pass
@@ -533,9 +633,12 @@ function hosting_migrate_source_sweep() {
     // SELECT * and loopback hosts only, exactly like the former-user pass
     // below: a row carrying more than SELECT, or held at a remote host, is not
     // a grant this feature ever issued, so it is not ours to touch.
-    $rows = db_query("SELECT * FROM mysql.db WHERE User = :u AND Host IN ('localhost', '127.0.0.1') AND Select_priv = 'Y'", array(':u' => $user));
+    $rows = _hosting_migrate_source_idb_rows($idb, "SELECT * FROM mysql.db WHERE User = ? AND Host IN ('localhost', '127.0.0.1') AND Select_priv = 'Y'", array($user));
+    if ($rows === FALSE) {
+      $idb = NULL;
+      return drush_set_error('MIGRATE_SOURCE_READ_FAILED', dt('Migration source sweep: the grants held by @u could not be read; stopping before anything is revoked.', array('@u' => $user)));
+    }
     foreach ($rows as $g) {
-      $g = (array) $g;
       $granted = _hosting_migrate_source_unescape_db($g['Db']);
       if ($granted === $own_db) {
         // Its own database. Always legitimate.
@@ -620,9 +723,13 @@ function hosting_migrate_source_sweep() {
     }
     // SELECT * so the privilege shape can be checked against every *_priv
     // column this server version actually has.
-    $rows = db_query("SELECT * FROM mysql.db WHERE Db IN (:dbs) AND User <> '' AND Host IN ('localhost', '127.0.0.1') AND Select_priv = 'Y'", array(':dbs' => $spellings));
+    $marks = implode(', ', array_fill(0, count($spellings), '?'));
+    $rows = _hosting_migrate_source_idb_rows($idb, "SELECT * FROM mysql.db WHERE Db IN (" . $marks . ") AND User <> '' AND Host IN ('localhost', '127.0.0.1') AND Select_priv = 'Y'", $spellings);
+    if ($rows === FALSE) {
+      $idb = NULL;
+      return drush_set_error('MIGRATE_SOURCE_READ_FAILED', dt('Migration source sweep: the grants on this instance\'s databases could not be read; stopping before anything is revoked.'));
+    }
     foreach ($rows as $g) {
-      $g = (array) $g;
       $granted = _hosting_migrate_source_unescape_db($g['Db']);
       $grantee = $g['User'];
       if (isset($proven_users[$grantee])) {
@@ -656,6 +763,7 @@ function hosting_migrate_source_sweep() {
   $reclaimed = 0;
   $host_skipped = 0;
   if (count($revokes) > $max && !$force) {
+    $idb = NULL;
     return drush_set_error('MIGRATE_SOURCE_TOO_MANY', dt('Migration source sweep: @n grants look unjustified, which is more than the @max guard allows. Refusing to act -- check the association table before re-running with --force-revokes.', array('@n' => count($revokes), '@max' => $max)));
   }
 
@@ -683,7 +791,7 @@ function hosting_migrate_source_sweep() {
     // revoke AND the whole missing-grant pass below. Exception, never Throwable:
     // Throwable is PHP 7.0+ and would fatal on the 5.6 floor.
     try {
-      db_query('REVOKE SELECT ON `' . $r['db'] . '`.* FROM `' . $r['user'] . '`@`' . $r['host'] . '`');
+      $idb->exec('REVOKE SELECT ON `' . $r['db'] . '`.* FROM `' . $r['user'] . '`@`' . $r['host'] . '`');
       if (!empty($r['former'])) {
         $reclaimed++;
         drush_log(dt('Migration source sweep: revoked the stale read grant former site user @g held on @db.', array('@g' => $r['user'] . '@' . $r['host'], '@db' => $r['label'])), 'ok');
@@ -718,11 +826,17 @@ function hosting_migrate_source_sweep() {
   $seen = array();
   foreach ($intended as $key => $target_nid) {
     $meta = $intended_meta[$key];
-    $found = db_query("SELECT COUNT(*) FROM mysql.db WHERE Db IN (:dbs) AND User = :u AND Select_priv = 'Y'", array(
-      ':dbs' => _hosting_migrate_source_db_spellings($meta['source_db']),
-      ':u' => $meta['target_user'],
-    ))->fetchField();
-    if ($found > 0) {
+    $args = _hosting_migrate_source_db_spellings($meta['source_db']);
+    $marks = implode(', ', array_fill(0, count($args), '?'));
+    $args[] = $meta['target_user'];
+    $found = _hosting_migrate_source_idb_rows($idb, "SELECT COUNT(*) AS n FROM mysql.db WHERE Db IN (" . $marks . ") AND User = ? AND Select_priv = 'Y'", $args);
+    if ($found === FALSE) {
+      // The attempt history is not written for this pass; revokes and
+      // verifies this pass already issued stand.
+      $idb = NULL;
+      return drush_set_error('MIGRATE_SOURCE_READ_FAILED', dt('Migration source sweep: the grant of site @nid on @db could not be read; stopping here. Revokes and verifies already issued in this pass stand.', array('@nid' => $target_nid, '@db' => $meta['source_db'])));
+    }
+    if (!empty($found) && (int) $found[0]['n'] > 0) {
       // Converged: forget any history so a later genuine failure starts fresh.
       unset($attempts[$key]);
       continue;
@@ -759,6 +873,7 @@ function hosting_migrate_source_sweep() {
       unset($attempts[$key]);
     }
   }
+  $idb = NULL;
   if (!$dry) {
     variable_set('hosting_migrate_source_retries', $attempts);
   }
