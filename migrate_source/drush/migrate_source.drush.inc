@@ -184,6 +184,34 @@ function migrate_source_provision_drupal_config($uri, $data) {
 }
 
 /**
+ * Whether this site's database server goes through the root database broker.
+ *
+ * Provision decides it: its db service answers broker mode when the root-owned
+ * control file of the account names that server context. The instance user
+ * then holds its own databases only, so the reads, the grant and the revokes
+ * below go through the broker's grants, grant-select and revoke-select verbs.
+ * A provision without the broker client answers no, and every server context
+ * the control file does not name keeps the direct path. The switch looks for
+ * this function's name in an account's copy of this file before it turns the
+ * account over, so keep it. PHP 5.6-safe.
+ */
+function _migrate_source_broker_mode() {
+  $db = d()->service('db');
+  return is_object($db) && method_exists($db, 'broker_call') && $db->broker_mode() === TRUE;
+}
+
+/**
+ * The broker's last refusal on this site's db service, for a log line.
+ */
+function _migrate_source_broker_error() {
+  $db = d()->service('db');
+  if (is_object($db) && isset($db->broker_error['code'])) {
+    return 'ERR ' . $db->broker_error['code'] . ' ' . $db->broker_error['reason'];
+  }
+  return 'no answer';
+}
+
+/**
  * Rows of SHOW GRANTS for one account, or FALSE when the query itself failed.
  *
  * A failed query and an empty result mean different things: empty is "no
@@ -192,6 +220,20 @@ function migrate_source_provision_drupal_config($uri, $data) {
 function _migrate_source_show_grants($user, $host) {
   if (!_migrate_source_valid_ident($user) || !_migrate_source_valid_host($host)) {
     return FALSE;
+  }
+  if (_migrate_source_broker_mode()) {
+    // The broker prints the SHOW GRANTS lines of a user this account may
+    // name, then "OK grants <n>"; an absent account is "OK grants 0", which
+    // is "no grants here" exactly as the mysql.user check below makes it. A
+    // user the broker refuses to name (another account's, a global one) is
+    // no grants it may act on either.
+    $lines = d()->service('db')->broker_call('grants', array('--', $user, $host), NULL, 'notice');
+    $matches = array();
+    if ($lines === FALSE || preg_match('/^OK grants ([0-9]+)$/', array_pop($lines), $matches) !== 1
+      || (int) $matches[1] !== count($lines) || !count($lines)) {
+      return FALSE;
+    }
+    return $lines;
   }
   // SHOW GRANTS for an account that does not exist is a server error (1141),
   // and provision's query() logs every failed statement as a warning, which
@@ -596,9 +638,19 @@ function _migrate_source_revoke_others($user, $hosts, $own_db, $keep_db) {
       if (!_migrate_source_valid_ident($granted_db)) {
         continue;
       }
-      // Interpolated for the same reason as the GRANT above: %s would
-      // double-escape the backslash and revoke a grant that does not exist.
-      d()->service('db')->query("REVOKE SELECT ON `" . $granted_raw . "`.* FROM `%s`@`%s`", $user, $host);
+      if (_migrate_source_broker_mode()) {
+        // The broker takes the plain name and revokes a SELECT-only row of
+        // this host in whichever spelling it is stored.
+        if (d()->service('db')->broker_call('revoke-select', array('--', $granted_db, $user, $host), NULL, 'notice') === FALSE) {
+          drush_log(dt('Migration source: could not revoke read access to @db (@err).', array('@db' => $granted_db, '@err' => _migrate_source_broker_error())), 'warning');
+          continue;
+        }
+      }
+      else {
+        // Interpolated for the same reason as the GRANT above: %s would
+        // double-escape the backslash and revoke a grant that does not exist.
+        d()->service('db')->query("REVOKE SELECT ON `" . $granted_raw . "`.* FROM `%s`@`%s`", $user, $host);
+      }
       drush_log(dt('Migration source: revoked read access to @db.', array('@db' => $granted_db)), 'ok');
     }
   }
@@ -743,11 +795,22 @@ function drush_migrate_source_post_provision_verify() {
     if (_migrate_source_grants_include_db($rows, $wanted)) {
       continue;
     }
-    // Escaped: an unescaped _ would make this a grant on a PATTERN of database
-    // names rather than on the one named. See _migrate_source_escape_db(). The
-    // name is interpolated, NOT passed as %s -- %s would double-escape it into a
-    // grant on nothing at all.
-    $ok = d()->service('db')->query("GRANT SELECT ON `" . _migrate_source_escape_db($wanted) . "`.* TO `%s`@`%s`", $user, $host);
+    if (_migrate_source_broker_mode()) {
+      // The broker grants SELECT on the escaped name, only on a database this
+      // account created and only to a user with no grant beyond its own.
+      $ok = d()->service('db')->broker_call('grant-select', array('--', $wanted, $user, $host), NULL, 'notice');
+      if ($ok === FALSE) {
+        drush_log(dt('Migration source: failed to grant read access to @db (@err).', array('@db' => $wanted, '@err' => _migrate_source_broker_error())), 'error');
+        continue;
+      }
+    }
+    else {
+      // Escaped: an unescaped _ would make this a grant on a PATTERN of
+      // database names rather than on the one named. See
+      // _migrate_source_escape_db(). The name is interpolated, NOT passed as
+      // %s -- %s would double-escape it into a grant on nothing at all.
+      $ok = d()->service('db')->query("GRANT SELECT ON `" . _migrate_source_escape_db($wanted) . "`.* TO `%s`@`%s`", $user, $host);
+    }
     if ($ok === FALSE) {
       drush_log(dt('Migration source: failed to grant read access to @db.', array('@db' => $wanted)), 'error');
     }

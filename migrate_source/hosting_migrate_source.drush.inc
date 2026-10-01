@@ -172,7 +172,10 @@ function hosting_migrate_source_drush_command() {
  * site of its own, live or former -- a grant one of our users holds on anything
  * else is reported and left -- and the second only from a grantee those records
  * name as a former site database. Another account's databases and users are
- * never read and never touched.
+ * never read and never touched. On an account switched to the root database
+ * broker the instance user holds its own databases only, and the same reads
+ * and revokes are broker calls, which answer only for this account's own
+ * users and registered databases.
  *
  * WHAT IT WILL NOT DO. It never issues a GRANT. A missing grant queues a verify
  * instead, so the backend remains the single place a grant can be created, with
@@ -407,6 +410,215 @@ function _hosting_migrate_source_instance_db($hostmaster_nid, &$why) {
 }
 
 /**
+ * The name of the front end's database server context (without its @), or ''.
+ */
+function _hosting_migrate_source_db_server_name($hostmaster_nid) {
+  $hm = node_load($hostmaster_nid);
+  $server = (!empty($hm) && !empty($hm->db_server)) ? node_load($hm->db_server) : FALSE;
+  if (empty($server) || $server->type != 'server' || empty($server->hosting_name)
+    || preg_match('/^[A-Za-z0-9_.-]+$/', $server->hosting_name) !== 1) {
+    return '';
+  }
+  return $server->hosting_name;
+}
+
+/**
+ * Whether the sweep goes through the root database broker.
+ *
+ * Once the account is switched on this box, its instance user holds its own
+ * databases only, so mysql.db and REVOKE are out of its reach as well, and
+ * the sweep reads through the broker's grants-scan and revokes through its
+ * revoke-select instead. The switch is the root-owned control file
+ * /data/conf/<account>_db_broker.txt, the same one provision reads: a
+ * regular file no one else can write, whose server= line names the front
+ * end's own database server. The account is the one this process runs as.
+ * Without it the sweep keeps the instance connection. The switch looks for
+ * this function's name in an account's copy of this file before it turns the
+ * account over, so keep it. PHP 5.6-safe.
+ */
+function _hosting_migrate_source_broker_mode($server_name) {
+  $conf_dir = '/data/conf';
+  $root_uid = 0;
+  if ($server_name === '' || !function_exists('posix_geteuid') || !function_exists('posix_getpwuid')) {
+    return FALSE;
+  }
+  $pw = posix_getpwuid(posix_geteuid());
+  if (!is_array($pw) || !isset($pw['name'])
+    || preg_match('/^[A-Za-z0-9_-]{1,32}$/', $pw['name']) !== 1) {
+    return FALSE;
+  }
+  $file = $conf_dir . '/' . $pw['name'] . '_db_broker.txt';
+  clearstatcache();
+  $stat = @lstat($file);
+  if (!is_array($stat) || ($stat['mode'] & 0170000) !== 0100000
+    || $stat['uid'] !== $root_uid || ($stat['mode'] & 022) !== 0) {
+    return FALSE;
+  }
+  $contents = @file_get_contents($file, FALSE, NULL, 0, 4096);
+  if (!is_string($contents)) {
+    return FALSE;
+  }
+  // The last server= line, as the broker reads it.
+  $named = '';
+  foreach (explode("\n", $contents) as $line) {
+    if (strpos($line, 'server=') === 0) {
+      $named = substr($line, 7);
+    }
+  }
+  return (preg_match('/^@[A-Za-z0-9_.-]{1,128}$/', $named) === 1 && $named === '@' . $server_name);
+}
+
+/**
+ * One verb of the root database broker, run through sudo as this account.
+ *
+ * Returns its stdout lines, the last being its "OK <verb> ..." line, or FALSE
+ * with $code and $err set from its "ERR <code> <reason>" line. Every argument
+ * goes through escapeshellarg(); nothing secret is passed. PHP 5.6-safe:
+ * proc_open() takes a string command.
+ */
+function _hosting_migrate_source_broker_call($verb, $args, &$code, &$err) {
+  $command = 'sudo --non-interactive /usr/local/bin/boa-dbctl';
+  $code = 0;
+  $err = '';
+  $command .= ' ' . escapeshellarg($verb);
+  foreach ($args as $arg) {
+    $command .= ' ' . escapeshellarg((string) $arg);
+  }
+  $pipes = array();
+  $process = proc_open($command, array(0 => array('pipe', 'r'), 1 => array('pipe', 'w'), 2 => array('pipe', 'w')), $pipes);
+  if (!is_resource($process)) {
+    $code = -1;
+    $err = 'the database broker could not be started';
+    return FALSE;
+  }
+  fclose($pipes[0]);
+  $output = array(1 => '', 2 => '');
+  stream_set_blocking($pipes[1], 0);
+  stream_set_blocking($pipes[2], 0);
+  $open = array(1 => TRUE, 2 => TRUE);
+  while ($open[1] || $open[2]) {
+    $read = array();
+    if ($open[1]) { $read[1] = $pipes[1]; }
+    if ($open[2]) { $read[2] = $pipes[2]; }
+    $write = NULL;
+    $except = NULL;
+    if (stream_select($read, $write, $except, 5) === FALSE) {
+      break;
+    }
+    foreach ($read as $idx => $stream) {
+      $chunk = fread($stream, 8192);
+      if ($chunk === FALSE || $chunk === '') {
+        if (feof($stream)) {
+          $open[$idx] = FALSE;
+        }
+      }
+      else {
+        $output[$idx] .= $chunk;
+      }
+    }
+  }
+  fclose($pipes[1]);
+  fclose($pipes[2]);
+  $status = proc_close($process);
+  $lines = ($output[1] === '') ? array() : explode("\n", rtrim($output[1], "\n"));
+  $last = count($lines) ? $lines[count($lines) - 1] : '';
+  if ($status === 0 && ($last === 'OK ' . $verb || strpos($last, 'OK ' . $verb . ' ') === 0)) {
+    return $lines;
+  }
+  $matches = array();
+  if (preg_match_all('/^ERR ([0-9]+) ?(.*)$/m', $output[2], $matches)) {
+    $i = count($matches[1]) - 1;
+    $code = (int) $matches[1][$i];
+    $err = 'ERR ' . $code . ' ' . $matches[2][$i];
+  }
+  else {
+    $code = ($status === 0) ? -1 : $status;
+    $first = trim(strtok($output[2], "\n"));
+    $err = ($first === '') ? 'no answer from the database broker' : $first;
+  }
+  $err = substr(preg_replace('/[^\x20-\x7E]/', '?', $err), 0, 300);
+  return FALSE;
+}
+
+/**
+ * A value from mysql's batch output, its escaping taken off: \0, \t, \n and
+ * a doubled backslash, the only four it writes.
+ */
+function _hosting_migrate_source_batch_value($value) {
+  return preg_replace_callback('/\\\\(.)/s', '_hosting_migrate_source_batch_char', $value);
+}
+
+function _hosting_migrate_source_batch_char($match) {
+  $map = array('0' => "\0", 't' => "\t", 'n' => "\n", '\\' => '\\');
+  return isset($map[$match[1]]) ? $map[$match[1]] : $match[0];
+}
+
+/**
+ * The mysql.db rows of one grants-scan read ('--user', <u> or '--db', <d>),
+ * each keyed by column as a PDO fetch keys them, or FALSE with $code and $err
+ * set. The broker prints a header line, the rows in mysql's batch form and
+ * "OK grants-scan rows=<n>"; anything that does not add up is FALSE, never
+ * "no rows".
+ */
+function _hosting_migrate_source_broker_scan($args, &$code, &$err) {
+  $lines = _hosting_migrate_source_broker_call('grants-scan', $args, $code, $err);
+  if ($lines === FALSE) {
+    return FALSE;
+  }
+  $matches = array();
+  if (preg_match('/^OK grants-scan rows=([0-9]+)$/', array_pop($lines), $matches) !== 1) {
+    $code = -1;
+    $err = 'an unexpected answer from the database broker';
+    return FALSE;
+  }
+  $n = (int) $matches[1];
+  // An empty read prints no rows, and at most the header.
+  if ($n === 0 && count($lines) <= 1) {
+    return array();
+  }
+  $columns = explode("\t", (string) array_shift($lines));
+  if (count($lines) !== $n || !in_array('Db', $columns, TRUE) || !in_array('User', $columns, TRUE)
+    || !in_array('Host', $columns, TRUE) || !in_array('Select_priv', $columns, TRUE)) {
+    $code = -1;
+    $err = 'an unexpected answer from the database broker';
+    return FALSE;
+  }
+  $rows = array();
+  foreach ($lines as $line) {
+    $values = explode("\t", $line);
+    if (count($values) !== count($columns)) {
+      $code = -1;
+      $err = 'an unexpected answer from the database broker';
+      return FALSE;
+    }
+    $row = array();
+    foreach ($columns as $i => $column) {
+      $row[$column] = _hosting_migrate_source_batch_value($values[$i]);
+    }
+    $rows[] = $row;
+  }
+  return $rows;
+}
+
+/**
+ * How many SELECT grants user $user holds on database $db (either spelling),
+ * through the broker's grants-scan count, or FALSE with $code and $err set.
+ */
+function _hosting_migrate_source_broker_count($user, $db, &$code, &$err) {
+  $lines = _hosting_migrate_source_broker_call('grants-scan', array('--user', $user, '--db', $db), $code, $err);
+  if ($lines === FALSE) {
+    return FALSE;
+  }
+  $matches = array();
+  if (count($lines) !== 1 || preg_match('/^OK grants-scan count=([0-9]+)$/', $lines[0], $matches) !== 1) {
+    $code = -1;
+    $err = 'an unexpected answer from the database broker';
+    return FALSE;
+  }
+  return (int) $matches[1];
+}
+
+/**
  * Every row of one privilege-table read on the instance connection, or FALSE.
  *
  * Positional placeholders bound by PDO. FALSE is never "no rows": the caller
@@ -489,12 +701,24 @@ function hosting_migrate_source_sweep() {
   }
 
   // Opened before any state is written, and closed on every way out below.
-  // No connection, no pass: nothing is read, revoked or queued.
+  // No connection, no pass: nothing is read, revoked or queued. Through the
+  // database broker there is no connection to open: every read and revoke
+  // below is one broker call, and a read it cannot answer stops the pass the
+  // same way.
   $why = '';
-  $idb = _hosting_migrate_source_instance_db($hostmaster_nid, $why);
-  if ($idb === FALSE) {
-    return drush_set_error('MIGRATE_SOURCE_NO_INSTANCE_DB', dt('Migration source sweep: @why, so the privilege tables cannot be read; nothing was examined or revoked.', array('@why' => $why)));
+  $idb = FALSE;
+  $broker = _hosting_migrate_source_broker_mode(_hosting_migrate_source_db_server_name($hostmaster_nid));
+  if (!$broker) {
+    $idb = _hosting_migrate_source_instance_db($hostmaster_nid, $why);
+    if ($idb === FALSE) {
+      return drush_set_error('MIGRATE_SOURCE_NO_INSTANCE_DB', dt('Migration source sweep: @why, so the privilege tables cannot be read; nothing was examined or revoked.', array('@why' => $why)));
+    }
   }
+  $code = 0;
+  $err = '';
+  // Read sides the broker would not answer for this account: never a stop,
+  // never a revoke, counted in the summary.
+  $broker_skipped = 0;
 
   // Every identity proven anywhere in this pass, keyed for the reclaim pass
   // below: a proven user's grants are reconciled by the user-side enumeration,
@@ -633,7 +857,23 @@ function hosting_migrate_source_sweep() {
     // SELECT * and loopback hosts only, exactly like the former-user pass
     // below: a row carrying more than SELECT, or held at a remote host, is not
     // a grant this feature ever issued, so it is not ours to touch.
-    $rows = _hosting_migrate_source_idb_rows($idb, "SELECT * FROM mysql.db WHERE User = ? AND Host IN ('localhost', '127.0.0.1') AND Select_priv = 'Y'", array($user));
+    if ($broker) {
+      // The same read through the broker (grants-scan --user), which answers
+      // only for this account's own users: one it does not count as its own
+      // (ERR 3) is left unexamined, never stopped on.
+      $rows = _hosting_migrate_source_broker_scan(array('--user', $user), $code, $err);
+      if ($rows === FALSE && $code === 3) {
+        $broker_skipped++;
+        drush_log(dt('Migration source sweep: the database broker does not count @u among this account\'s own users, so its grants were not examined (@err).', array('@u' => $user, '@err' => $err)), 'warning');
+        continue;
+      }
+      if ($rows === FALSE) {
+        drush_log(dt('Migration source sweep: @err', array('@err' => $err)), 'warning');
+      }
+    }
+    else {
+      $rows = _hosting_migrate_source_idb_rows($idb, "SELECT * FROM mysql.db WHERE User = ? AND Host IN ('localhost', '127.0.0.1') AND Select_priv = 'Y'", array($user));
+    }
     if ($rows === FALSE) {
       $idb = NULL;
       return drush_set_error('MIGRATE_SOURCE_READ_FAILED', dt('Migration source sweep: the grants held by @u could not be read; stopping before anything is revoked.', array('@u' => $user)));
@@ -723,8 +963,30 @@ function hosting_migrate_source_sweep() {
     }
     // SELECT * so the privilege shape can be checked against every *_priv
     // column this server version actually has.
-    $marks = implode(', ', array_fill(0, count($spellings), '?'));
-    $rows = _hosting_migrate_source_idb_rows($idb, "SELECT * FROM mysql.db WHERE Db IN (" . $marks . ") AND User <> '' AND Host IN ('localhost', '127.0.0.1') AND Select_priv = 'Y'", $spellings);
+    if ($broker) {
+      // The same read through the broker, one database at a time (grants-scan
+      // --db reads both spellings): it answers only for a database registered
+      // to this account, and one that is not (ERR 3) is left unexamined.
+      $rows = array();
+      foreach (array_keys($proven_dbs) as $db) {
+        $db_rows = _hosting_migrate_source_broker_scan(array('--db', $db), $code, $err);
+        if ($db_rows === FALSE && $code === 3) {
+          $broker_skipped++;
+          drush_log(dt('Migration source sweep: @db is not registered to this account with the database broker, so the grants on it were not examined (@err).', array('@db' => $db, '@err' => $err)), 'warning');
+          continue;
+        }
+        if ($db_rows === FALSE) {
+          drush_log(dt('Migration source sweep: @err', array('@err' => $err)), 'warning');
+          $rows = FALSE;
+          break;
+        }
+        $rows = array_merge($rows, $db_rows);
+      }
+    }
+    else {
+      $marks = implode(', ', array_fill(0, count($spellings), '?'));
+      $rows = _hosting_migrate_source_idb_rows($idb, "SELECT * FROM mysql.db WHERE Db IN (" . $marks . ") AND User <> '' AND Host IN ('localhost', '127.0.0.1') AND Select_priv = 'Y'", $spellings);
+    }
     if ($rows === FALSE) {
       $idb = NULL;
       return drush_set_error('MIGRATE_SOURCE_READ_FAILED', dt('Migration source sweep: the grants on this instance\'s databases could not be read; stopping before anything is revoked.'));
@@ -784,6 +1046,27 @@ function hosting_migrate_source_sweep() {
       }
       continue;
     }
+    if ($broker) {
+      // revoke-select takes the plain name and revokes this SELECT-only
+      // loopback row in whichever spelling it is stored; a refusal is one
+      // failed revoke, as below.
+      if (_hosting_migrate_source_broker_call('revoke-select', array('--', $r['label'], $r['user'], $r['host']), $code, $err) === FALSE) {
+        $failed++;
+        drush_log(dt('Migration source sweep: could not revoke @g on @db (@msg); continuing.', array(
+          '@g' => $r['user'] . '@' . $r['host'],
+          '@db' => $r['label'],
+          '@msg' => $err,
+        )), 'warning');
+      }
+      elseif (!empty($r['former'])) {
+        $reclaimed++;
+        drush_log(dt('Migration source sweep: revoked the stale read grant former site user @g held on @db.', array('@g' => $r['user'] . '@' . $r['host'], '@db' => $r['label'])), 'ok');
+      }
+      else {
+        drush_log(dt('Migration source sweep: revoked @g read access to @db.', array('@g' => $r['user'] . '@' . $r['host'], '@db' => $r['label'])), 'ok');
+      }
+      continue;
+    }
     // One REVOKE that fails must not take the pass down with it. D7 db_query()
     // rethrows PDOException, and a grant revoked concurrently between the
     // enumeration above and this line -- the target's own verify does exactly
@@ -826,10 +1109,26 @@ function hosting_migrate_source_sweep() {
   $seen = array();
   foreach ($intended as $key => $target_nid) {
     $meta = $intended_meta[$key];
-    $args = _hosting_migrate_source_db_spellings($meta['source_db']);
-    $marks = implode(', ', array_fill(0, count($args), '?'));
-    $args[] = $meta['target_user'];
-    $found = _hosting_migrate_source_idb_rows($idb, "SELECT COUNT(*) AS n FROM mysql.db WHERE Db IN (" . $marks . ") AND User = ? AND Select_priv = 'Y'", $args);
+    if ($broker) {
+      // The same count through the broker (grants-scan --user --db), which
+      // answers it only for one of this account's own users.
+      $n = _hosting_migrate_source_broker_count($meta['target_user'], $meta['source_db'], $code, $err);
+      if ($n === FALSE && $code === 3) {
+        $broker_skipped++;
+        drush_log(dt('Migration source sweep: the database broker does not count @u among this account\'s own users, so the grant of site @nid on @db was not checked (@err).', array('@u' => $meta['target_user'], '@nid' => $target_nid, '@db' => $meta['source_db'], '@err' => $err)), 'warning');
+        continue;
+      }
+      if ($n === FALSE) {
+        drush_log(dt('Migration source sweep: @err', array('@err' => $err)), 'warning');
+      }
+      $found = ($n === FALSE) ? FALSE : array(array('n' => $n));
+    }
+    else {
+      $args = _hosting_migrate_source_db_spellings($meta['source_db']);
+      $marks = implode(', ', array_fill(0, count($args), '?'));
+      $args[] = $meta['target_user'];
+      $found = _hosting_migrate_source_idb_rows($idb, "SELECT COUNT(*) AS n FROM mysql.db WHERE Db IN (" . $marks . ") AND User = ? AND Select_priv = 'Y'", $args);
+    }
     if ($found === FALSE) {
       // The attempt history is not written for this pass; revokes and
       // verifies this pass already issued stand.
@@ -878,6 +1177,9 @@ function hosting_migrate_source_sweep() {
     variable_set('hosting_migrate_source_retries', $attempts);
   }
 
+  if ($broker) {
+    drush_log(dt('Migration source sweep: read and revoked through the database broker; @b read(s) it would not answer for this account were skipped.', array('@b' => $broker_skipped)), 'ok');
+  }
   drush_log(dt('Migration source sweep: @o databases examined, @i associations intended, @c shielded (their source could not be asked), @r revoked (@s from former site users), @f revokes failed, @k skipped on an unrecognised host, @q verifies queued, @a abandoned, @h grants left to a human, @e sites without a recorded database name, @v with an invalid one, @d duplicate names skipped.', array(
     '@o' => count($ours),
     '@i' => count($intended),
