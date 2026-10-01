@@ -431,7 +431,9 @@ function _hosting_migrate_source_db_server_name($hostmaster_nid) {
  * revoke-select instead. The switch is the root-owned control file
  * /data/conf/<account>_db_broker.txt, the same one provision reads: a
  * regular file no one else can write, whose server= line names the front
- * end's own database server. The account is the one this process runs as.
+ * end's own database server and whose rows= line passes the broker's own
+ * rule, so a file the broker refuses never turns the sweep over. The
+ * account is the one this process runs as.
  * Without it the sweep keeps the instance connection. The switch looks for
  * this function's name in an account's copy of this file before it turns the
  * account over, so keep it. PHP 5.6-safe.
@@ -458,11 +460,29 @@ function _hosting_migrate_source_broker_mode($server_name) {
   if (!is_string($contents)) {
     return FALSE;
   }
-  // The last server= line, as the broker reads it.
+  // Read as the broker reads it: NUL bytes dropped (a shell variable holds
+  // none), then the last server= and the last rows= line, each value the
+  // rest of its line as written. rows= names the instance user's host rows
+  // in use: at least one, split on commas and spaces, each passing the
+  // broker's host rule, or the broker refuses every call.
+  $contents = str_replace("\0", '', $contents);
   $named = '';
+  $rows = '';
   foreach (explode("\n", $contents) as $line) {
     if (strpos($line, 'server=') === 0) {
-      $named = substr($line, 7);
+      $named = (string) substr($line, 7);
+    }
+    elseif (strpos($line, 'rows=') === 0) {
+      $rows = (string) substr($line, 5);
+    }
+  }
+  $hosts = preg_split('/[, ]+/', $rows, -1, PREG_SPLIT_NO_EMPTY);
+  if (!is_array($hosts) || !count($hosts)) {
+    return FALSE;
+  }
+  foreach ($hosts as $host) {
+    if (preg_match('/^[A-Za-z0-9._%:-]{1,255}$/', $host) !== 1) {
+      return FALSE;
     }
   }
   return (preg_match('/^@[A-Za-z0-9_.-]{1,128}$/', $named) === 1 && $named === '@' . $server_name);
