@@ -864,16 +864,25 @@ function hosting_migrate_source_sweep() {
   // this sweep is built on -- it never enumerates users globally, only its own.
   $revokes = array();
   $unproven = 0;
+  // Every site proves itself before any grant is judged: the test below asks
+  // whether a granted database is one a site of ours runs, and a site the loop
+  // reaches later must already count. Its proven name is the only record of
+  // that: hosting_site.db_name keeps a restored site's former name until the
+  // site's next Verify.
+  $identities = array();
   foreach ($ours as $db_name_hint => $nid) {
     $identity = _hosting_migrate_source_prove_site($nid);
     if ($identity === FALSE) {
       $unproven++;
       continue;
     }
+    $identities[$nid] = $identity;
+    $proven_users[$identity['user']] = TRUE;
+    $proven_dbs[$identity['db']] = $nid;
+  }
+  foreach ($identities as $nid => $identity) {
     $user = $identity['user'];
     $own_db = $identity['db'];
-    $proven_users[$user] = TRUE;
-    $proven_dbs[$own_db] = $nid;
     // SELECT * and loopback hosts only, exactly like the former-user pass
     // below: a row carrying more than SELECT, or held at a remote host, is not
     // a grant this feature ever issued, so it is not ours to touch.
