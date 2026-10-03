@@ -221,6 +221,30 @@ function _hosting_migrate_source_local_db_endpoint($host, $port) {
 }
 
 /**
+ * The directory a platform's sites/ lives in, as the backend resolves it.
+ *
+ * A platform registered at a Composer project folder keeps Drupal one level
+ * down, and the backend writes each site's drushrc.php there. Same rule and
+ * order as provision_auto_fix_platform_root(): the path itself when it holds
+ * index.php, else the first of docroot/, html/ and web/ that does, else the
+ * path unchanged. The test is the backend's own, links included, so the file
+ * read is the one the backend wrote and never another.
+ */
+function _hosting_migrate_source_platform_root($publish_path) {
+  $index = $publish_path . '/index.php';
+  if (file_exists($index) || is_link($index)) {
+    return $publish_path;
+  }
+  foreach (array('docroot', 'html', 'web') as $dir) {
+    $index = $publish_path . '/' . $dir . '/index.php';
+    if (file_exists($index) || is_link($index)) {
+      return $publish_path . '/' . $dir;
+    }
+  }
+  return $publish_path;
+}
+
+/**
  * Prove a site's real database identity, or FALSE.
  *
  * Returns array('user' => ..., 'db' => ...) only when the credentials that site
@@ -281,7 +305,7 @@ function _hosting_migrate_source_prove_site($nid) {
   if ($uri === '' || strpos($uri, '/') !== FALSE || strpos($uri, '..') !== FALSE) {
     return FALSE;
   }
-  $file = $platform->publish_path . '/sites/' . $uri . '/drushrc.php';
+  $file = _hosting_migrate_source_platform_root($platform->publish_path) . '/sites/' . $uri . '/drushrc.php';
   if (!is_readable($file)) {
     return FALSE;
   }
