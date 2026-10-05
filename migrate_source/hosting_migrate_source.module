@@ -382,8 +382,9 @@ function hosting_migrate_source_post_hosting_restore_task($task, $data) {
   // dependent target so its grant re-converges against the new name.
   // Queue ONLY this site's own verify here. The dependents are queued from that
   // verify's post-task hook instead, because "first" is not something this hook
-  // can express: the queue forks tasks and runs several at once, so queueing the
-  // dependents alongside could let them converge against a STALE db_name --
+  // can express: queued tasks take this instance's runner lock one at a time
+  // but in no guaranteed order, so a dependent queued alongside could run
+  // before this site's verify and converge against a STALE db_name --
   // exactly the freed-name window this ordering exists to close. Chaining them
   // off the verify makes the ordering real rather than hoped for.
   $targets = hosting_migrate_source_dependent_targets($task->ref->nid);
@@ -405,9 +406,9 @@ function hosting_migrate_source_post_hosting_restore_task($task, $data) {
  * Re-converge the sites that read THIS one, now that its own verify has
  * refreshed the frontend's record of db_name. Queued here rather than from the
  * restore hook so the ordering is enforced by sequence instead of assumed:
- * tasks are forked and run concurrently, so a dependent queued at restore time
- * could converge against the old, freed database name where the Restore's
- * result still named it.
+ * queued tasks take the instance's runner lock in no guaranteed order, so a
+ * dependent queued at restore time could run first and converge against the
+ * old, freed database name where the Restore's result still named it.
  */
 function hosting_migrate_source_post_hosting_verify_task($task, $data) {
   if (!isset($task->ref) || $task->ref->type != 'site') {
