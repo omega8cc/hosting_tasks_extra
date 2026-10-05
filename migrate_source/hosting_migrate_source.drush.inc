@@ -101,21 +101,22 @@ function hosting_migrate_source_hosting_site_context_options(&$task) {
 /**
  * Implements drush_hook_pre_hosting_task().
  *
- * Record a migrate target's about-to-be-superseded database name BEFORE the
- * task dispatches. It cannot be recorded afterwards: hosting_migrate's own
- * post-task hook refreshes the frontend record to the NEW name before this
- * module's hooks run (module order), so a post-task recording captures the
- * live name instead of the superseded one -- observed live on a rename. If
- * the migrate then fails, a still-live name sits on the record; that is the
- * safe direction, since a proven user outranks the record and the entry
- * expires.
+ * Record a migrate or restore target's about-to-be-superseded database name
+ * BEFORE the task dispatches. It cannot be relied on afterwards: for migrate,
+ * hosting_migrate's own post-task hook refreshes the frontend record to the
+ * NEW name before this module's hooks run (module order), so a post-task
+ * recording captures the live name instead of the superseded one -- observed
+ * live on a rename; for restore, hosting_site's post-task does the same, and
+ * runs after this module's only by module order (equal weight, then name). If
+ * the task then fails, a still-live name sits on the record; that is the safe
+ * direction, since a proven user outranks the record and the entry expires.
  */
 function drush_hosting_migrate_source_pre_hosting_task() {
   $task = &drush_get_context('HOSTING_TASK');
   if (!isset($task->ref) || !isset($task->ref->type) || $task->ref->type != 'site') {
     return;
   }
-  if (!isset($task->task_type) || $task->task_type != 'migrate') {
+  if (!isset($task->task_type) || !in_array($task->task_type, array('migrate', 'restore'), TRUE)) {
     return;
   }
   if (!empty($task->ref->db_name) && function_exists('hosting_migrate_source_record_former_name')) {
@@ -891,8 +892,8 @@ function hosting_migrate_source_sweep() {
   // Every site proves itself before any grant is judged: the test below asks
   // whether a granted database is one a site of ours runs, and a site the loop
   // reaches later must already count. Its proven name is the only record of
-  // that: hosting_site.db_name keeps a restored site's former name until the
-  // site's next Verify.
+  // that: hosting_site.db_name can lag the site's database (a Restore whose
+  // result still named the old one leaves it until the site's next Verify).
   $identities = array();
   foreach ($ours as $db_name_hint => $nid) {
     $identity = _hosting_migrate_source_prove_site($nid);

@@ -344,20 +344,24 @@ function hosting_migrate_source_post_hosting_migrate_source_task($task, $data) {
  * the grant it had. Unlike migrate, restore queues no verify of its own, so the
  * wiring would stay broken until something else happened to verify the site.
  *
- * Queue one: the backend re-converges the grant for the current user, and the
- * verify also refreshes the frontend's record of db_name, which restore leaves
- * stale. The superseded user's orphan grant is the sweep's job.
+ * Queue one: the backend re-converges the grant for the current user. The
+ * frontend's record of db_name is refreshed by hosting_site's own Restore
+ * post-task, after this hook, from the task's result; where that result still
+ * names the old database, by this verify. The superseded user's orphan grant
+ * is the sweep's job.
  */
 function hosting_migrate_source_post_hosting_restore_task($task, $data) {
   if (!isset($task->ref) || $task->ref->type != 'site') {
     return;
   }
-  // Restore has just rotated this site's database name and user, and the value
-  // still in the record IS the superseded name -- the queued verify overwrites
-  // it, and the frontend keeps no revision of the old value. This is therefore
-  // the only moment the name can enter the instance's own record of its former
-  // databases, which is what entitles the sweep to reclaim the superseded
-  // user's leftover grants. Recorded before every early return: the rotation
+  // Restore has just rotated this site's database name and user. The superseded
+  // name entered the instance's own record of its former databases before
+  // dispatch (the drush pre-task hook), which is what entitles the sweep to
+  // reclaim the superseded user's leftover grants: hosting_site's Restore
+  // post-task overwrites the record with the new name, and the frontend keeps
+  // no revision of the old value. Recorded here again while the record still
+  // holds it (this hook runs first only by module order; a live name recorded
+  // is the safe direction), and before every early return: the rotation
   // happened regardless of what this hook decides to queue.
   if (!empty($task->ref->db_name)) {
     hosting_migrate_source_record_former_name($task->ref->db_name);
@@ -368,19 +372,20 @@ function hosting_migrate_source_post_hosting_restore_task($task, $data) {
 
   // The restored site may be a SOURCE as well as a target, and that case is the
   // dangerous one. Restore rotates this site's database name and drops the old
-  // one, but nothing refreshes the frontend's record of db_name -- so every
-  // association naming this site still names a freed, globally reusable name,
-  // and MySQL keeps other grantees' rows across DROP DATABASE. Left alone, the
-  // targets' next verifies re-grant onto whatever site takes that name next.
+  // one, and MySQL keeps other grantees' rows across DROP DATABASE: until each
+  // target re-converges, its grant still names a freed, globally reusable name,
+  // and where the Restore's result still named the old database, so does the
+  // frontend's record of db_name -- the targets' next verifies would re-grant
+  // onto whatever site takes that name next.
   //
-  // Verify this site FIRST, because that is what refreshes db_name, then each
+  // Verify this site FIRST, which refreshes db_name in that case, then each
   // dependent target so its grant re-converges against the new name.
   // Queue ONLY this site's own verify here. The dependents are queued from that
   // verify's post-task hook instead, because "first" is not something this hook
   // can express: the queue forks tasks and runs several at once, so queueing the
-  // dependents alongside lets them converge against the STALE db_name -- exactly
-  // the freed-name window this ordering exists to close. Chaining them off the
-  // verify makes the ordering real rather than hoped for.
+  // dependents alongside could let them converge against a STALE db_name --
+  // exactly the freed-name window this ordering exists to close. Chaining them
+  // off the verify makes the ordering real rather than hoped for.
   $targets = hosting_migrate_source_dependent_targets($task->ref->nid);
   if (!empty($task->ref->migrate_source) || !empty($targets)) {
     if (!empty($targets)) {
@@ -401,7 +406,8 @@ function hosting_migrate_source_post_hosting_restore_task($task, $data) {
  * refreshed the frontend's record of db_name. Queued here rather than from the
  * restore hook so the ordering is enforced by sequence instead of assumed:
  * tasks are forked and run concurrently, so a dependent queued at restore time
- * could converge against the old, freed database name.
+ * could converge against the old, freed database name where the Restore's
+ * result still named it.
  */
 function hosting_migrate_source_post_hosting_verify_task($task, $data) {
   if (!isset($task->ref) || $task->ref->type != 'site') {
@@ -458,11 +464,12 @@ function hosting_migrate_source_post_hosting_delete_task($task, $data) {
  * as a former site database. Deleted sites keep their final name on their
  * surviving {hosting_site} row, but a restore or migrate rotates the name with
  * no revision left behind -- so the moment of rotation writes it here instead.
- * Restore records from its post-task hook, where the record is still the old
- * name; migrate must record BEFORE dispatch (the drush pre-task hook in the
- * .drush.inc), because hosting_migrate's own post-task hook refreshes the
- * record to the NEW name before ours would run -- a post-task recording there
- * captured the live name instead of the superseded one, observed live.
+ * Both record BEFORE dispatch (the drush pre-task hook in the .drush.inc): a
+ * post-task hook refreshes the record to the NEW name -- hosting_migrate's
+ * before ours runs, so a post-task recording there captured the live name
+ * instead of the superseded one, observed live; hosting_site's for restore,
+ * after ours only by module order. Restore records again from its post-task
+ * hook while the record still holds the old name.
  *
  * Bounded both ways: entries expire after 90 days and the list is capped at 200
  * names, oldest first. Both bounds fail safe -- a name that ages out moves the
