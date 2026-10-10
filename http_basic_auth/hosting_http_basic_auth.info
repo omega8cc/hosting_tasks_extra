@@ -1,6 +1,6 @@
 name = HTTP Basic Authentication
 description = Allows admins to specify HTTP basic authentication for sites.
-package = Aegir Extras
+package = Ægir Extras
 dependencies[] = hosting_site
 
 core = 7.x

@@ -1,5 +1,5 @@
 name = Hosting tasks extra
-description = Adds additional tasks to Aegir.
-package = Aegir Extras
+description = Adds additional tasks to Ægir.
+package = Ægir Extras
 dependencies[] = hosting_site
 core = 7.x

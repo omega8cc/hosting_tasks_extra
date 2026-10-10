@@ -666,7 +666,7 @@ function hosting_migrate_source_node_delete($node) {
 function hosting_migrate_source_hosting_queues() {
   $queue['migrate_source'] = array(
     'name' => t('Migration source grants'),
-    'description' => t('Reconcile migration-source database grants against what this Aegir instance intends.'),
+    'description' => t('Reconcile migration-source database grants against what this Ægir instance intends.'),
     'type' => HOSTING_QUEUE_TYPE_SERIAL,
     'frequency' => strtotime('1 day', 0),
     'items' => 1,

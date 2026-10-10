@@ -130,7 +130,7 @@ function drush_hosting_migrate_source_pre_hosting_task() {
 function hosting_migrate_source_drush_command() {
   $items = array();
   $items['hosting-migrate-source-sweep'] = array(
-    'description' => 'Reconcile migration-source grants against what this Aegir instance actually intends.',
+    'description' => 'Reconcile migration-source grants against what this Ægir instance actually intends.',
     'callback' => 'hosting_migrate_source_sweep',
     'options' => array(
       'dry-run' => 'Report what would change without changing anything.',
