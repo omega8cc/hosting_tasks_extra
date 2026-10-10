@@ -31,7 +31,7 @@ function hosting_tasks_extra_hosting_tasks() {
   Removed to close potential attack vector.
     $tasks['site']['run_cron'] = array(
       'title' => t('Run drush cron'),
-      'description' => t('Runs cron locally with drush on this site. It allows you to manually run the cron with longer timeout and higher memory allowed than in standard, web based, scheduled cron Aegir runs for you via cURL request to protected /cron.php URL.'),
+      'description' => t('Runs cron locally with drush on this site. It allows you to manually run the cron with longer timeout and higher memory allowed than in standard, web based, scheduled cron Ægir runs for you via cURL request to protected /cron.php URL.'),
       'dialog' => TRUE,
     );
 
