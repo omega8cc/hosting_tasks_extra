@@ -370,6 +370,17 @@ function drush_provision_tasks_extra_provision_update_translations() {
  * Make a backup of the site before we mess with it.
  */
 function drush_provision_tasks_extra_provision_update_pre_validate() {
+  // Drupal's database updates and Drupal's settings writer: a Backdrop, Grav
+  // or Textpattern site would get a Drupal settings.php in place of its own,
+  // so it is refused before anything is changed, as the utf8mb4 conversion's
+  // validate below refuses it.
+  if (function_exists('provision_platform_is_backdrop') && provision_platform_is_backdrop(d())) {
+    return drush_set_error('PROVISION_UPDATE_NOT_DRUPAL', dt('This is a Backdrop site: provision-update runs Drupal database updates and writes a Drupal settings.php. Nothing was changed.'));
+  }
+  if (function_exists('provision_platform_is_foreign_cms') && provision_platform_is_foreign_cms(d())) {
+    return drush_set_error('PROVISION_UPDATE_NOT_DRUPAL', dt('This site does not run Drupal: provision-update runs Drupal database updates and writes a Drupal settings.php. Nothing was changed.'));
+  }
+
   /* Set offline mode to true and re-generate the settings.php. This will write a
    * $conf['site_offline'] = 1; to the settings.php
    */
@@ -378,6 +389,9 @@ function drush_provision_tasks_extra_provision_update_pre_validate() {
   $provision_dir = dirname($list['provision']);
   include_once($provision_dir . '/platform/backup.provision.inc');
 
+  // What the rollback of this hook puts back, set first: a write that fails
+  // half-way still leaves a site to bring back.
+  drush_set_context('PROVISION_TASKS_EXTRA_UPDATE_OFFLINE', TRUE);
   drush_log(dt("Putting the site under maintenance"));
   d()->site_enabled = FALSE;
   _provision_drupal_create_settings_file();
@@ -394,10 +408,38 @@ function drush_provision_tasks_extra_provision_update_pre_validate() {
   // reports as carrying no database dump. Dispatched by alias name, so the
   // child has a real context (see the rollback below).
   $success = provision_backend_invoke(d()->name, 'provision-backup', array($backup_file), array('selected_backup_mode' => 'site_files_with_mysqldump'));
-  if (!$success) {
+  // The invoke's return shape is the signal, as for the utf8mb4 conversion's
+  // copy below: a backup that failed comes back with a non-zero error_status,
+  // and one that died with no output comes back FALSE, with no error set here.
+  // A simulated run (--simulate) gets FALSE too, with no backup run at all.
+  if ((!$success && !drush_get_context('DRUSH_SIMULATE')) || (is_array($success) && !empty($success['error_status']))) {
     // If the backup failed, we don't want to try restoring it in the rollback.
     drush_set_option('pre_update_backup_file', FALSE);
+    // No update runs without its safety copy: the task stops here, and the
+    // rollback of this hook takes the site out of maintenance.
+    return drush_set_error('PROVISION_UPDATE_BACKUP_FAILED', dt('The safety backup before the update failed: no update was run, and the site is taken out of maintenance.'));
   }
+}
+
+/**
+ * Implements drush_hook_COMMAND_pre_validate_rollback().
+ *
+ * The task stops in pre_validate when the safety backup fails, after the site
+ * was put under maintenance, and Drush rolls back only the hooks that ran: the
+ * command's rollback below never runs then. Bring the site back as it does,
+ * without a restore, as no update ran. A task that stopped later was brought
+ * back by the command's rollback already, and a site refused before it was
+ * taken offline is left as it was.
+ */
+function drush_provision_tasks_extra_provision_update_pre_validate_rollback() {
+  if (!drush_get_context('PROVISION_TASKS_EXTRA_UPDATE_OFFLINE', FALSE)
+    || drush_get_context('PROVISION_TASKS_EXTRA_UPDATE_SITE_BACK', FALSE)) {
+    return;
+  }
+  drush_log(dt("Bringing the site out of maintenance"));
+  d()->site_enabled = TRUE;
+  _provision_drupal_create_settings_file();
+  provision_drupal_push_site();
 }
 
 /**
@@ -422,6 +464,8 @@ function drush_provision_tasks_extra_provision_update_rollback() {
   d()->site_enabled = TRUE;
   _provision_drupal_create_settings_file();
   provision_drupal_push_site();
+  // The pre_validate rollback runs after this one: nothing left for it.
+  drush_set_context('PROVISION_TASKS_EXTRA_UPDATE_SITE_BACK', TRUE);
 }
 
 /**
