@@ -406,8 +406,11 @@ function drush_provision_tasks_extra_provision_update_pre_validate() {
   // own copy): the modeless fast path dumps only to the shared, rotating
   // tmp_expim store and packs a files-only archive, which the restore then
   // reports as carrying no database dump. Dispatched by alias name, so the
-  // child has a real context (see the rollback below).
-  $success = provision_backend_invoke(d()->name, 'provision-backup', array($backup_file), array('selected_backup_mode' => 'site_files_with_mysqldump'));
+  // child has a real context (see the rollback below). That context comes
+  // from the alias, where the site is enabled: provision_backup_keep_offline
+  // keeps the child's settings.php writes in maintenance, or the update
+  // would run with the site online.
+  $success = provision_backend_invoke(d()->name, 'provision-backup', array($backup_file), array('selected_backup_mode' => 'site_files_with_mysqldump', 'provision_backup_keep_offline' => TRUE));
   // The invoke's return shape is the signal, as for the utf8mb4 conversion's
   // copy below: a backup that failed comes back with a non-zero error_status,
   // and one that died with no output comes back FALSE, with no error set here.
@@ -730,7 +733,8 @@ function drush_provision_tasks_extra_provision_utf8mb4_convert() {
   // Restorable mode (database inside the archive), as for the update task's
   // safety copy: this is the copy an operator restores by hand if the
   // conversion goes wrong, and the fast path's files-only archive cannot.
-  $success = provision_backend_invoke(d()->name, 'provision-backup', array($backup_file), array('selected_backup_mode' => 'site_files_with_mysqldump'));
+  // The child keeps the site in maintenance, as for the update task's copy.
+  $success = provision_backend_invoke(d()->name, 'provision-backup', array($backup_file), array('selected_backup_mode' => 'site_files_with_mysqldump', 'provision_backup_keep_offline' => TRUE));
   drush_unset_option('force');
   // No drush_get_error() here: that flag is process-sticky, so a
   // recoverable error logged by an earlier step would misfire as a backup
