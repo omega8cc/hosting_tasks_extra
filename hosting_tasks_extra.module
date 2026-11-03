@@ -69,7 +69,7 @@ function hosting_tasks_extra_hosting_tasks() {
 
   $tasks['site']['updates_report'] = array(
     'title' => t('Check available updates'),
-    'description' => t('Reports this site\'s known security problems and available updates in this task\'s log. On Drupal 8 and newer it lists the published advisories for the packages in the platform\'s composer.lock, on Drupal 6 and 7 the enabled projects behind their newest release or marked insecure. This is read-only: it changes nothing in the site\'s code or content, and nothing is applied for you. Click the (Expand) links in the task log to see all the details.'),
+    'description' => hosting_tasks_extra_updates_report_text(),
     'dialog' => TRUE,
     'access callback' => 'hosting_tasks_extra_updates_report_task_access',
     // None: the confirm screen is this title and description.
@@ -284,6 +284,28 @@ function hosting_tasks_extra_permission() {
       'description' => t('See the available updates of a site in a task log.'),
     ),
   );
+}
+
+/**
+ * What Check available updates does, for its task entry and its confirm screen.
+ */
+function hosting_tasks_extra_updates_report_text() {
+  return t('Reports this site\'s known security problems and available updates in this task\'s log. On Drupal 8 and newer it lists the published advisories for the packages in the platform\'s composer.lock, on Drupal 6 and 7 the enabled projects behind their newest release or marked insecure. This is read-only: it changes nothing in the site\'s code or content, and nothing is applied for you. Click the (Expand) links in the task log to see all the details.');
+}
+
+/**
+ * Implements hosting_task_TASK_TYPE_form().
+ *
+ * The generic confirm screen does not show a task's description, and whoever runs
+ * this one should see that it changes nothing.
+ */
+function hosting_task_updates_report_form($node) {
+  $form['report'] = array(
+    '#type' => 'item',
+    '#title' => t('What this task does'),
+    '#markup' => hosting_tasks_extra_updates_report_text(),
+  );
+  return $form;
 }
 
 /**
