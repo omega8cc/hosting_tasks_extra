@@ -119,8 +119,9 @@ function drush_provision_tasks_extra_provision_updates_report() {
  */
 function _provision_tasks_extra_updates_report_ups($major) {
   drush_log(dt('Available updates ###---### drush8 pm-updatestatus ###---### start'), 'notice');
-  $ran = drush_shell_exec('drush8 %s ups --update-backend=drush --format=json 2>/dev/null', d()->name);
-  $out = trim(implode("\n", drush_shell_exec_output()));
+  $output = array();
+  $ran = _provision_tasks_extra_exec('drush8 ' . drush_escapeshellarg(d()->name) . ' ups --update-backend=drush --format=json 2>/dev/null', $output);
+  $out = trim(implode("\n", $output));
   $doc = ($out === '') ? array() : json_decode($out, TRUE);
   if (!$ran || !is_array($doc)) {
     drush_log(dt('Available updates ###---### unknown: drush8 pm-updatestatus gave no report for this site.'), 'success');
@@ -209,7 +210,14 @@ function _provision_tasks_extra_updates_report_audit() {
   putenv('COMPOSER_HOME=' . $scratch . '/.home');
   putenv('COMPOSER_CACHE_DIR=' . $scratch . '/.cache');
   putenv('COMPOSER_NO_INTERACTION=1');
-  drush_shell_cd_and_exec($scratch, 'composer audit --locked --format=json --no-plugins --no-scripts' . $dev . ' > .audit.json 2> .audit.err');
+  $output = array();
+  $cwd = getcwd();
+  if (!chdir($scratch)) {
+    drush_log(dt('Available updates ###---### advisories: unknown (cannot enter the audit copy)'), 'success');
+    return;
+  }
+  _provision_tasks_extra_exec('composer audit --locked --format=json --no-plugins --no-scripts' . $dev . ' > .audit.json 2> .audit.err', $output);
+  chdir($cwd);
   $lines = _provision_tasks_extra_audit_lines((string) @file_get_contents($scratch . '/.audit.json'), $lock, $dev !== '');
   if ($lines === FALSE) {
     drush_log(dt('Available updates ###---### advisories: unknown (composer audit did not finish: @why)', array(
@@ -221,6 +229,19 @@ function _provision_tasks_extra_updates_report_audit() {
   drush_log(dt('Available updates ###---### read from @path: the whole platform, not only what this site installed.', array('@path' => $app . '/composer.lock')), 'notice');
   drush_log(implode("\n", $lines), 'notice');
   drush_log(dt('Available updates ###---### @first', array('@first' => $lines[0])), 'success');
+}
+
+/**
+ * Runs a command line through /bin/sh, keeping its own redirections.
+ *
+ * drush_shell_exec() appends 2>&1 to every command, which rebinds whatever
+ * stderr the line set and lands Drush's and Composer's messages in the JSON.
+ * The leading word stays first so that websh dispatches it as usual.
+ */
+function _provision_tasks_extra_exec($command, &$output) {
+  $rc = 1;
+  exec($command, $output, $rc);
+  return (int) $rc === 0;
 }
 
 /**
