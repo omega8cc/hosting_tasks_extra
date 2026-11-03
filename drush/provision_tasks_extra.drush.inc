@@ -140,7 +140,7 @@ function _provision_tasks_extra_updates_report_ups($major) {
     $why = _provision_tasks_extra_audit_text(isset($project['status_msg']) ? $project['status_msg'] : '');
     // An extended-support core is newer than anything on drupal.org's feed, and
     // the feed then proposes a downgrade. That is no finding.
-    if ($name === 'drupal' && version_compare($have, $want, '>')) {
+    if ($name === 'drupal' && $want !== '-' && version_compare($have, $want, '>')) {
       $rows[] = $name . ' ' . $have . ': newer than the release feed knows, an extended-support core takes its fixes with a BOA release';
       continue;
     }
@@ -214,12 +214,15 @@ function _provision_tasks_extra_updates_report_audit() {
   putenv('COMPOSER_NO_INTERACTION=1');
   $output = array();
   $cwd = getcwd();
-  if (!chdir($scratch)) {
-    drush_log(dt('Available updates ###---### advisories: unknown (cannot enter the audit copy)'), 'success');
-    return;
+  if (chdir($scratch)) {
+    _provision_tasks_extra_exec('composer audit --locked --format=json --no-plugins --no-scripts' . $dev . ' > .audit.json 2> .audit.err', $output);
+    if ($cwd !== FALSE) {
+      chdir($cwd);
+    }
   }
-  _provision_tasks_extra_exec('composer audit --locked --format=json --no-plugins --no-scripts' . $dev . ' > .audit.json 2> .audit.err', $output);
-  chdir($cwd);
+  putenv('COMPOSER_HOME');
+  putenv('COMPOSER_CACHE_DIR');
+  putenv('COMPOSER_NO_INTERACTION');
   $lines = _provision_tasks_extra_audit_lines((string) @file_get_contents($scratch . '/.audit.json'), $lock, $dev !== '');
   if ($lines === FALSE) {
     drush_log(dt('Available updates ###---### advisories: unknown (composer audit did not finish: @why)', array(
