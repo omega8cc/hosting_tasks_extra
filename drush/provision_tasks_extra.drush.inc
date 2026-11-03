@@ -40,7 +40,7 @@ function provision_tasks_extra_drush_command() {
     'bootstrap' => DRUSH_BOOTSTRAP_DRUSH,
   );
   $items['provision-updates_report'] = array(
-    'description' => dt('Reports the available updates of a site. Read-only: it changes nothing in the site or its platform.'),
+    'description' => dt('Reports the available updates of a site. Read-only: it changes nothing in the site\'s code or content, or in its platform.'),
     'bootstrap' => DRUSH_BOOTSTRAP_DRUSH,
   );
   $items['provision-update_uri'] = array(
@@ -84,9 +84,9 @@ function provision_tasks_extra_drush_command() {
 /**
  * Implements the provision-updates_report command.
  *
- * Report only: nothing here writes to the site or its platform, it never locks
- * a platform's local Drush, and a report that cannot be made is a note in the
- * task log, never a failed task.
+ * Report only: nothing here changes the site's code or content or its platform,
+ * it never locks a platform's local Drush, and a report that cannot be made is a
+ * note in the task log, never a failed task.
  */
 function drush_provision_tasks_extra_provision_updates_report() {
   drush_errors_on();
@@ -114,22 +114,37 @@ function drush_provision_tasks_extra_provision_updates_report() {
 /**
  * Drupal 6 and 7: Drush 8's own update backend.
  *
- * It asks the release feed directly, so the update module stays as it is,
- * enabled or not, and the site's database is not written to.
+ * It asks the release feed directly, so the update module stays as it is, enabled
+ * or not. -v keeps Drush's notes of a feed it read from an expired copy, and it
+ * also lists the projects that are up to date, which are counted here, not listed.
  */
 function _provision_tasks_extra_updates_report_ups($major) {
   drush_log(dt('Available updates ###---### drush8 pm-updatestatus ###---### start'), 'notice');
-  $output = array();
-  $ran = _provision_tasks_extra_exec('drush8 ' . drush_escapeshellarg(d()->name) . ' ups --update-backend=drush --format=json 2>/dev/null', $output);
-  $out = trim(implode("\n", $output));
+  $scratch = _provision_tasks_extra_scratch();
+  if ($scratch === FALSE) {
+    drush_log(dt('Available updates ###---### unknown: no private folder for the report.'), 'success');
+    return;
+  }
+  $ran = _provision_tasks_extra_exec('drush8 ' . drush_escapeshellarg(d()->name) . ' ups --update-backend=drush --format=json -v', $scratch, '.ups.json', '.ups.err');
+  $out = trim((string) @file_get_contents($scratch . '/.ups.json'));
+  $err = (string) @file_get_contents($scratch . '/.ups.err');
   $doc = ($out === '') ? array() : json_decode($out, TRUE);
-  if (!$ran || !is_array($doc)) {
+  if ($ran !== TRUE || !is_array($doc)) {
     drush_log(dt('Available updates ###---### unknown: drush8 pm-updatestatus gave no report for this site.'), 'success');
+    return;
+  }
+  // Drush drops a project whose feed it could not read, clears the error and exits
+  // 0, so only its own stderr tells that from a site with nothing to report.
+  $unread = substr_count($err, 'Failed to get available update data');
+  $stale = substr_count($err, 'retrieved from an expired cache');
+  if ($unread > 0 && !$doc) {
+    drush_log(dt('Available updates ###---### unknown: the release feed could not be read.'), 'success');
     return;
   }
   $rows = array();
   $listed = 0;
   $security = 0;
+  $newest = 0;
   foreach ($doc as $project) {
     if (!is_array($project) || !isset($project['name'])) {
       continue;
@@ -138,37 +153,101 @@ function _provision_tasks_extra_updates_report_ups($major) {
     $have = _provision_tasks_extra_audit_word(isset($project['existing_version']) ? $project['existing_version'] : '');
     $want = _provision_tasks_extra_audit_word(isset($project['candidate_version']) ? $project['candidate_version'] : '');
     $why = _provision_tasks_extra_audit_text(isset($project['status_msg']) ? $project['status_msg'] : '');
+    $status = isset($project['status']) ? (int) $project['status'] : 0;
     // An extended-support core is newer than anything on drupal.org's feed, and
     // the feed then proposes a downgrade. That is no finding.
     if ($name === 'drupal' && $want !== '-' && version_compare($have, $want, '>')) {
       $rows[] = $name . ' ' . $have . ': newer than the release feed knows, an extended-support core takes its fixes with a BOA release';
       continue;
     }
-    // 1 is DRUSH_UPDATESTATUS_NOT_SECURE. drupal.org marks every Drupal 7 project
-    // unsupported, and Drush then stops short of that status, so the release's own
-    // terms in the feed are read too.
-    $terms = isset($project['releases'][$project['existing_version']]['terms']['Release type'])
-      ? $project['releases'][$project['existing_version']]['terms']['Release type'] : array();
-    $insecure = is_array($terms) && in_array('Insecure', $terms, TRUE);
-    if ($insecure || (isset($project['status']) && (int) $project['status'] === 1)) {
+    $insecure = _provision_tasks_extra_release_insecure($project);
+    if ($insecure) {
       $security++;
-      if ($insecure) {
-        $why = 'SECURITY UPDATE available (the release feed marks ' . $have . ' insecure)';
-      }
+      $listed++;
+      $rows[] = ($have === $want)
+        ? $name . ' ' . $have . ': the release feed marks this release insecure, and no newer release exists'
+        : $name . ' ' . $have . ' to ' . $want . ': SECURITY UPDATE available';
+      continue;
+    }
+    // On its newest release: 5 is up to date, 3 is drupal.org's verdict on every
+    // project of an ended major version, with nothing newer to move to.
+    if ($have === $want && in_array($status, array(3, 5), TRUE)) {
+      $newest++;
+      continue;
     }
     $listed++;
-    $rows[] = $name . ' ' . $have . ' -> ' . $want . ': ' . $why;
+    $rows[] = $name . ' ' . $have . ' to ' . $want . ': ' . $why;
   }
   if ($rows) {
-    drush_log(implode("\n", $rows), 'notice');
+    _provision_tasks_extra_updates_report_log($rows);
+  }
+  if ($unread > 0) {
+    drush_log(dt('Available updates ###---### @count more could not be checked: the release feed did not answer.', array('@count' => $unread)), 'notice');
+  }
+  if ($stale > 0) {
+    drush_log(dt('Available updates ###---### @count read from an expired copy of the release feed, which did not answer.', array('@count' => $stale)), 'notice');
   }
   if ((int) $major === 7) {
     drush_log(dt('Available updates ###---### drupal.org has published no Drupal 7 advisories since 5 January 2025, so no security flag means no published advisory, not a safe release.'), 'notice');
   }
-  drush_log(dt('Available updates ###---### @count listed, @security of them security updates.', array(
+  drush_log(dt('Available updates ###---### @count listed, @security of them security updates, @newest more on their newest release.', array(
     '@count' => $listed,
     '@security' => $security,
+    '@newest' => $newest,
   )), 'success');
+}
+
+/**
+ * Whether the release feed knows a security problem in the installed release.
+ *
+ * Drush's own walk over the releases runs only for a supported project, and
+ * drupal.org marks every project of an ended major version unsupported, so it never
+ * says so on Drupal 6 or 7. This is the same walk: the release's own Insecure term,
+ * or a newer published release of the same major version typed as a security update.
+ */
+function _provision_tasks_extra_release_insecure($project) {
+  if (empty($project['releases']) || !is_array($project['releases']) || !isset($project['existing_version'])) {
+    return FALSE;
+  }
+  $have = $project['existing_version'];
+  if (in_array('Insecure', _provision_tasks_extra_release_types(isset($project['releases'][$have]) ? $project['releases'][$have] : array()), TRUE)) {
+    return TRUE;
+  }
+  $dev = isset($project['install_type']) && $project['install_type'] === 'dev';
+  foreach ($project['releases'] as $version => $release) {
+    if ((string) $version === (string) $have) {
+      break;
+    }
+    if (!is_array($release) || (isset($release['status']) && $release['status'] === 'unpublished')) {
+      continue;
+    }
+    $types = _provision_tasks_extra_release_types($release);
+    if (in_array('Insecure', $types, TRUE)) {
+      continue;
+    }
+    if (isset($release['version_major'], $project['existing_major']) && (int) $release['version_major'] > (int) $project['existing_major']) {
+      continue;
+    }
+    // A dev snapshot has no release of its own to stop at: compare the dates, with
+    // Drush's 100 seconds of leeway between the .info file and the tarball.
+    if ($dev && (empty($project['datestamp']) || (isset($release['date']) && (int) $project['datestamp'] + 100 > (int) $release['date']))) {
+      continue;
+    }
+    if (in_array('Security update', $types, TRUE)) {
+      return TRUE;
+    }
+  }
+  return FALSE;
+}
+
+/**
+ * The feed's "Release type" terms of one release.
+ */
+function _provision_tasks_extra_release_types($release) {
+  if (is_array($release) && isset($release['terms']['Release type']) && is_array($release['terms']['Release type'])) {
+    return $release['terms']['Release type'];
+  }
+  return array();
 }
 
 /**
@@ -182,16 +261,9 @@ function _provision_tasks_extra_updates_report_ups($major) {
  */
 function _provision_tasks_extra_updates_report_audit() {
   drush_log(dt('Available updates ###---### composer audit --locked ###---### start'), 'notice');
-  $app = '';
-  $lock = FALSE;
-  foreach (array(d()->root, dirname(d()->root)) as $dir) {
-    $lock = _provision_tasks_extra_read_plain($dir . '/composer.lock');
-    if ($lock !== FALSE) {
-      $app = $dir;
-      break;
-    }
-  }
-  if ($app === '') {
+  $app = _provision_tasks_extra_app_root(d()->root);
+  $lock = ($app === '') ? FALSE : _provision_tasks_extra_read_plain($app . '/composer.lock');
+  if ($lock === FALSE) {
     drush_log(dt('Available updates ###---### advisories: unknown (no composer.lock at the platform root)'), 'success');
     return;
   }
@@ -204,13 +276,14 @@ function _provision_tasks_extra_updates_report_audit() {
       $dev = ' --no-dev';
     }
   }
-  $scratch = drush_tempdir();
+  $scratch = _provision_tasks_extra_scratch();
   $copy = json_encode(array(
     'name' => 'boa/advisory-audit',
     'repositories' => array(array('type' => 'composer', 'url' => 'https://packages.drupal.org/8')),
   ));
-  if (file_put_contents($scratch . '/composer.json', $copy) === FALSE
-    || file_put_contents($scratch . '/composer.lock', $lock) === FALSE) {
+  if ($scratch === FALSE
+    || @file_put_contents($scratch . '/composer.json', $copy) === FALSE
+    || @file_put_contents($scratch . '/composer.lock', $lock) === FALSE) {
     drush_log(dt('Available updates ###---### advisories: unknown (cannot write the audit copy)'), 'success');
     return;
   }
@@ -220,58 +293,125 @@ function _provision_tasks_extra_updates_report_audit() {
   putenv('COMPOSER_HOME=' . $scratch . '/.home');
   putenv('COMPOSER_CACHE_DIR=' . $scratch . '/.cache');
   putenv('COMPOSER_NO_INTERACTION=1');
-  $output = array();
-  $cwd = getcwd();
-  if (chdir($scratch)) {
-    _provision_tasks_extra_exec('composer audit --locked --format=json --no-plugins --no-scripts' . $dev . ' > .audit.json 2> .audit.err', $output);
-    if ($cwd !== FALSE) {
-      chdir($cwd);
-    }
-  }
+  $ran = _provision_tasks_extra_exec('composer audit --locked --format=json --no-plugins --no-scripts' . $dev, $scratch, '.audit.json', '.audit.err');
   putenv('COMPOSER_HOME');
   putenv('COMPOSER_CACHE_DIR');
   putenv('COMPOSER_NO_INTERACTION');
-  $lines = _provision_tasks_extra_audit_lines((string) @file_get_contents($scratch . '/.audit.json'), $lock, $dev !== '');
+  $lines = ($ran === NULL) ? FALSE : _provision_tasks_extra_audit_lines((string) @file_get_contents($scratch . '/.audit.json'), $lock, $dev !== '');
   if ($lines === FALSE) {
-    drush_log(dt('Available updates ###---### advisories: unknown (composer audit did not finish: @why)', array(
-      '@why' => _provision_tasks_extra_audit_why((string) @file_get_contents($scratch . '/.audit.err')),
-    )), 'success');
+    $why = ($ran === NULL) ? 'it ran out of time' : _provision_tasks_extra_audit_why((string) @file_get_contents($scratch . '/.audit.err'));
+    drush_log(dt('Available updates ###---### advisories: unknown (composer audit did not finish: @why)', array('@why' => $why)), 'success');
     return;
   }
   $lines[] = ($dev !== '') ? '# require-dev: not installed in the platform, not audited' : '# require-dev: audited (installed, or no installed.json to tell)';
   drush_log(dt('Available updates ###---### read from @path: the whole platform, not only what this site installed.', array('@path' => $app . '/composer.lock')), 'notice');
-  drush_log(implode("\n", $lines), 'notice');
+  _provision_tasks_extra_updates_report_log($lines);
   drush_log(dt('Available updates ###---### @first', array('@first' => $lines[0])), 'success');
 }
 
 /**
- * Runs a command line through /bin/sh, keeping its own redirections.
+ * Logs the report's lines as one entry, which the panel folds behind (Expand).
  *
- * drush_shell_exec() appends 2>&1 to every command, which rebinds whatever
- * stderr the line set and lands Drush's and Composer's messages in the JSON.
- * The leading word stays first so that websh dispatches it as usual.
+ * The lock is the tenant's, and the panel's filter keeps links: a coverage message
+ * must not reach whoever reads the log as a working link.
  */
-function _provision_tasks_extra_exec($command, &$output) {
-  $rc = 1;
-  exec($command, $output, $rc);
-  return (int) $rc === 0;
+function _provision_tasks_extra_updates_report_log($lines) {
+  drush_log(str_replace(array('<', '>'), '', implode("\n", $lines)), 'notice');
+}
+
+/**
+ * The folder holding the platform's composer.lock and vendor, or ''.
+ *
+ * The lock and unlock bodies look for vendor the same way: in the docroot, then
+ * above a docroot named as the panel names one. A lock anywhere else is not this
+ * platform's, and a folder above any other name is the account's, not the platform's.
+ */
+function _provision_tasks_extra_app_root($root) {
+  $root = rtrim($root, '/');
+  if (is_dir($root . '/vendor')) {
+    return $root;
+  }
+  if (in_array(basename($root), array('docroot', 'web', 'html', 'www'), TRUE) && is_dir(dirname($root) . '/vendor')) {
+    return dirname($root);
+  }
+  return '';
+}
+
+/**
+ * A private folder for one report, removed when Drush exits, or FALSE.
+ *
+ * Not drush_tempdir(): its folder takes the task's group-writable umask, and a
+ * tenant in that group could plant links under the names the report writes.
+ */
+function _provision_tasks_extra_scratch() {
+  $dir = rtrim(drush_find_tmp(), '/') . '/updates_report_' . str_replace('.', '', uniqid('', TRUE));
+  if (!@mkdir($dir, 0700)) {
+    return FALSE;
+  }
+  drush_register_file_for_deletion($dir);
+  return $dir;
+}
+
+/**
+ * Runs a command through /bin/sh in $dir, its output in two files there.
+ *
+ * Not drush_shell_exec(), which appends 2>&1 and lands Drush's and Composer's
+ * messages in the JSON each leg reads. The leading word stays first so that websh
+ * dispatches it as usual. The instance has one task runner, so a feed that hangs
+ * must not hold it. TRUE on exit 0, FALSE on any other exit, NULL out of time.
+ */
+function _provision_tasks_extra_exec($command, $dir, $out, $err, $limit = 900) {
+  $pipes = array();
+  $process = @proc_open($command, array(
+    0 => array('file', '/dev/null', 'r'),
+    1 => array('file', $dir . '/' . $out, 'w'),
+    2 => array('file', $dir . '/' . $err, 'w'),
+  ), $pipes, $dir);
+  if (!is_resource($process)) {
+    return FALSE;
+  }
+  $deadline = time() + $limit;
+  while (TRUE) {
+    $state = proc_get_status($process);
+    if (!$state['running']) {
+      proc_close($process);
+      return (int) $state['exitcode'] === 0;
+    }
+    if (time() >= $deadline) {
+      proc_terminate($process, 15);
+      sleep(1);
+      proc_terminate($process, 9);
+      proc_close($process);
+      return NULL;
+    }
+    usleep(100000);
+  }
 }
 
 /**
  * The bytes of a plain file in a codebase the account can write, or FALSE.
  *
  * This runs as the backend user on a tenant's tree: a link or a FIFO planted
- * under the name is never followed, and the size is bounded.
+ * under the name is never followed, also when it is swapped in between the check
+ * and the open, and the size is bounded. "n" opens without blocking on a FIFO.
  */
 function _provision_tasks_extra_read_plain($path, $max = 33554432) {
-  if (is_link($path) || !is_file($path)) {
+  $before = @lstat($path);
+  if ($before === FALSE || ($before['mode'] & 0170000) !== 0100000 || $before['size'] > $max) {
     return FALSE;
   }
-  $size = filesize($path);
-  if ($size === FALSE || $size > $max) {
+  $handle = @fopen($path, 'rn');
+  if ($handle === FALSE) {
     return FALSE;
   }
-  return @file_get_contents($path);
+  $now = fstat($handle);
+  if ($now === FALSE || $now['ino'] !== $before['ino'] || $now['dev'] !== $before['dev']) {
+    fclose($handle);
+    return FALSE;
+  }
+  $bytes = stream_get_contents($handle, $max);
+  fclose($handle);
+  return $bytes;
 }
 
 /**
@@ -311,7 +451,7 @@ function _provision_tasks_extra_audit_why($err) {
  * Strips a field to printable non-space ASCII: it comes from a remote feed.
  */
 function _provision_tasks_extra_audit_word($s) {
-  $s = preg_replace('/[^\x21-\x7e]/', '', (string) $s);
+  $s = preg_replace('/[^\x21-\x7e]/', '', is_scalar($s) ? (string) $s : '');
   return $s === '' ? '-' : $s;
 }
 
@@ -319,7 +459,7 @@ function _provision_tasks_extra_audit_word($s) {
  * Strips a field to one line of printable ASCII: it comes from a remote feed.
  */
 function _provision_tasks_extra_audit_text($s) {
-  $s = trim(preg_replace('/[^\x20-\x7e]+/', ' ', (string) $s));
+  $s = trim(preg_replace('/[^\x20-\x7e]+/', ' ', is_scalar($s) ? (string) $s : ''));
   return $s === '' ? '-' : substr($s, 0, 160);
 }
 
@@ -334,13 +474,13 @@ function _provision_tasks_extra_audit_uncovered($p) {
   $d = isset($p['extra']['drupal']) && is_array($p['extra']['drupal']) ? $p['extra']['drupal'] : array();
   if (isset($d['security-coverage']) && is_array($d['security-coverage'])) {
     $c = $d['security-coverage'];
-    $st = isset($c['status']) ? (string) $c['status'] : '';
+    $st = isset($c['status']) && is_scalar($c['status']) ? (string) $c['status'] : '';
     if ($st === 'covered') {
       return '';
     }
     return _provision_tasks_extra_audit_text(isset($c['message']) && is_string($c['message']) && $c['message'] !== '' ? $c['message'] : 'coverage status: ' . $st);
   }
-  $t = isset($p['type']) ? (string) $p['type'] : '';
+  $t = isset($p['type']) && is_scalar($p['type']) ? (string) $p['type'] : '';
   if (in_array($t, array('drupal-module', 'drupal-theme', 'drupal-profile'), TRUE)) {
     return 'no drupal.org coverage record in the lock: ' . $t;
   }
@@ -360,7 +500,7 @@ function _provision_tasks_extra_audit_rows($list, $ver, $prefix, &$rows) {
     }
     foreach ($items as $x) {
       if (is_array($x)) {
-        $name = isset($x['packageName']) ? $x['packageName'] : $pkg;
+        $name = isset($x['packageName']) && is_string($x['packageName']) ? $x['packageName'] : $pkg;
         $id = isset($x['advisoryId']) ? $x['advisoryId'] : (isset($x['id']) ? $x['id'] : '');
         $link = isset($x['link']) ? $x['link'] : (isset($x['url']) ? $x['url'] : '');
         $cve = isset($x['cve']) ? $x['cve'] : '';
@@ -411,7 +551,7 @@ function _provision_tasks_extra_audit_lines($audit, $lockfile, $nodev) {
   foreach (array('packages', 'packages-dev') as $s) {
     if (is_array($lock) && isset($lock[$s]) && is_array($lock[$s])) {
       foreach ($lock[$s] as $p) {
-        if (isset($p['name'], $p['version'])) {
+        if (isset($p['name'], $p['version']) && is_string($p['name']) && is_string($p['version'])) {
           $ver[$p['name']] = $p['version'];
           if ($s === 'packages' || !$nodev) {
             $why = _provision_tasks_extra_audit_uncovered($p);
