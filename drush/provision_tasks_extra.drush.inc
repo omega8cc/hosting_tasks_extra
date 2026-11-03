@@ -144,9 +144,17 @@ function _provision_tasks_extra_updates_report_ups($major) {
       $rows[] = $name . ' ' . $have . ': newer than the release feed knows, an extended-support core takes its fixes with a BOA release';
       continue;
     }
-    // 1 is DRUSH_UPDATESTATUS_NOT_SECURE.
-    if (isset($project['status']) && (int) $project['status'] === 1) {
+    // 1 is DRUSH_UPDATESTATUS_NOT_SECURE. drupal.org marks every Drupal 7 project
+    // unsupported, and Drush then stops short of that status, so the release's own
+    // terms in the feed are read too.
+    $terms = isset($project['releases'][$project['existing_version']]['terms']['Release type'])
+      ? $project['releases'][$project['existing_version']]['terms']['Release type'] : array();
+    $insecure = is_array($terms) && in_array('Insecure', $terms, TRUE);
+    if ($insecure || (isset($project['status']) && (int) $project['status'] === 1)) {
       $security++;
+      if ($insecure) {
+        $why = 'SECURITY UPDATE available (the release feed marks ' . $have . ' insecure)';
+      }
     }
     $listed++;
     $rows[] = $name . ' ' . $have . ' -> ' . $want . ': ' . $why;
