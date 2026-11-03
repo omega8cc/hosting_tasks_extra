@@ -128,6 +128,7 @@ function _provision_tasks_extra_updates_report_ups($major) {
     return;
   }
   $rows = array();
+  $listed = 0;
   $security = 0;
   foreach ($doc as $project) {
     if (!is_array($project) || !isset($project['name'])) {
@@ -147,6 +148,7 @@ function _provision_tasks_extra_updates_report_ups($major) {
     if (isset($project['status']) && (int) $project['status'] === 1) {
       $security++;
     }
+    $listed++;
     $rows[] = $name . ' ' . $have . ' -> ' . $want . ': ' . $why;
   }
   if ($rows) {
@@ -156,7 +158,7 @@ function _provision_tasks_extra_updates_report_ups($major) {
     drush_log(dt('Available updates ###---### drupal.org has published no Drupal 7 advisories since 5 January 2025, so no security flag means no published advisory, not a safe release.'), 'notice');
   }
   drush_log(dt('Available updates ###---### @count listed, @security of them security updates.', array(
-    '@count' => count($rows),
+    '@count' => $listed,
     '@security' => $security,
   )), 'success');
 }
