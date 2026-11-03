@@ -67,14 +67,14 @@ function hosting_tasks_extra_hosting_tasks() {
   );
  */
 
-/*
-  // It is BOA specific currently.
-  $tasks['site']['site_health_check'] = array(
-    'title' => t('Run health check'),
-    'description' => t('Runs health check on this site. Site status along with any problems found will be reported and displayed only in this task log. Make sure to click on the (Expand) links in the task log to review all reported details.'),
+  $tasks['site']['updates_report'] = array(
+    'title' => t('Check available updates'),
+    'description' => t('Reports the updates available for this site in this task\'s log, security updates flagged. On Drupal 8 and newer it lists the published advisories for the packages in the platform\'s composer.lock, on Drupal 6 and 7 the projects with a newer release. This is read-only: it changes nothing in the site\'s code or content, and nothing is applied for you. Click the (Expand) links in the task log to see all the details.'),
     'dialog' => TRUE,
+    'access callback' => 'hosting_tasks_extra_updates_report_task_access',
+    // None: the confirm screen is this title and description.
+    'parameters' => array(),
   );
- */
 
   return $tasks;
 }
@@ -152,6 +152,19 @@ function hosting_tasks_extra_utf8mb4_convert_task_access($node, $task) {
 }
 
 /**
+ * Access callback for the updates_report task.
+ *
+ * Grav and Textpattern have no update report to give; Backdrop keeps the button
+ * and the backend says what it can report there.
+ */
+function hosting_tasks_extra_updates_report_task_access($node, $task) {
+  if (!hosting_task_menu_access($node, $task)) {
+    return FALSE;
+  }
+  return !hosting_tasks_extra_site_is_foreign_cms($node);
+}
+
+/**
  * Callback for site action.
  *
  * @see: hosting_task_action_info().
@@ -167,6 +180,15 @@ function hosting_site_flush_cache_action($node) {
  */
 function hosting_site_utf8mb4_convert_action($node) {
   hosting_add_task($node->nid, 'utf8mb4_convert');
+}
+
+/**
+ * Callback for site action.
+ *
+ * @see: hosting_task_action_info().
+ */
+function hosting_site_updates_report_action($node) {
+  hosting_add_task($node->nid, 'updates_report');
 }
 
 /**
@@ -257,8 +279,9 @@ function hosting_tasks_extra_permission() {
     'create features_update_all task' => array(
       'title' => t('create features_update_all task'),
     ),
-    'create site_health_check task' => array(
-      'title' => t('create site_health_check task'),
+    'create updates_report task' => array(
+      'title' => t('create updates_report task'),
+      'description' => t('See the available updates of a site in a task log.'),
     ),
   );
 }

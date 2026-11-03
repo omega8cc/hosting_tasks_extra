@@ -10,6 +10,8 @@ Supported tasks/commands are:
 - Run cron (drush core-cron -d)
 - Run updates (drush updatedb -d)
 - Flush the Drush cache (drush clear-cache drush -d)
+- Check available updates (read-only: composer audit of the platform's lock on
+  Drupal 8 and newer, drush pm-updatestatus on Drupal 6 and 7)
 
 Extra bundled modules:
 - HTTP Basic Authentication (hosting_http_basic_auth)
