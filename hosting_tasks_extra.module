@@ -22,7 +22,7 @@ function hosting_tasks_extra_hosting_tasks() {
 
   $tasks['site']['utf8mb4_convert'] = array(
     'title' => t('Convert to utf8mb4'),
-    'description' => t('Converts this Drupal 7 site database from 3-byte utf8 to utf8mb4 (full Unicode). Made for sites imported from older servers; databases created on this server are utf8mb4 already, and for them this task simply reports that there is nothing to convert. A fresh backup is taken first and the site stays in maintenance mode while its tables are converted. The safe workflow is to clone the site, convert the clone, inspect it, and only then convert the original.'),
+    'description' => t('Converts this Drupal 7 site database from 3-byte utf8 to utf8mb4 (full Unicode, collation utf8mb4_unicode_ci). Made for sites imported from older servers; databases created on this server are utf8mb4 already, and for them this task simply reports that there is nothing to convert. A fresh backup is taken first, and the site stays in maintenance mode while its tables are converted and comes back online once the result is verified. On a large database this can take several minutes. The safe workflow is to clone the site, convert the clone, inspect it, and only then convert the original or keep the converted clone.'),
     'dialog' => TRUE,
     'access callback' => 'hosting_tasks_extra_utf8mb4_convert_task_access',
   );
@@ -295,45 +295,18 @@ function hosting_tasks_extra_updates_report_text() {
 
 /**
  * Implements hosting_task_TASK_TYPE_form().
- *
- * The generic confirm screen does not show a task's description, and whoever runs
- * this one should see that it changes nothing.
- */
-function hosting_task_updates_report_form($node) {
-  $form['report'] = array(
-    '#type' => 'item',
-    '#title' => t('What this task does'),
-    '#markup' => hosting_tasks_extra_updates_report_text(),
-  );
-  return $form;
-}
-
-/**
- * Implements hosting_task_TASK_TYPE_form().
- */
-function hosting_task_utf8mb4_convert_form($node) {
-  $form['conversion_report'] = array(
-    '#type' => 'item',
-    '#title' => t('What this task does'),
-    '#markup' => t('A fresh backup of %site is taken first. The site is then put into maintenance mode while every utf8 table and text column is converted to utf8mb4 (collation utf8mb4_unicode_ci), and brought back online once the result is verified. Nothing is changed when the database is already fully utf8mb4. On a large database the conversion can take several minutes. The safe workflow: clone this site, run the conversion on the clone, inspect it, then convert this site — or keep the converted clone.', array('%site' => $node->title)),
-  );
-  return $form;
-}
-
-/**
- * Implements hosting_task_TASK_TYPE_form().
  */
 function hosting_task_update_form($node) {
   // Gather a list of operations to execute.
   $all_ops = module_invoke_all('hosting_task_update_ops');
   uasort($all_ops, 'element_sort');
-  $value = '<div>The following operations will be executed on <em>' . $node->title . '</em>:<br /><ul>';
+  $value = '<div>The following operations will be executed on <em>' . check_plain($node->title) . '</em>:<br /><ul>';
   foreach ($all_ops as $item) {
     $value .= '<li>' . $item['#description'] . '</li>';
   }
   $value .= '</ul></div>';
   $form['operations'] = array(
-    '#value' => $value,
+    '#markup' => $value,
   );
 
   $platform_node = node_load($node->platform);
