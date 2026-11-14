@@ -77,8 +77,24 @@ function hosting_tasks_extra_drupal_upgrade_start($task) {
   $source = node_load($site->platform);
   $target = node_load($target_nid);
   $tasks = hosting_available_tasks('site');
-  // Kept on the row for what comes after: the platform the site left.
+  // Kept on the row for what comes after: the platform the site left. It
+  // is written now and not only by the save that ends the run, so a runner
+  // that dies after the move does not lose it.
   $task->task_args['source_platform'] = (int) $site->platform;
+  if (!empty($task->vid)) {
+    db_delete('hosting_task_arguments')
+      ->condition('vid', $task->vid)
+      ->condition('name', 'source_platform')
+      ->execute();
+    db_insert('hosting_task_arguments')
+      ->fields(array(
+        'vid' => $task->vid,
+        'nid' => $task->nid,
+        'name' => 'source_platform',
+        'value' => (int) $site->platform,
+      ))
+      ->execute();
+  }
   $task->options['upgrade_target'] = hosting_context_name($target_nid);
   $task->options['upgrade_target_nid'] = $target_nid;
   $task->options['upgrade_source_nid'] = (int) $site->platform;

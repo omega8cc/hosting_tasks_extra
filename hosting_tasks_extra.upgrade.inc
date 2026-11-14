@@ -1473,7 +1473,8 @@ function _provision_tasks_extra_upgrade_list_refusal($whose, $modes, $allow) {
  * The kind of a move is read from the two locks. Where the releases differ
  * and the locks do not show it (core is not in the lock, or the tree does
  * not match its lock), a list must still see a change of core of that size:
- * the level is the larger of the two, and the scope holds core.
+ * the level is the larger of the two, and the scope holds core. No advisory
+ * read from the locks covers such a change, so it is no security move.
  */
 function _provision_tasks_extra_upgrade_release_step($source_release, $target_release, $diff) {
   $s = _provision_tasks_extra_release_numbers($source_release);
@@ -1487,6 +1488,10 @@ function _provision_tasks_extra_upgrade_release_step($source_release, $target_re
     return $diff;
   }
   $diff['level'] = ($diff['level'] === '') ? $step : _provision_tasks_extra_lock_larger($diff['level'], $step);
+  if (empty($diff['changed']['drupal/core']) && $diff['security'] !== FALSE) {
+    $diff['security'] = FALSE;
+    $diff['security_why'] = 'the core release changes and the two locks do not show it, so no fixed advisory covers that change';
+  }
   if ($diff['scope'] === 'unchanged') {
     $diff['scope'] = 'core';
   }

@@ -1109,10 +1109,11 @@ function hosting_tasks_extra_drupal_upgrade_step_title($node) {
 /**
  * The Upgrades that moved a site, newest first.
  *
- * A row counts by what it did: it ran, it recorded the platform the site
- * left, and it ended well, or it ended in error with its copy kept (the
- * move went through and its last step did not). A row that was cancelled,
- * refused or undone moved nothing and hides nothing.
+ * A row counts by what it did: it ran, the platform the site left is known
+ * (from the row, or from where its copy is), and it ended well, or it ended
+ * in error with its copy kept (the move went through and its last step did
+ * not). A row that was cancelled, refused or undone moved nothing and hides
+ * nothing.
  *
  * @return array
  *   One array a run: 'task', 'date', 'source' and 'target' (platform node
@@ -1130,18 +1131,21 @@ function hosting_tasks_extra_drupal_upgrade_runs($site) {
     ));
   foreach ($rows as $row) {
     $args = db_query("SELECT name, value FROM {hosting_task_arguments} WHERE vid = :vid", array(':vid' => $row->vid))->fetchAllKeyed();
-    if (empty($args['target_platform']) || empty($args['source_platform']) || $args['source_platform'] == $args['target_platform']) {
-      continue;
-    }
     $copy = 'back-' . $row->nid . '.temp.' . hosting_tasks_extra_drupal_upgrade_site_name($site);
     $copy_node = hosting_get_site_by_url($copy);
+    // A row without the platform it left is read from where its copy was
+    // made: the way back is always made on the platform the site was on.
+    $source = !empty($args['source_platform']) ? (int) $args['source_platform'] : (is_object($copy_node) ? (int) $copy_node->platform : 0);
+    if (empty($args['target_platform']) || !$source || $source == $args['target_platform']) {
+      continue;
+    }
     if ($row->task_status == HOSTING_TASK_ERROR && !is_object($copy_node)) {
       continue;
     }
     $runs[] = array(
       'task' => (int) $row->nid,
       'date' => (int) $row->executed,
-      'source' => (int) $args['source_platform'],
+      'source' => $source,
       'target' => (int) $args['target_platform'],
       'copy' => is_object($copy_node) ? $copy : '',
     );

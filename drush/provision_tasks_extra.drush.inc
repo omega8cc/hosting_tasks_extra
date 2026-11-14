@@ -1743,7 +1743,15 @@ function _provision_tasks_extra_upgrade_undo($plan) {
   // Only a copy on the site's own platform is this run's.
   if ($root !== FALSE && $root !== '' && _provision_tasks_extra_upgrade_same_root($root, $plan['source_root'])) {
     $leg = _provision_tasks_extra_upgrade_leg('@' . $copy, 'delete', array($plan['marker']));
-    if (!$leg['ok'] && in_array('HOSTING_TASK_LOAD_FAILED', $leg['codes'], TRUE)) {
+    $no_task = !$leg['ok'] && in_array('HOSTING_TASK_LOAD_FAILED', $leg['codes'], TRUE);
+    if ($no_task && !empty($plan['recorded'])) {
+      // The panel made its record of the copy when the Clone ended well,
+      // and still made no task now (it is moving to its new version, say).
+      // Removing the copy here would leave that record with nothing behind
+      // it: the copy stays, for a Delete in the panel.
+      drush_log(dt('UPGRADE/UNDO the panel could not start the Delete of @copy now: the copy is left as it is. Delete it in the panel.', array('@copy' => $copy)), 'warning');
+    }
+    elseif ($no_task) {
       // A Clone that failed after its deploy keeps the copy and makes no
       // panel record of it: no task row can delete it, the backend can.
       drush_log(dt('UPGRADE/UNDO the panel holds no record of @copy, so it is removed by the backend alone.', array('@copy' => $copy)), 'ok');
@@ -1849,6 +1857,8 @@ function drush_provision_tasks_extra_provision_drupal_upgrade() {
     $plan['marker'],
   ));
   clearstatcache();
+  // The panel records the copy when its Clone ends well, and only then.
+  $plan['recorded'] = $leg['ok'];
   if (!$leg['ok'] || _provision_tasks_extra_upgrade_alias_root($copy) === FALSE || !is_file($copy_dir . '/settings.php')) {
     return _provision_tasks_extra_upgrade_stop($plan, 'the copy of the site could not be made (see above)', FALSE);
   }
@@ -1897,11 +1907,15 @@ function drush_provision_tasks_extra_provision_drupal_upgrade() {
   $base = $uri . ' runs Drupal ' . $plan['target_release'] . ' on ' . $plan['target_title'];
   $gone = !file_exists($plan['source_root'] . '/sites/' . $uri) && !is_link($plan['source_root'] . '/sites/' . $uri);
   $there = is_dir($plan['target_root'] . '/sites/' . $uri);
-  if (!$there || (!$leg['ok'] && !$gone)) {
+  // A move that failed while it retired the old copy is finished forward
+  // by the Migrate itself, which says so: the site is served from the new
+  // platform, whatever is left of the old folder.
+  $forward = _provision_tasks_extra_upgrade_logged($leg, 'The source was retired when the migrate failed');
+  if (!$there || (!$leg['ok'] && !$gone && !$forward)) {
     // The alias names the new platform and the old one still holds the
     // site, or the new one does not: the move stopped midway, and its own
     // undo did not run. Nothing is removed.
-    return drush_set_error('PROVISION_UPGRADE_UNFINISHED', dt('UPGRADE/RESULT Not finished: the move of @uri onto @target stopped midway (see above), and the site may not be served. Nothing was removed: @source still holds the site as it was, and the copy @copy is kept. Ask support.', array(
+    return drush_set_error('PROVISION_UPGRADE_UNFINISHED', dt('UPGRADE/RESULT Not finished: the move of @uri onto @target stopped midway (see above), and the site may not be served. This task removed nothing: what @source holds of the site is as the move left it, and the copy @copy is kept. Ask support.', array(
       '@uri' => $uri,
       '@target' => $plan['target_title'],
       '@source' => $plan['source_title'],
