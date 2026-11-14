@@ -86,6 +86,18 @@ function hosting_tasks_extra_hosting_tasks() {
     'parameters' => array('target_platform'),
   );
 
+  $tasks['site']['drupal_upgrade_return'] = array(
+    'title' => t('Go back'),
+    'description' => t('Put back the copy of this site that its upgrade kept. The upgraded site is kept too, switched off.'),
+    'command' => 'provision-drupal-upgrade-return',
+    // It replaces the panel's own check, which hides every task but Enable
+    // and Delete on a disabled site, where a run that stopped midway is
+    // finished from: so it restates the rest of that check itself.
+    'access callback' => 'hosting_tasks_extra_drupal_upgrade_return_task_access',
+    'dialog' => TRUE,
+    'parameters' => array(),
+  );
+
   return $tasks;
 }
 
@@ -296,6 +308,10 @@ function hosting_tasks_extra_permission() {
     'create drupal_upgrade task' => array(
       'title' => t('create drupal_upgrade task'),
       'description' => t('Move a Drupal 10 or later site onto a newer platform, keeping a copy to go back to.'),
+    ),
+    'create drupal_upgrade_return task' => array(
+      'title' => t('create drupal_upgrade_return task'),
+      'description' => t('Put back the copy an Upgrade kept of a Drupal 10 or later site.'),
     ),
   );
 }
@@ -1091,16 +1107,30 @@ function hosting_tasks_extra_drupal_upgrade_step_title($node) {
       'migrate' => 'Upgrade step 2 of 2 (the move)',
       'delete' => 'Upgrade undone (the copy removed)',
     ),
+    // A Go back renames twice and switches both sites: its rows say which
+    // step they are, since the task type alone does not.
+    'drupal_upgrade_return' => array(
+      '1' => 'Go back step 1 of 2 (the upgraded site set aside)',
+      '1b' => 'Go back step 1 of 2 (the upgraded site switched off)',
+      '2a' => 'Go back step 2 of 2 (the copy switched on)',
+      '2' => 'Go back step 2 of 2 (the copy put back)',
+      '3' => 'Go back undone (the upgraded site put back)',
+      '3b' => 'Go back undone (the upgraded site switched on)',
+      '3c' => 'Go back undone (the copy switched off)',
+    ),
   );
   $parent = db_query_range("SELECT task_type FROM {hosting_task} WHERE nid = :nid ORDER BY vid DESC", 0, 1, array(':nid' => (int) $node->task_args['upgrade_run']))->fetchField();
-  if (!$parent || !isset($steps[$parent][$node->task_type])) {
+  $step = ($parent === 'drupal_upgrade_return')
+    ? (isset($node->task_args['return_step']) ? (string) $node->task_args['return_step'] : '')
+    : (string) $node->task_type;
+  if (!$parent || !isset($steps[$parent][$step])) {
     return;
   }
   $ref = node_load($node->rid);
   if (!is_object($ref)) {
     return;
   }
-  $title = $steps[$parent][$node->task_type] . ': ' . ($ref->type == 'site' ? hosting_site_canonical_url($ref) : $ref->title);
+  $title = $steps[$parent][$step] . ': ' . ($ref->type == 'site' ? hosting_site_canonical_url($ref) : $ref->title);
   $node->title = $title;
   db_update('node')->fields(array('title' => $title))->condition('nid', $node->nid)->execute();
   db_update('node_revision')->fields(array('title' => $title))->condition('vid', $node->vid)->execute();
@@ -1220,6 +1250,207 @@ function hosting_tasks_extra_drupal_upgrade_migrate_validate($form, &$form_state
 }
 
 /**
+ * Whether a Go back is there for a site and an account, and which one.
+ *
+ * Two states. After an Upgrade: its newest run left the site on its target,
+ * the site is switched on and still there, and the copy that run made is
+ * recorded, on the platform the site left. After a Go back that stopped
+ * midway: the node carries a run that recorded its names and ended in
+ * error, and the node's name is the one that run set it aside as; the node
+ * is then renamed and may be switched off, and the task finishes that run.
+ *
+ * It restates the panel's own task check where that one cannot be used: the
+ * permission, the right to change both sites, not the panel's own site, not
+ * a deleted site or one being deleted, not a leftover.
+ *
+ * @param object $node
+ *   The site.
+ * @param object $account
+ *   The user the question is asked for.
+ * @param int $except_nid
+ *   The node id of a Go back task to leave out: the one that is asking.
+ *
+ * @return array
+ *   'state': 'upgraded', 'resume' or '' (not offered), with 'why' for the
+ *   last where there is something to say. 'domain', 'copy', 'copy_nid',
+ *   'upgrade' (the Upgrade's node id), 'date', 'platform' and 'release' (of
+ *   the copy), and for 'resume' the 'record' the earlier run kept.
+ */
+function hosting_tasks_extra_drupal_upgrade_return_state($node, $account, $except_nid = 0) {
+  $out = array('state' => '', 'why' => '', 'domain' => '', 'copy' => '', 'copy_nid' => 0, 'upgrade' => 0, 'date' => 0, 'platform' => '', 'release' => '', 'record' => array());
+  if (!is_object($node) || $node->type != 'site' || !is_object($account) || !isset($node->site_status)) {
+    return $out;
+  }
+  if (!user_access('create drupal_upgrade_return task', $account) || !node_access('update', $node, $account)) {
+    $out['why'] = 'this account may not use Go back on this site';
+    return $out;
+  }
+  if ($node->nid == hosting_get_hostmaster_site_nid() || $node->site_status == HOSTING_SITE_DELETED
+    || hosting_task_outstanding($node->nid, 'delete')
+    || (function_exists('hosting_site_is_leftover') && hosting_site_is_leftover($node->nid))
+    || hosting_tasks_extra_site_is_foreign_cms($node)) {
+    return $out;
+  }
+  $title = hosting_site_clean_domain($node->title);
+
+  // A run that stopped midway: the newest one that recorded its names.
+  $row = db_query_range("SELECT t.nid, t.vid, t.task_status, a.value FROM {hosting_task} t
+      INNER JOIN {node} n ON n.vid = t.vid
+      INNER JOIN {hosting_task_arguments} a ON a.vid = t.vid AND a.name = :name
+    WHERE t.rid = :rid AND t.task_type = :type AND t.nid <> :except
+    ORDER BY t.vid DESC", 0, 1, array(
+      ':name' => 'return_aside',
+      ':rid' => $node->nid,
+      ':type' => 'drupal_upgrade_return',
+      ':except' => (int) $except_nid,
+    ))->fetchObject();
+  if ($row && $row->value !== '' && $row->value == $title) {
+    if ($row->task_status != HOSTING_TASK_ERROR) {
+      // Gone back already, or a run is still under way.
+      return $out;
+    }
+    $record = db_query("SELECT name, value FROM {hosting_task_arguments} WHERE vid = :vid AND name LIKE :prefix", array(':vid' => $row->vid, ':prefix' => db_like('return_') . '%'))->fetchAllKeyed();
+    $copy = empty($record['return_copy_nid']) ? NULL : node_load($record['return_copy_nid']);
+    if (empty($record['return_domain']) || empty($record['return_copy']) || !is_object($copy) || $copy->type != 'site' || $copy->site_status == HOSTING_SITE_DELETED) {
+      $out['why'] = 'an earlier Go back stopped midway and the copy it was putting back is gone; ask support';
+      return $out;
+    }
+    if (!node_access('update', $copy, $account)) {
+      $out['why'] = 'this account may not use Go back on this site';
+      return $out;
+    }
+    $platform = node_load($copy->platform);
+    $out['state'] = 'resume';
+    $out['domain'] = $record['return_domain'];
+    $out['copy'] = $record['return_copy'];
+    $out['copy_nid'] = (int) $copy->nid;
+    $out['upgrade'] = isset($record['return_upgrade']) ? (int) $record['return_upgrade'] : 0;
+    $out['date'] = $out['upgrade'] ? (int) db_query_range("SELECT executed FROM {hosting_task} WHERE nid = :nid ORDER BY vid DESC", 0, 1, array(':nid' => $out['upgrade']))->fetchField() : 0;
+    $out['platform'] = is_object($platform) ? $platform->title : '';
+    $out['release'] = (is_object($platform) && isset($platform->release) && is_object($platform->release) && isset($platform->release->version)) ? (string) $platform->release->version : '';
+    $out['record'] = $record;
+    return $out;
+  }
+
+  // After an Upgrade.
+  if ($node->site_status != HOSTING_SITE_ENABLED) {
+    return $out;
+  }
+  $left = hosting_tasks_extra_drupal_upgrade_left($node);
+  if (!$left['task']) {
+    $out['why'] = 'no upgrade of this site is there to go back from';
+    return $out;
+  }
+  $copy = ($left['copy'] === '') ? NULL : hosting_get_site_by_url($left['copy']);
+  if (!is_object($copy) || $copy->type != 'site' || hosting_site_clean_domain($copy->title) != $left['copy']) {
+    $out['why'] = 'the copy the upgrade kept is gone';
+    return $out;
+  }
+  if (!node_access('update', $copy, $account)) {
+    $out['why'] = 'this account may not use Go back on this site';
+    return $out;
+  }
+  $platform = node_load($left['platform']);
+  if ($copy->platform != $left['platform'] || !is_object($platform) || $platform->type != 'platform'
+    || $platform->platform_status == HOSTING_PLATFORM_DELETED || empty($platform->publish_path)) {
+    $out['why'] = 'the platform the copy is on is gone';
+    return $out;
+  }
+  // The copy is recorded once its Import ended; until then the panel does
+  // not know its database.
+  $import = db_query_range("SELECT t.task_status FROM {hosting_task} t
+      INNER JOIN {node} n ON n.vid = t.vid
+    WHERE t.rid = :rid AND t.task_type = :type
+    ORDER BY t.vid DESC", 0, 1, array(':rid' => $copy->nid, ':type' => 'import'))->fetchField();
+  if ($import === FALSE || !in_array($import, array(HOSTING_TASK_SUCCESS, HOSTING_TASK_WARNING))) {
+    $out['why'] = 'the copy the upgrade kept is not recorded in the panel yet';
+    return $out;
+  }
+  // Its folder, where this process can look.
+  $sites = rtrim($platform->publish_path, '/') . '/sites';
+  if (@is_dir($sites) && !@is_dir($sites . '/' . $left['copy'])) {
+    $out['why'] = 'the folder of the copy the upgrade kept is gone';
+    return $out;
+  }
+  $out['state'] = 'upgraded';
+  $out['domain'] = hosting_tasks_extra_drupal_upgrade_site_name($node);
+  $out['copy'] = $left['copy'];
+  $out['copy_nid'] = (int) $copy->nid;
+  $out['upgrade'] = (int) $left['task'];
+  $out['date'] = (int) $left['date'];
+  $out['platform'] = $platform->title;
+  $out['release'] = (isset($platform->release) && is_object($platform->release) && isset($platform->release->version)) ? (string) $platform->release->version : '';
+  return $out;
+}
+
+/**
+ * Access callback for the drupal_upgrade_return task.
+ */
+function hosting_tasks_extra_drupal_upgrade_return_task_access($node, $task) {
+  $state = hosting_tasks_extra_drupal_upgrade_return_state($node, $GLOBALS['user']);
+  return $state['state'] !== '';
+}
+
+/**
+ * Implements hosting_task_TASK_TYPE_form().
+ */
+function hosting_task_drupal_upgrade_return_form($node) {
+  $form = array();
+  $state = hosting_tasks_extra_drupal_upgrade_return_state($node, $GLOBALS['user']);
+  if ($state['state'] === '') {
+    $form['none'] = array(
+      '#markup' => '<p><strong>' . t('Go back is not there for this site.') . '</strong>' . ($state['why'] !== '' ? ' ' . check_plain(drupal_ucfirst($state['why'])) . '.' : '') . '</p>',
+    );
+    return $form;
+  }
+  $names = array(
+    '!domain' => check_plain($state['domain']),
+    '@date' => $state['date'] ? format_date($state['date'], 'custom', 'Y-m-d') : t('the day of the upgrade'),
+    '@time' => $state['date'] ? format_date($state['date'], 'custom', 'H:i') : t('the time of the upgrade'),
+    '@platform' => $state['platform'],
+    '@release' => $state['release'],
+  );
+  if ($state['state'] === 'resume') {
+    $names['!aside'] = check_plain($state['record']['return_aside']);
+    $intro = t('An earlier Go back of !domain stopped before it was done. This finishes it: the copy made on @date at @time, on @platform (Drupal @release), is put back under the name !domain. The upgraded site is not deleted: it is kept switched off as !aside, so anything added since the upgrade can still be copied from it.', $names);
+  }
+  else {
+    $names['!aside'] = 'upgraded-<em>' . t('number') . '</em>.temp.' . check_plain($state['domain']);
+    $intro = t('This puts back the copy of !domain made on @date at @time, on @platform (Drupal @release). The upgraded site is not deleted: it is kept switched off as !aside, so anything added since the upgrade can still be copied from it.', $names);
+  }
+  $points = array(
+    t('Everything added or changed on !domain since @time on @date will not be on the live site.', $names),
+    t('Everyone is logged out, editors included.'),
+    t('The site is unavailable for a few minutes, and for longer on a large site: both steps copy all uploaded files once. HTTPS is switched back on by a check that runs afterwards; until then the site may answer without HTTPS.'),
+    t('Afterwards the account holds two more sets of the uploaded files, set aside under static/files/.archived. They count toward your disk space until support prunes them or the server reclaims them when its disk runs short.'),
+  );
+  $form['what'] = array(
+    '#markup' => '<p>' . $intro . '</p><ul><li>' . implode('</li><li>', $points) . '</li></ul>',
+    '#weight' => -100,
+  );
+  return $form;
+}
+
+/**
+ * Implements hosting_task_TASK_TYPE_form_validate().
+ */
+function hosting_task_drupal_upgrade_return_form_validate($form, &$form_state) {
+  $site = node_load($form_state['values']['nid']);
+  $state = hosting_tasks_extra_drupal_upgrade_return_state($site, $GLOBALS['user']);
+  if ($state['state'] === '') {
+    form_set_error('parameters', t('Not started: @why.', array('@why' => $state['why'] !== '' ? $state['why'] : t('there is nothing to go back to for this site'))));
+    return;
+  }
+  foreach (array($site->nid, $state['copy_nid']) as $nid) {
+    $busy = hosting_tasks_extra_drupal_upgrade_busy($nid);
+    if ($busy !== '') {
+      form_set_error('parameters', t('Not started: a @type task is waiting or running on @which. Start Go back when it has ended.', array('@type' => $busy, '@which' => ($nid == $site->nid) ? t('this site') : t('its copy'))));
+      return;
+    }
+  }
+}
+
+/**
  * Implements hook_node_view().
  *
  * The "Drupal updates" line of a site page, for those who may upgrade.
@@ -1296,6 +1527,11 @@ function hosting_tasks_extra_drupal_upgrade_line($site, $account) {
     $text = t('Upgraded on @date.', array('@date' => format_date($left['date'], 'custom', 'Y-m-d')));
     if ($left['copy'] !== '') {
       $text .= ' ' . t('The way back is @copy.', array('@copy' => $left['copy']));
+      // The button, once the copy is recorded and for those who may use it.
+      $back = hosting_tasks_extra_drupal_upgrade_return_state($site, $account);
+      if ($back['state'] === 'upgraded') {
+        $text .= ' ' . l(t('Go back'), 'hosting_confirm/' . $site->nid . '/site_drupal_upgrade_return', array('query' => array('token' => drupal_get_token($account->uid))));
+      }
     }
     $lines[] = $text;
   }
