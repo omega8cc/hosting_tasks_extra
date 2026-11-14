@@ -880,9 +880,16 @@ function _provision_tasks_extra_upgrade_kind_text($diff) {
   $levels = array('patch' => 'a patch update', 'minor' => 'a minor update', 'major' => 'a major update');
   $line = isset($scopes[$diff['scope']]) ? $scopes[$diff['scope']] : 'what it changes cannot be told';
   $line .= ', ' . (isset($levels[$diff['level']]) ? $levels[$diff['level']] : 'an update whose size cannot be told');
-  $new = array_intersect($diff['named'], $diff['appeared']);
-  $old = array_intersect($diff['named'], $diff['gone']);
-  $moved = array_diff($diff['named'], $new, $old);
+  // Core and its companions are said by the scope; the notes name the rest.
+  $named = array();
+  foreach ($diff['named'] as $name) {
+    if (!_provision_tasks_extra_lock_is_core_name($name)) {
+      $named[] = $name;
+    }
+  }
+  $new = array_intersect($named, $diff['appeared']);
+  $old = array_intersect($named, $diff['gone']);
+  $moved = array_diff($named, $new, $old);
   $notes = array();
   if ($new) {
     $notes[] = 'new: ' . _provision_tasks_extra_upgrade_names($new);
