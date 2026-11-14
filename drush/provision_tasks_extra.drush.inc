@@ -2143,11 +2143,12 @@ function _provision_tasks_extra_return_space($sites) {
 }
 
 /**
- * Why a rename of a Go back failed, as a clause.
+ * Why a rename of a Go back failed, as a clause: $what is the site renamed,
+ * $target the name it was to take, where a rename checks for a store.
  */
-function _provision_tasks_extra_return_why($leg, $what) {
+function _provision_tasks_extra_return_why($leg, $what, $target) {
   if (in_array('PROVISION_SITE_STORE_AT_NAME', $leg['codes'], TRUE)) {
-    return 'a store of uploaded files is still at the name ' . $what . ' and could not be set aside (see above)';
+    return 'a store of uploaded files is still at the name ' . $target . ' and could not be set aside (see above)';
   }
   if (in_array('PROVISION_INSUFFICIENT_SPACE', $leg['codes'], TRUE) || in_array('PROVISION_INSUFFICIENT_INODES', $leg['codes'], TRUE)) {
     return 'the disk was too full to rename ' . $what . ' (see above)';
@@ -2393,7 +2394,7 @@ function drush_provision_tasks_extra_provision_drupal_upgrade_return() {
     $stage = _provision_tasks_extra_return_where($plan);
     if ($stage === 'start') {
       return drush_set_error('PROVISION_UPGRADE_RETURN_NOT_GONE', dt('GOBACK/RESULT Not gone back: !why. !before as before, and the copy @copy is kept.', array(
-        '!why' => _provision_tasks_extra_no_markup(_provision_tasks_extra_return_why($leg, $domain)),
+        '!why' => _provision_tasks_extra_no_markup(_provision_tasks_extra_return_why($leg, $domain, $aside)),
         '!before' => _provision_tasks_extra_no_markup($before),
         '@copy' => $copy,
       )));
@@ -2457,7 +2458,7 @@ function drush_provision_tasks_extra_provision_drupal_upgrade_return() {
           )));
         }
         if ($stage !== 'back') {
-          $why = _provision_tasks_extra_return_why($leg, $copy);
+          $why = _provision_tasks_extra_return_why($leg, $copy, $domain);
         }
       }
     }
