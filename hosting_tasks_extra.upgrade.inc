@@ -162,14 +162,15 @@ function _provision_tasks_extra_lock_shape($lock, $dev, $json, $files = array())
 /**
  * The name of the patches file a root composer.json points at, or ''.
  *
- * Only a plain relative name inside the project: anything else is not read.
+ * Only a plain file name in the project's own folder: a path could lead
+ * through a link to a file outside it, so anything else is not read.
  */
 function _provision_tasks_extra_lock_patches_file_name($json) {
   if (!is_array($json) || !isset($json['extra']) || !is_array($json['extra']) || !isset($json['extra']['patches-file']) || !is_string($json['extra']['patches-file'])) {
     return '';
   }
   $name = $json['extra']['patches-file'];
-  if ($name === '' || $name[0] === '/' || strpos($name, '..') !== FALSE || !preg_match('`^[A-Za-z0-9._/-]+$`', $name) || $name === 'patches.json' || $name === 'patches.lock.json') {
+  if (!preg_match('/^[A-Za-z0-9_][A-Za-z0-9._-]*$/', $name) || $name === 'patches.json' || $name === 'patches.lock.json' || $name === 'composer.json' || $name === 'composer.lock') {
     return '';
   }
   return $name;
@@ -750,6 +751,18 @@ function _provision_tasks_extra_lock_classify($source, $target, $source_audit = 
     $out['scope'] = $libs_outside ? 'contrib' : 'core';
   }
 
+  // What each advised package that moved reaches in the target, and its step:
+  // read once, for the modules a security release newly requires.
+  $advised_reach = array();
+  if ($out['security'] === TRUE) {
+    foreach (array_keys($advised) as $from) {
+      if (isset($S[$from], $T[$from])) {
+        $its = _provision_tasks_extra_lock_step($S[$from], $T[$from]);
+        $advised_reach[$from] = array('step' => $its['step'], 'reach' => _provision_tasks_extra_lock_reach($T, array($from), $tstop));
+      }
+    }
+  }
+
   // The level.
   $level = 'none';
   $library_level = 'none';
@@ -774,13 +787,9 @@ function _provision_tasks_extra_lock_classify($source, $target, $source_audit = 
             }
             elseif ($out['security'] === TRUE) {
               $via = '';
-              foreach (array_keys($advised) as $from) {
-                if ($from !== $name && isset($S[$from], $T[$from])) {
-                  $reach = _provision_tasks_extra_lock_reach($T, array($from), $tstop);
-                  if (isset($reach[$name])) {
-                    $its = _provision_tasks_extra_lock_step($S[$from], $T[$from]);
-                    $via = ($via === '') ? $its['step'] : _provision_tasks_extra_lock_larger($via, $its['step']);
-                  }
+              foreach ($advised_reach as $from => $its) {
+                if ($from !== $name && isset($its['reach'][$name])) {
+                  $via = ($via === '') ? $its['step'] : _provision_tasks_extra_lock_larger($via, $its['step']);
                 }
               }
               if ($via !== '' && $via !== 'none') {
@@ -940,19 +949,24 @@ function _provision_tasks_extra_upgrade_modes_parse($text) {
   $known = array('core', 'contrib', 'full', 'patch', 'minor', 'major', 'security', 'none');
   $found = NULL;
   $number = 0;
-  foreach (explode("\n", $text) as $line) {
+  // PHP's own reader skips a byte order mark and takes any line end.
+  if (strncmp($text, "\xEF\xBB\xBF", 3) === 0) {
+    $text = (string) substr($text, 3);
+  }
+  foreach (preg_split('/\r\n|\r|\n/', $text) as $line) {
     $number++;
-    $line = rtrim($line, "\r");
     if ($line === '' || $line[0] === ';' || $line[0] === '#') {
       continue;
     }
     $eq = strpos($line, '=');
-    $key = strtolower(trim(($eq === FALSE) ? $line : substr($line, 0, $eq)));
-    // The key itself, or the key with something after it that is no part of
-    // a name (an array form): PHP's own reader takes both as this key.
-    if (!preg_match('/^drupal_upgrade_modes(?![a-z0-9_])/', $key)) {
+    $key = strtolower(($eq === FALSE) ? $line : substr($line, 0, $eq));
+    // Any line whose key part holds the name as a whole word is taken as an
+    // attempt to set it: indented, in capitals, an array form, or with bytes
+    // before it that an editor does not show.
+    if (!preg_match('/(?<![a-z0-9_])drupal_upgrade_modes(?![a-z0-9_])/', $key)) {
       continue;
     }
+    $key = trim($key);
     if ($found !== NULL) {
       return array('state' => 'unreadable', 'line' => $number, 'why' => 'the key is set twice (also on line ' . $found['line'] . ')');
     }
