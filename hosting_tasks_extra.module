@@ -435,6 +435,14 @@ function hosting_tasks_extra_form_alter(&$form, &$form_state, $form_id) {
         hosting_tasks_extra_drupal_upgrade_migrate_alter($form);
         break;
 
+      case 'drupal_upgrade':
+        // Here, not in the form's builder: the confirm form sets its own
+        // title after the builder has run.
+        if (!empty($form['nid']['#value']) && ($site = node_load($form['nid']['#value']))) {
+          drupal_set_title(t('Upgrade @site', array('@site' => $site->title)));
+        }
+        break;
+
     }
   }
 }
@@ -547,6 +555,18 @@ function hosting_tasks_extra_drupal_upgrade_lock($root) {
  *   'lines', 'why' and 'date'.
  */
 function hosting_tasks_extra_drupal_upgrade_report($platform_nid, $root) {
+  $read = &drupal_static(__FUNCTION__, array());
+  $key = (int) $platform_nid . ':' . $root;
+  if (!array_key_exists($key, $read)) {
+    $read[$key] = _hosting_tasks_extra_drupal_upgrade_report($platform_nid, $root);
+  }
+  return $read[$key];
+}
+
+/**
+ * Reads hosting_tasks_extra_drupal_upgrade_report() from the task logs.
+ */
+function _hosting_tasks_extra_drupal_upgrade_report($platform_nid, $root) {
   $app = _provision_tasks_extra_app_root($root);
   if ($app === '') {
     return NULL;
@@ -674,6 +694,7 @@ function hosting_tasks_extra_drupal_upgrade_targets($site, $account, $reset = FA
   $key = (int) $site->nid . ':' . (int) $account->uid;
   if ($reset) {
     drupal_static_reset('hosting_tasks_extra_drupal_upgrade_lock');
+    drupal_static_reset('hosting_tasks_extra_drupal_upgrade_report');
     unset($found[$key]);
   }
   if (!isset($found[$key])) {
@@ -841,11 +862,19 @@ function _hosting_tasks_extra_drupal_upgrade_target($site, $platform, $source_ro
     return $entry;
   }
   $entry['listed'] = TRUE;
+  $diff = _provision_tasks_extra_upgrade_release_step($release, $entry['release'], $diff);
   $entry['security'] = $diff['security'];
   $entry['audited'] = $diff['audited'];
   $entry['kind'] = _provision_tasks_extra_upgrade_kind_text($diff);
   if ($diff['security'] === TRUE && is_array($diff['audited'])) {
     $entry['kind'] .= ' (advisories as read on ' . format_date($diff['audited'][0], 'custom', 'Y-m-d') . ' and ' . format_date($diff['audited'][1], 'custom', 'Y-m-d') . ')';
+  }
+  // What the run would refuse for a fact these same files show.
+  $dead = _provision_tasks_extra_drush_cannot_start($target_root);
+  if ($dead !== '') {
+    $entry['why'] = "its own Drush cannot start (" . $dead . '). Rebuild the platform, or require consolidation/robo 5.1.1 in it';
+    $entry['rule'] = 'drush';
+    return $entry;
   }
   // Rule 7, the database half.
   $floor = _provision_tasks_extra_database_floor($modules, $source_root, $target_root);
@@ -938,7 +967,6 @@ function hosting_tasks_extra_drupal_upgrade_copy_seconds($site_nid) {
 function hosting_task_drupal_upgrade_form($node) {
   $form = array();
   $found = hosting_tasks_extra_drupal_upgrade_targets($node, $GLOBALS['user'], TRUE);
-  drupal_set_title(t('Upgrade @site', array('@site' => $node->title)));
   $form['now'] = array(
     '#markup' => '<p>' . t('Now: Drupal @release on platform @platform.', array('@release' => $found['release'], '@platform' => $found['platform'])) . '</p>',
     '#weight' => -100,
@@ -1079,47 +1107,85 @@ function hosting_tasks_extra_drupal_upgrade_step_title($node) {
 }
 
 /**
- * The platform an Upgrade moved a site away from, while the site is still
- * where that Upgrade put it; 0 otherwise.
+ * The Upgrades that moved a site, newest first.
+ *
+ * A row counts by what it did: it ran, it recorded the platform the site
+ * left, and it ended well, or it ended in error with its copy kept (the
+ * move went through and its last step did not). A row that was cancelled,
+ * refused or undone moved nothing and hides nothing.
  *
  * @return array
- *   'platform' (a node id or 0), 'task' (the Upgrade's node id), 'date' and
- *   'copy' (the name of the way back).
+ *   One array a run: 'task', 'date', 'source' and 'target' (platform node
+ *   ids) and 'copy' (the name of its way back, '' when that site is gone).
  */
-function hosting_tasks_extra_drupal_upgrade_left($site) {
-  $none = array('platform' => 0, 'task' => 0, 'date' => 0, 'copy' => '');
-  $row = db_query_range("SELECT t.nid, t.vid, t.task_status, t.executed FROM {hosting_task} t
+function hosting_tasks_extra_drupal_upgrade_runs($site) {
+  $runs = array();
+  $rows = db_query("SELECT t.nid, t.vid, t.task_status, t.executed FROM {hosting_task} t
       INNER JOIN {node} n ON n.vid = t.vid
-    WHERE t.rid = :rid AND t.task_type = :type AND t.task_status IN (:statuses)
-    ORDER BY t.vid DESC", 0, 1, array(
+    WHERE t.rid = :rid AND t.task_type = :type AND t.task_status IN (:statuses) AND t.executed > 0
+    ORDER BY t.vid DESC", array(
       ':rid' => $site->nid,
       ':type' => 'drupal_upgrade',
       ':statuses' => array(HOSTING_TASK_SUCCESS, HOSTING_TASK_WARNING, HOSTING_TASK_ERROR),
-    ))->fetchObject();
-  if (!$row) {
-    return $none;
+    ));
+  foreach ($rows as $row) {
+    $args = db_query("SELECT name, value FROM {hosting_task_arguments} WHERE vid = :vid", array(':vid' => $row->vid))->fetchAllKeyed();
+    if (empty($args['target_platform']) || empty($args['source_platform']) || $args['source_platform'] == $args['target_platform']) {
+      continue;
+    }
+    $copy = 'back-' . $row->nid . '.temp.' . hosting_tasks_extra_drupal_upgrade_site_name($site);
+    $copy_node = hosting_get_site_by_url($copy);
+    if ($row->task_status == HOSTING_TASK_ERROR && !is_object($copy_node)) {
+      continue;
+    }
+    $runs[] = array(
+      'task' => (int) $row->nid,
+      'date' => (int) $row->executed,
+      'source' => (int) $args['source_platform'],
+      'target' => (int) $args['target_platform'],
+      'copy' => is_object($copy_node) ? $copy : '',
+    );
   }
-  $args = db_query("SELECT name, value FROM {hosting_task_arguments} WHERE vid = :vid", array(':vid' => $row->vid))->fetchAllKeyed();
-  if (empty($args['target_platform']) || $args['target_platform'] != $site->platform) {
-    return $none;
-  }
-  $copy = 'back-' . $row->nid . '.temp.' . hosting_tasks_extra_drupal_upgrade_site_name($site);
-  $copy_node = hosting_get_site_by_url($copy);
-  // A run that ended in error moved the site only when it kept its copy.
-  if ($row->task_status == HOSTING_TASK_ERROR && !is_object($copy_node)) {
-    return $none;
-  }
-  $platform = !empty($args['source_platform']) ? (int) $args['source_platform'] : (is_object($copy_node) ? (int) $copy_node->platform : 0);
-  if ($platform == $site->platform) {
-    $platform = 0;
-  }
-  return array('platform' => $platform, 'task' => (int) $row->nid, 'date' => (int) $row->executed, 'copy' => is_object($copy_node) ? $copy : '');
+  return $runs;
 }
 
 /**
- * Takes the platform an Upgrade left out of the Migrate form's targets.
+ * The newest Upgrade that moved a site, while the site is still where it
+ * put it.
  *
- * A Migrate back would put the upgraded database under the older code.
+ * @return array
+ *   'platform' (the one it left, or 0), 'task' (the Upgrade's node id),
+ *   'date' and 'copy' (the name of the way back).
+ */
+function hosting_tasks_extra_drupal_upgrade_left($site) {
+  $runs = hosting_tasks_extra_drupal_upgrade_runs($site);
+  if (!$runs || $runs[0]['target'] != $site->platform) {
+    return array('platform' => 0, 'task' => 0, 'date' => 0, 'copy' => '');
+  }
+  return array('platform' => $runs[0]['source'], 'task' => $runs[0]['task'], 'date' => $runs[0]['date'], 'copy' => $runs[0]['copy']);
+}
+
+/**
+ * The platforms a site must not be migrated back onto.
+ *
+ * Every platform an Upgrade moved the site away from, wherever the site is
+ * now: a Migrate back would put the upgraded database under the older code.
+ *
+ * @return array
+ *   Platform node ids.
+ */
+function hosting_tasks_extra_drupal_upgrade_left_platforms($site) {
+  $left = array();
+  foreach (hosting_tasks_extra_drupal_upgrade_runs($site) as $run) {
+    if ($run['source'] != $site->platform) {
+      $left[$run['source']] = $run['source'];
+    }
+  }
+  return array_values($left);
+}
+
+/**
+ * Takes the platforms an Upgrade left out of the Migrate form's targets.
  */
 function hosting_tasks_extra_drupal_upgrade_migrate_alter(&$form) {
   if (empty($form['nid']['#value']) || !isset($form['parameters']) || !is_array($form['parameters'])) {
@@ -1129,9 +1195,23 @@ function hosting_tasks_extra_drupal_upgrade_migrate_alter(&$form) {
   if (!is_object($site) || $site->type != 'site') {
     return;
   }
-  $left = hosting_tasks_extra_drupal_upgrade_left($site);
-  if ($left['platform'] && isset($form['parameters'][$left['platform']])) {
-    unset($form['parameters'][$left['platform']]);
+  foreach (hosting_tasks_extra_drupal_upgrade_left_platforms($site) as $nid) {
+    if (isset($form['parameters'][$nid])) {
+      unset($form['parameters'][$nid]);
+    }
+  }
+  // A radio that is gone can still be named in a request.
+  $form['#validate'][] = 'hosting_tasks_extra_drupal_upgrade_migrate_validate';
+}
+
+/**
+ * Refuses a Migrate of a site back onto a platform an Upgrade left.
+ */
+function hosting_tasks_extra_drupal_upgrade_migrate_validate($form, &$form_state) {
+  $site = isset($form_state['values']['nid']) ? node_load($form_state['values']['nid']) : NULL;
+  $target = isset($form_state['values']['parameters']['target_platform']) ? (int) $form_state['values']['parameters']['target_platform'] : 0;
+  if (is_object($site) && $site->type == 'site' && $target && in_array($target, hosting_tasks_extra_drupal_upgrade_left_platforms($site))) {
+    form_set_error('parameters][target_platform', t('This site was upgraded away from that platform: a Migrate back would put its upgraded database under the older code.'));
   }
 }
 

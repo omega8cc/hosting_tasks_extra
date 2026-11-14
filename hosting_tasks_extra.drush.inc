@@ -141,18 +141,27 @@ function hosting_tasks_extra_drupal_upgrade_end($task) {
     return;
   }
   $tasks = hosting_available_tasks('site');
+  // Each as the nested task stored it: its text, or that text translated.
+  // A backup of this run is stamped by a process started after this task
+  // was: nothing older is one of them.
   $labels = array(
-    'Pre-clone backup' => t('Full copy before the upgrade, @date (files and database)', array('@date' => format_date($task->executed, 'custom', 'Y-m-d H:i'))),
-    'Pre-migration backup' => isset($tasks['drupal_upgrade_return'])
-      ? t('Taken during the upgrade: no database and no uploaded files. To undo the upgrade, use Go back')
-      : t('Taken during the upgrade: no database and no uploaded files'),
+    array(
+      array('Pre-clone backup', t('Pre-clone backup')),
+      t('Full copy before the upgrade, @date (files and database)', array('@date' => format_date($task->executed, 'custom', 'Y-m-d H:i'))),
+    ),
+    array(
+      array('Pre-migration backup', t('Pre-migration backup')),
+      isset($tasks['drupal_upgrade_return'])
+        ? t('Taken during the upgrade: no database and no uploaded files. To undo the upgrade, use Go back')
+        : t('Taken during the upgrade: no database and no uploaded files'),
+    ),
   );
-  foreach ($labels as $old => $new) {
+  foreach ($labels as $label) {
     db_update('hosting_site_backups')
-      ->fields(array('description' => $new))
+      ->fields(array('description' => $label[1]))
       ->condition('site', $site->nid)
-      ->condition('timestamp', (int) $task->executed - 60, '>=')
-      ->condition('description', $old)
+      ->condition('timestamp', (int) $task->executed, '>=')
+      ->condition('description', $label[0], 'IN')
       ->execute();
   }
 }

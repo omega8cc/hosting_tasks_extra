@@ -555,7 +555,7 @@ function _provision_tasks_extra_audit_compare($source, $target) {
  *   own libraries that crossed a major inside a core move). 'fixed', 'of',
  *   'open', 'added', 'uncovered' (the security half). 'core_move'. 'locks'
  *   FALSE when either side has no lock to read. 'patch_change' when a patch
- *   definition differs.
+ *   definition is known to differ (read on both sides, not the same).
  */
 function _provision_tasks_extra_lock_classify($source, $target, $source_audit = NULL, $target_audit = NULL) {
   $out = array(
@@ -633,7 +633,13 @@ function _provision_tasks_extra_lock_classify($source, $target, $source_audit = 
     $changed[$name] = $entry;
   }
   $patches = _provision_tasks_extra_lock_patch_changes($source, $target);
-  $out['patch_change'] = ($patches['packages'] || $patches['unknown']);
+  // Known to differ: a place read on both sides whose text is not the same.
+  // A place that cannot be read on a side says nothing either way.
+  foreach ($source['patches'] as $label => $place) {
+    if (isset($target['patches'][$label]) && is_string($place['text']) && is_string($target['patches'][$label]['text']) && $place['text'] !== $target['patches'][$label]['text']) {
+      $out['patch_change'] = TRUE;
+    }
+  }
   foreach (array_keys($patches['packages']) as $name) {
     if (isset($changed[$name])) {
       $changed[$name]['patched'] = TRUE;
@@ -1329,7 +1335,13 @@ function _provision_tasks_extra_core_release($root) {
  * Whether a root is one of the platforms the system itself ships.
  */
 function _provision_tasks_extra_upgrade_is_catalogue($root) {
-  return strpos(rtrim((string) $root, '/') . '/', '/distro/') !== FALSE;
+  $root = rtrim((string) $root, '/');
+  if (strpos($root . '/', '/distro/') !== FALSE) {
+    return TRUE;
+  }
+  // A platform recorded at a link into such a tree is one too.
+  $real = ($root === '') ? FALSE : @realpath($root);
+  return is_string($real) && strpos($real . '/', '/distro/') !== FALSE;
 }
 
 /**
@@ -1347,8 +1359,8 @@ function _provision_tasks_extra_release_numbers($release) {
  * Why a codebase is no newer version for a site to move onto, or ''.
  *
  * A newer core release, or the same release with a lock that raises or adds
- * a package or changes a patch; one major up at most; a site below 10.3 does
- * not go to 11; nothing goes to 12 yet.
+ * a package or changes a patch; a site below 10.3.0 does not go to 11;
+ * nothing goes to 12 yet, so a move is one major up at most.
  *
  * @param string $source
  *   The release the site runs.
@@ -1376,10 +1388,9 @@ function _provision_tasks_extra_upgrade_newer($source, $target, $diff) {
   if (version_compare($target, $source, '<')) {
     return array('rule' => 'older', 'why' => 'it carries Drupal ' . $target . ', older than the ' . $source . ' this site runs');
   }
-  if ($t[0] - $s[0] > 1) {
-    return array('rule' => 'major', 'why' => 'Drupal ' . $target . ' is more than one major version above ' . $source . '; upgrade one major version at a time');
-  }
-  if ($t[0] === 11 && $s[0] === 10 && $s[1] < 3) {
+  // One major up at most: with 10 as the lowest source and 12 refused above,
+  // nothing else needs saying until 12 is let in.
+  if ($t[0] === 11 && $s[0] === 10 && version_compare($source, '10.3.0', '<')) {
     return array('rule' => 'floor', 'why' => 'this site runs Drupal ' . $source . '; Drupal 11 takes a site from 10.3 or later. Move it to a Drupal 10.3 or later platform first (10.6 is the tested route), then upgrade');
   }
   if (version_compare($target, $source, '>')) {
@@ -1457,6 +1468,35 @@ function _provision_tasks_extra_upgrade_list_refusal($whose, $modes, $allow) {
 }
 
 /**
+ * A classified move with the step between the two core releases counted in.
+ *
+ * The kind of a move is read from the two locks. Where the releases differ
+ * and the locks do not show it (core is not in the lock, or the tree does
+ * not match its lock), a list must still see a change of core of that size:
+ * the level is the larger of the two, and the scope holds core.
+ */
+function _provision_tasks_extra_upgrade_release_step($source_release, $target_release, $diff) {
+  $s = _provision_tasks_extra_release_numbers($source_release);
+  $t = _provision_tasks_extra_release_numbers($target_release);
+  if ($s === FALSE || $t === FALSE || (string) $source_release === (string) $target_release) {
+    return $diff;
+  }
+  $step = ($s[0] !== $t[0]) ? 'major' : (($s[1] !== $t[1]) ? 'minor' : 'patch');
+  if (empty($diff['locks'])) {
+    // No locks to read: scope and level stay unknown, as a list is told.
+    return $diff;
+  }
+  $diff['level'] = ($diff['level'] === '') ? $step : _provision_tasks_extra_lock_larger($diff['level'], $step);
+  if ($diff['scope'] === 'unchanged') {
+    $diff['scope'] = 'core';
+  }
+  elseif ($diff['scope'] === 'contrib' && empty($diff['changed']['drupal/core'])) {
+    $diff['scope'] = 'full';
+  }
+  return $diff;
+}
+
+/**
  * Whether a site may move between two codebases, by what their files say.
  *
  * The two releases, the two locks and the two lists: the rules the panel
@@ -1499,6 +1539,7 @@ function _provision_tasks_extra_upgrade_judge($source_release, $target_release, 
       'pending' => FALSE,
     );
   }
+  $diff = _provision_tasks_extra_upgrade_release_step($source_release, $target_release, $diff);
   $pending = FALSE;
   foreach (array("the platform's" => $platform_modes, "this site's" => $site_modes) as $whose => $modes) {
     $allow = _provision_tasks_extra_upgrade_modes_allow($modes, $diff);

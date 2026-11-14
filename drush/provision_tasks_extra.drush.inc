@@ -1562,7 +1562,7 @@ function _provision_tasks_extra_upgrade_plan() {
       drush_log(dt('UPGRADE/CHECK the security audit of the @side platform did not finish (@why): advisories were not compared.', array('@side' => $side, '@why' => $audit['why'])), 'ok');
     }
   }
-  $diff = _provision_tasks_extra_lock_diff($source_root, $target_root, $source_audit, $target_audit);
+  $diff = _provision_tasks_extra_upgrade_release_step($source_release, $target_release, _provision_tasks_extra_lock_diff($source_root, $target_root, $source_audit, $target_audit));
   if ($diff['added']) {
     $added = array();
     foreach ($diff['added'] as $pair) {
@@ -1743,6 +1743,22 @@ function _provision_tasks_extra_upgrade_undo($plan) {
   // Only a copy on the site's own platform is this run's.
   if ($root !== FALSE && $root !== '' && _provision_tasks_extra_upgrade_same_root($root, $plan['source_root'])) {
     $leg = _provision_tasks_extra_upgrade_leg('@' . $copy, 'delete', array($plan['marker']));
+    if (!$leg['ok'] && in_array('HOSTING_TASK_LOAD_FAILED', $leg['codes'], TRUE)) {
+      // A Clone that failed after its deploy keeps the copy and makes no
+      // panel record of it: no task row can delete it, the backend can.
+      drush_log(dt('UPGRADE/UNDO the panel holds no record of @copy, so it is removed by the backend alone.', array('@copy' => $copy)), 'ok');
+      $before = count(drush_get_log());
+      $result = provision_backend_invoke('@' . $copy, 'provision-delete');
+      $leg = array(
+        'ok' => is_array($result) && isset($result['error_status']) && (int) $result['error_status'] === 0,
+        'codes' => array(),
+        'errors' => array(),
+        'log' => array_slice(drush_get_log(), $before),
+      );
+      if ($leg['ok']) {
+        provision_backend_invoke('@none', 'provision-save', array('@' . $copy), array('delete' => TRUE));
+      }
+    }
     foreach ($leg['log'] as $entry) {
       if (is_array($entry) && isset($entry['type'], $entry['message']) && $entry['type'] === 'warning' && is_string($entry['message']) && stripos($entry['message'], 'database') !== FALSE) {
         $clean = FALSE;
@@ -1813,6 +1829,9 @@ function drush_provision_tasks_extra_provision_drupal_upgrade() {
   $uri = $plan['uri'];
   $copy = $plan['copy'];
   $copy_dir = $plan['source_root'] . '/sites/' . $copy;
+  // This process holds the site as it was before the move: nothing of it
+  // is saved when the command ends.
+  drush_set_option('provision_save_config', FALSE);
   // The name is free now, so whatever holds it after leg 1 is this run's.
   clearstatcache();
   if (_provision_tasks_extra_upgrade_alias_root($copy) !== FALSE || file_exists($copy_dir) || is_link($copy_dir)) {
@@ -1877,7 +1896,19 @@ function drush_provision_tasks_extra_provision_drupal_upgrade() {
   }
   $base = $uri . ' runs Drupal ' . $plan['target_release'] . ' on ' . $plan['target_title'];
   $gone = !file_exists($plan['source_root'] . '/sites/' . $uri) && !is_link($plan['source_root'] . '/sites/' . $uri);
-  if (!$leg['ok'] || !$gone || !is_dir($plan['target_root'] . '/sites/' . $uri)) {
+  $there = is_dir($plan['target_root'] . '/sites/' . $uri);
+  if (!$there || (!$leg['ok'] && !$gone)) {
+    // The alias names the new platform and the old one still holds the
+    // site, or the new one does not: the move stopped midway, and its own
+    // undo did not run. Nothing is removed.
+    return drush_set_error('PROVISION_UPGRADE_UNFINISHED', dt('UPGRADE/RESULT Not finished: the move of @uri onto @target stopped midway (see above), and the site may not be served. Nothing was removed: @source still holds the site as it was, and the copy @copy is kept. Ask support.', array(
+      '@uri' => $uri,
+      '@target' => $plan['target_title'],
+      '@source' => $plan['source_title'],
+      '@copy' => $copy,
+    )));
+  }
+  if (!$leg['ok'] || !$gone) {
     // The move went through and its tidying did not: the site stays where
     // it is, and so does the way back.
     return drush_set_error('PROVISION_UPGRADE_UNFINISHED', dt('UPGRADE/RESULT Upgraded, last step unfinished: !base, but tidying @source failed (see above).!way!stays', array(
@@ -1898,7 +1929,10 @@ function drush_provision_tasks_extra_provision_drupal_upgrade() {
     drush_log(dt('UPGRADE/RESULT Upgraded, not page-checked: !base; the pages could not be read from this server (see above). Look at your site now.!tail', array('!base' => _provision_tasks_extra_no_markup($base), '!tail' => $tail)), 'warning');
     return;
   }
-  $pages = _provision_tasks_extra_upgrade_logged($leg, 'UPGRADE/PAGES ', 'ok') ? '; its home and login pages answer' : '';
+  $pages = '';
+  if (_provision_tasks_extra_upgrade_logged($leg, 'UPGRADE/PAGES ', 'ok')) {
+    $pages = _provision_tasks_extra_upgrade_logged($leg, 'left out of the check') ? '; its home page answers' : '; its home and login pages answer';
+  }
   $warnings = _provision_tasks_extra_upgrade_warnings();
   if ($warnings) {
     $first = $warnings[0];
