@@ -1543,3 +1543,30 @@ function _provision_tasks_extra_database_floor_text($floor, $target_release) {
     . _provision_tasks_extra_upgrade_names($parts)
     . '. Migrate the site onto another Drupal 10.3 or later platform first (10.6 is the tested route): the Migrate runs its database updates. Then upgrade. If the site changed since it was last verified (its updates were run, or a backup was restored), verify it and try again';
 }
+
+/**
+ * A loaded lock with only what the classifier reads of each package.
+ *
+ * For a reader that keeps the reading between requests: the same verdicts
+ * from a fraction of the bytes.
+ */
+function _provision_tasks_extra_lock_slim($lock) {
+  if (empty($lock['ok']) || !isset($lock['packages']) || !is_array($lock['packages'])) {
+    return $lock;
+  }
+  foreach ($lock['packages'] as $name => $package) {
+    $keep = array();
+    foreach (array('name', 'version', 'type', 'require', 'replace', 'provide') as $key) {
+      if (isset($package[$key])) {
+        $keep[$key] = $package[$key];
+      }
+    }
+    foreach (array('source', 'dist') as $key) {
+      if (isset($package[$key]) && is_array($package[$key]) && isset($package[$key]['reference'])) {
+        $keep[$key] = array('reference' => $package[$key]['reference']);
+      }
+    }
+    $lock['packages'][$name] = $keep;
+  }
+  return $lock;
+}
