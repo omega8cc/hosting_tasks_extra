@@ -27,6 +27,31 @@ function drush_hosting_tasks_extra_pre_hosting_task() {
   if ($task->ref->type == 'site' && $task->task_type == 'migrate' && !empty($task->task_args['upgrade_strict'])) {
     $task->options['upgrade_strict'] = 1;
   }
+  if ($task->ref->type == 'site' && $task->task_type == 'migrate') {
+    hosting_tasks_extra_drupal_upgrade_migrate_start($task);
+  }
+}
+
+/**
+ * Refuses a Migrate that would move an upgraded site back, however queued.
+ *
+ * The site's own Migrate form leaves out a platform an Upgrade moved the
+ * site away from, and refuses it. A Migrate of every site of a platform, or
+ * a row queued without a form, comes through here instead. A rename stays
+ * on the site's own platform and is never such a move.
+ */
+function hosting_tasks_extra_drupal_upgrade_migrate_start($task) {
+  $target = isset($task->task_args['target_platform']) ? (int) $task->task_args['target_platform'] : 0;
+  if (!$target || $target == $task->ref->platform) {
+    return;
+  }
+  if (in_array($target, hosting_tasks_extra_drupal_upgrade_left_platforms($task->ref))) {
+    $platform = node_load($target);
+    return drush_set_error('HOSTING_UPGRADE_MIGRATE_BACK', dt('Not migrated: @site was upgraded away from @platform, and a Migrate back would put its upgraded database under the older code. Nothing was changed.', array(
+      '@site' => $task->ref->title,
+      '@platform' => is_object($platform) ? $platform->title : 'that platform',
+    )));
+  }
 }
 
 /**
