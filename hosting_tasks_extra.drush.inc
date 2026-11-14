@@ -307,6 +307,9 @@ function hosting_tasks_extra_drupal_upgrade_return_start($task) {
       'return_when' => $state['date'] ? format_date($state['date'], 'custom', 'Y-m-d H:i') : '',
     ) + hosting_tasks_extra_drupal_upgrade_return_settings($site);
   }
+  // Retry and Run Again copy a row's arguments into a row that never ran:
+  // the record counts only on the row that wrote it.
+  $record['return_run'] = (int) $task->nid;
   hosting_tasks_extra_task_args_keep($task, $record);
 
   $new = node_load($site->platform);

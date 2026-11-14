@@ -1293,13 +1293,17 @@ function hosting_tasks_extra_drupal_upgrade_return_state($node, $account, $excep
   }
   $title = hosting_site_clean_domain($node->title);
 
-  // A run that stopped midway: the newest one that recorded its names.
+  // A run that stopped midway: the newest one that recorded its names. A
+  // row counts only with the record its own start wrote (return_run): Retry
+  // and Run Again copy every argument into a row that may never run.
   $row = db_query_range("SELECT t.nid, t.vid, t.task_status, a.value FROM {hosting_task} t
       INNER JOIN {node} n ON n.vid = t.vid
       INNER JOIN {hosting_task_arguments} a ON a.vid = t.vid AND a.name = :name
+      INNER JOIN {hosting_task_arguments} r ON r.vid = t.vid AND r.name = :run AND r.value = CAST(t.nid AS CHAR)
     WHERE t.rid = :rid AND t.task_type = :type AND t.nid <> :except
     ORDER BY t.vid DESC", 0, 1, array(
       ':name' => 'return_aside',
+      ':run' => 'return_run',
       ':rid' => $node->nid,
       ':type' => 'drupal_upgrade_return',
       ':except' => (int) $except_nid,
