@@ -50,6 +50,23 @@ function provision_tasks_extra_drush_command() {
     'description' => dt('Reports the available updates of a site. Read-only: it changes nothing in the site\'s code or content, or in its platform.'),
     'bootstrap' => DRUSH_BOOTSTRAP_DRUSH,
   );
+  $items['provision-drupal-upgrade'] = array(
+    'description' => dt('Moves a Drupal 10+ site onto a newer platform, keeping a copy to go back to: a Clone as the way back, then a Migrate that is undone when the database updates do not finish or a page no longer answers.'),
+    'bootstrap' => DRUSH_BOOTSTRAP_DRUSH,
+    'options' => array(
+      'upgrade_target' => 'The context name of the platform to move onto.',
+      'upgrade_target_nid' => 'The panel id of that platform.',
+      'upgrade_source_nid' => 'The panel id of the platform the site runs on.',
+      'upgrade_db_nid' => 'The panel id of the site\'s database server.',
+      'upgrade_task_nid' => 'The panel id of this task.',
+      'upgrade_copy' => 'The name the way-back copy gets.',
+      'upgrade_source_title' => 'The name of the current platform, for the log.',
+      'upgrade_target_title' => 'The name of the new platform, for the log.',
+      'upgrade_copy_secs' => 'How long the site\'s newest Backup or Clone took, in seconds.',
+      'upgrade_ceiling' => 'How long one task may run, in seconds.',
+      'upgrade_return' => 'Set when the panel offers Go back.',
+    ),
+  );
   $items['provision-update_uri'] = array(
     'description' => 'Update a site database to reflect a changed URI. This does NOT rename the whole site, use a provision-migrate task for that.',
     'bootstrap' => DRUSH_BOOTSTRAP_DRUPAL_FULL,
@@ -1275,4 +1292,628 @@ function drush_provision_tasks_extra_pre_hosting_task() {
   if ($task->ref->type == 'site' && $task->task_type == 'update' && isset($task->task_args['entity_updates'])) {
     $task->options['entity_updates'] = $task->task_args['entity_updates'];
   }
+}
+
+/**
+ * Refuses an Upgrade before anything is made.
+ */
+function _provision_tasks_extra_upgrade_refuse($why) {
+  return drush_set_error('PROVISION_UPGRADE_NOT_STARTED', dt('UPGRADE/RESULT Not started: !why. Nothing was changed.', array('!why' => _provision_tasks_extra_no_markup($why))));
+}
+
+/**
+ * Two roots as one place on disk.
+ */
+function _provision_tasks_extra_upgrade_same_root($one, $two) {
+  $a = @realpath($one);
+  $b = @realpath($two);
+  if ($a === FALSE || $b === FALSE) {
+    return rtrim((string) $one, '/') === rtrim((string) $two, '/');
+  }
+  return $a === $b;
+}
+
+/**
+ * The docroot a site's alias names on disk now, '' for none, FALSE for no alias.
+ *
+ * Read as text: the context this process loaded goes stale the moment a
+ * nested task moves the site.
+ */
+function _provision_tasks_extra_upgrade_alias_root($uri) {
+  $file = drush_server_home() . '/.drush/' . $uri . '.alias.drushrc.php';
+  clearstatcache(TRUE, $file);
+  if (!is_file($file) || is_link($file)) {
+    return FALSE;
+  }
+  $text = @file_get_contents($file);
+  $m = array();
+  if (!is_string($text) || !preg_match("/'root'\\s*=>\\s*'((?:[^'\\\\]|\\\\.)*)'/", $text, $m)) {
+    return '';
+  }
+  return _provision_tasks_extra_docroot(stripslashes($m[1]));
+}
+
+/**
+ * The switched-on modules a site's own record holds, or FALSE.
+ *
+ * Each Verify writes the record into the site's drushrc.php, which is the
+ * backend user's own file; it is read the way every Migrate reads it.
+ *
+ * @return array|false
+ *   name => array('schema_version', 'filename'), FALSE when there is no
+ *   record to read.
+ */
+function _provision_tasks_extra_upgrade_site_modules($file) {
+  clearstatcache(TRUE, $file);
+  $stat = @lstat($file);
+  if ($stat === FALSE || ($stat['mode'] & 0170000) !== 0100000) {
+    return FALSE;
+  }
+  if (function_exists('posix_geteuid') && $stat['uid'] !== posix_geteuid()) {
+    return FALSE;
+  }
+  $record = _provision_tasks_extra_upgrade_include_options($file);
+  if (!isset($record['packages']['modules']) || !is_array($record['packages']['modules'])) {
+    return FALSE;
+  }
+  $modules = array();
+  foreach ($record['packages']['modules'] as $name => $module) {
+    if (is_array($module) && !empty($module['status']) && isset($module['schema_version'])) {
+      $modules[$name] = array(
+        'schema_version' => $module['schema_version'],
+        'filename' => isset($module['filename']) ? (string) $module['filename'] : '',
+      );
+    }
+  }
+  return $modules;
+}
+
+/**
+ * The $options a drushrc.php sets, in a scope of its own.
+ */
+function _provision_tasks_extra_upgrade_include_options($file) {
+  $options = array();
+  include $file;
+  return is_array($options) ? $options : array();
+}
+
+/**
+ * The names under a folder that are way-back copies of a site.
+ */
+function _provision_tasks_extra_upgrade_copies($dir, $uri, $suffix = '') {
+  $found = array();
+  $names = @scandir($dir);
+  if (!is_array($names)) {
+    return $found;
+  }
+  $tail = '.temp.' . $uri . $suffix;
+  foreach ($names as $name) {
+    if (strncmp($name, 'back-', 5) === 0 && strlen($name) > strlen($tail) + 5 && substr($name, -strlen($tail)) === $tail) {
+      $found[] = substr($name, 0, strlen($name) - strlen($suffix));
+    }
+  }
+  return $found;
+}
+
+/**
+ * Checks an Upgrade before anything is made.
+ *
+ * @return array|string
+ *   The plan of the run, or the reason it is refused, a clause with no full
+ *   stop.
+ */
+function _provision_tasks_extra_upgrade_plan() {
+  $site = d();
+  if (!is_object($site) || $site->type !== 'site' || empty($site->uri)) {
+    return 'this is not a site';
+  }
+  $uri = strtolower(ltrim((string) $site->uri, '@'));
+  $opt = array();
+  foreach (array('upgrade_target', 'upgrade_target_nid', 'upgrade_source_nid', 'upgrade_db_nid', 'upgrade_task_nid', 'upgrade_copy') as $name) {
+    $opt[$name] = trim((string) drush_get_option($name, ''));
+    if ($opt[$name] === '') {
+      return 'the task did not say where the site should go (' . $name . ' is missing); start the Upgrade from the site\'s page';
+    }
+  }
+  foreach (array('upgrade_target_nid', 'upgrade_source_nid', 'upgrade_db_nid', 'upgrade_task_nid') as $name) {
+    if (!ctype_digit($opt[$name]) || (int) $opt[$name] < 1) {
+      return 'the task carries a value that is no id (' . $name . '); start the Upgrade from the site\'s page';
+    }
+  }
+  $copy = 'back-' . $opt['upgrade_task_nid'] . '.temp.' . $uri;
+  if ($opt['upgrade_copy'] !== $copy) {
+    return 'the name given for the way-back copy is not the one this run makes (' . $copy . ')';
+  }
+  // The move leg relies on the Migrate that fails closed: without it a
+  // failed update would only warn.
+  if (!function_exists('provision_upgrade_strict')) {
+    return 'this server does not have the Migrate that stops on a failed update yet; it comes with the next system upgrade';
+  }
+  $source_title = trim((string) drush_get_option('upgrade_source_title', ''));
+  $target_title = trim((string) drush_get_option('upgrade_target_title', ''));
+  $source_title = ($source_title === '') ? 'its current platform' : $source_title;
+  $target_title = ($target_title === '') ? 'the new platform' : $target_title;
+
+  // V1: Drupal 10 or later on both sides, by a file.
+  if (function_exists('provision_platform_is_backdrop') && provision_platform_is_backdrop($site)) {
+    return 'the Upgrade is for Drupal 10 and later sites, and this is a Backdrop site';
+  }
+  if (function_exists('provision_platform_is_foreign_cms') && provision_platform_is_foreign_cms($site)) {
+    return 'the Upgrade is for Drupal 10 and later sites, and this site runs another system';
+  }
+  if (function_exists('provision_is_hostmaster_site') && provision_is_hostmaster_site()) {
+    return 'this is the control panel\'s own site';
+  }
+  $source_root = _provision_tasks_extra_docroot($site->root);
+  $target = d($opt['upgrade_target'], FALSE, FALSE);
+  if (!is_object($target) || $target->type !== 'platform' || empty($target->root)) {
+    return $target_title . ' is not known to the backend as a platform; verify it first';
+  }
+  $target_root = _provision_tasks_extra_docroot($target->root);
+  if (!is_file($source_root . '/core/lib/Drupal.php')) {
+    return 'the Upgrade is for Drupal 10 and later sites';
+  }
+  if (!is_file($target_root . '/core/lib/Drupal.php')) {
+    return $target_title . ' holds no Drupal 10 or later code';
+  }
+  // V2.
+  if (_provision_tasks_extra_upgrade_is_catalogue($target_root)) {
+    return $target_title . ' is one of the platforms the system ships, which are no upgrade targets';
+  }
+  // V8.
+  if (_provision_tasks_extra_upgrade_same_root($source_root, $target_root)) {
+    return 'this site already runs on ' . $target_title;
+  }
+
+  // V3: the two releases and the two locks; then both lists, as far as they
+  // can be judged before the audits.
+  $source_release = _provision_tasks_extra_core_release($source_root);
+  $target_release = _provision_tasks_extra_core_release($target_root);
+  $platform_modes = _provision_tasks_extra_upgrade_modes($source_root . '/sites/all/modules/boa_platform_control.ini');
+  $site_modes = _provision_tasks_extra_upgrade_modes($source_root . '/sites/' . $uri . '/modules/boa_site_control.ini');
+  $early = _provision_tasks_extra_upgrade_judge($source_release, $target_release, _provision_tasks_extra_lock_diff($source_root, $target_root), $platform_modes, $site_modes, TRUE);
+  if (!$early['ok']) {
+    return $early['why'];
+  }
+  // V3, the database half, from the site's own record.
+  $modules = _provision_tasks_extra_upgrade_site_modules($source_root . '/sites/' . $uri . '/drushrc.php');
+  if ($modules === FALSE || !isset($modules['system'])) {
+    return 'Verify this site first: it has no record of its modules yet';
+  }
+  $floor = _provision_tasks_extra_database_floor($modules, $source_root, $target_root);
+  foreach ($floor['not_read'] as $name) {
+    drush_log(dt('UPGRADE/CHECK the last update the new code removed could not be read for @module; the database updates of the move decide.', array('@module' => $name)), 'warning');
+  }
+  $too_old = _provision_tasks_extra_database_floor_text($floor, $target_release);
+  if ($too_old !== '') {
+    return $too_old;
+  }
+
+  // V4: a Drush of its own, and not one known to die at start. It is not
+  // run here: a locked codebase can run its Drush only inside the move.
+  $app = _provision_tasks_extra_app_root($target_root);
+  $has_drush = ($app !== '')
+    ? _provision_codebase_has_drush($app)
+    : (_provision_codebase_has_drush($target_root) || _provision_codebase_has_drush(dirname($target_root)));
+  if (!$has_drush) {
+    return $target_title . ' has no Drush of its own. Verify the platform (BOA adds Drush where it can), or put drush/drush into the project';
+  }
+  $dead = _provision_tasks_extra_drush_cannot_start($target_root);
+  if ($dead !== '') {
+    return "the new platform's Drush cannot start (" . $dead . '). Rebuild the platform, or require consolidation/robo 5.1.1 in it';
+  }
+
+  // V7: what an earlier run left behind.
+  $stray = $target_root . '/sites/' . $uri;
+  if (file_exists($stray) || is_link($stray)) {
+    return 'a leftover of this site is in the way on ' . $target_title . ' (' . $stray . '). Delete it, then start again';
+  }
+  $left = _provision_tasks_extra_upgrade_copies($source_root . '/sites', $uri);
+  if ($left) {
+    return 'an earlier upgrade left the copy ' . $left[0] . ' on ' . $source_title . '. Delete that site in the panel, or its folder ' . $source_root . '/sites/' . $left[0] . ' when the panel does not list it, then start again';
+  }
+  foreach (_provision_tasks_extra_upgrade_copies(drush_server_home() . '/.drush', $uri, '.alias.drushrc.php') as $name) {
+    $root = _provision_tasks_extra_upgrade_alias_root($name);
+    if ($root === '' || ($root !== FALSE && _provision_tasks_extra_upgrade_same_root($root, $source_root))) {
+      return 'an earlier upgrade left the copy ' . $name . ' on ' . $source_title . '. Delete that site in the panel, then start again';
+    }
+  }
+
+  // V9, V11.
+  if (file_exists('/run/boa_queue_stop.pid')) {
+    return 'the task queue is paused on this server for maintenance; start again later';
+  }
+  if (file_exists('/run/octopus_install_run.pid')) {
+    return 'a system upgrade of this account is running; start again when it has ended';
+  }
+
+  // V12.
+  $secs = (int) drush_get_option('upgrade_copy_secs', 0);
+  $ceiling = (int) drush_get_option('upgrade_ceiling', 0);
+  if ($secs > 0 && $ceiling > 0) {
+    if (4 * $secs + 1800 > $ceiling) {
+      return 'the last copy of this site took ' . (int) ceil($secs / 60) . ' minutes, and an upgrade needs about four times that and half an hour for its checks: more than the ' . round($ceiling / 3600, 1) . ' hours one task may run';
+    }
+  }
+  else {
+    drush_log(dt('UPGRADE/CHECK no earlier Backup or Clone of this site says how long a copy takes; the time check is skipped.'), 'ok');
+  }
+
+  // V5: the target's PHP, asked the way the move will ask.
+  if (function_exists('provision_cli_php_target_preflight') && !provision_cli_php_target_preflight('migrate', $opt['upgrade_target'])) {
+    return $target_title . ' cannot run this site on its PHP version (see above)';
+  }
+  // V6: each leg's own space check, each alone.
+  if (function_exists('provision_copy_task_space_preflight')) {
+    if (!provision_copy_task_space_preflight('clone', '@' . ltrim((string) $site->platform->name, '@'), '@' . $copy)) {
+      return 'the disk has too little room for the way-back copy (see above)';
+    }
+    if (!provision_copy_task_space_preflight('migrate', $opt['upgrade_target'])) {
+      return 'the disk has too little room for the move (see above)';
+    }
+  }
+
+  // V10: no advisory the site does not have now.
+  $source_audit = _provision_tasks_extra_lock_advisories($source_root);
+  $target_audit = _provision_tasks_extra_lock_advisories($target_root);
+  $sides = array('current' => $source_audit, 'new' => $target_audit);
+  foreach ($sides as $side => $audit) {
+    if ($audit['lines'] === FALSE && $audit['lock'] !== '') {
+      drush_log(dt('UPGRADE/CHECK the security audit of the @side platform did not finish (@why): advisories were not compared.', array('@side' => $side, '@why' => $audit['why'])), 'ok');
+    }
+  }
+  $diff = _provision_tasks_extra_lock_diff($source_root, $target_root, $source_audit, $target_audit);
+  if ($diff['added']) {
+    $added = array();
+    foreach ($diff['added'] as $pair) {
+      $cols = explode("\t", $pair);
+      $added[] = $cols[0] . ' on ' . (isset($cols[1]) ? $cols[1] : '?');
+    }
+    return $target_title . ' has security advisories the current platform does not have (' . _provision_tasks_extra_upgrade_names($added) . '). Build it again from current releases';
+  }
+  // V13: both lists, each on its own, with what the audits said.
+  $kind = _provision_tasks_extra_upgrade_kind_text($diff);
+  $verdict = _provision_tasks_extra_upgrade_judge($source_release, $target_release, $diff, $platform_modes, $site_modes, FALSE);
+  if (!$verdict['ok']) {
+    return $verdict['why'] . ' (' . $target_title . ' is: ' . $kind . ')';
+  }
+
+  $advisories = 'security advisories were not compared';
+  if ($diff['security'] !== NULL || $diff['of'] > 0 || ($source_audit['lines'] !== FALSE && $target_audit['lines'] !== FALSE)) {
+    $advisories = 'security advisories: ' . $diff['of'] . ' on the current platform, ' . count($diff['open']) . ' on the new one';
+  }
+  $lists = "the platform's list (" . basename($platform_modes['file']) . '): ' . _provision_tasks_extra_upgrade_modes_text($platform_modes)
+    . "; this site's list (" . basename($site_modes['file']) . '): ' . _provision_tasks_extra_upgrade_modes_text($site_modes);
+  $stays = ($platform_modes['state'] === 'absent') ? '' : ' The platform\'s list belongs to ' . $source_title . ' and does not follow the site to ' . $target_title . '.';
+  drush_log(dt('UPGRADE/PLAN @uri: from Drupal @from on @source to Drupal @to on @target: !kind; !advisories; !lists. The way back will be @copy.!stays', array(
+    '@uri' => $uri,
+    '@from' => $source_release,
+    '@source' => $source_title,
+    '@to' => $target_release,
+    '@target' => $target_title,
+    '!kind' => _provision_tasks_extra_no_markup($kind),
+    '!advisories' => $advisories,
+    '!lists' => _provision_tasks_extra_no_markup($lists),
+    '@copy' => $copy,
+    '!stays' => _provision_tasks_extra_no_markup($stays),
+  )), 'ok');
+  drush_log(dt('UPGRADE/CHECK passed: the two releases, the site\'s database, the new platform\'s Drush and PHP, leftovers, the queue, free space, security advisories and both lists.'), 'ok');
+
+  return array(
+    'uri' => $uri,
+    'copy' => $copy,
+    'marker' => 'upgrade_run=' . $opt['upgrade_task_nid'],
+    'source_nid' => $opt['upgrade_source_nid'],
+    'target_nid' => $opt['upgrade_target_nid'],
+    'db_nid' => $opt['upgrade_db_nid'],
+    'source_root' => $source_root,
+    'target_root' => $target_root,
+    'source_title' => $source_title,
+    'target_title' => $target_title,
+    'source_release' => $source_release,
+    'target_release' => $target_release,
+    'stays' => $stays,
+    'return' => (bool) drush_get_option('upgrade_return', FALSE),
+  );
+}
+
+/**
+ * Implements drush_hook_COMMAND_validate() for provision-drupal-upgrade.
+ *
+ * Every check runs before anything is made, fails closed, and relies on
+ * nothing the panel's form did.
+ */
+function drush_provision_tasks_extra_provision_drupal_upgrade_validate() {
+  $plan = _provision_tasks_extra_upgrade_plan();
+  if (!is_array($plan)) {
+    return _provision_tasks_extra_upgrade_refuse($plan);
+  }
+  drush_set_context('PROVISION_UPGRADE_PLAN', $plan);
+}
+
+/**
+ * Runs one nested task and says how it went.
+ *
+ * A leg is judged by what its own invoke returned, never by this process's
+ * error flag, which stays set from the first failed leg on. A leg that made
+ * no task row returns an error like any other.
+ *
+ * @return array
+ *   'ok', 'codes' (its error codes), 'errors' (their messages) and 'log'
+ *   (what it logged, as this process received it).
+ */
+function _provision_tasks_extra_upgrade_leg($context, $type, $args = array()) {
+  $before = count(drush_get_log());
+  $result = provision_backend_invoke('@hostmaster', 'hosting-task', array_merge(array($context, $type), $args), array('force' => TRUE));
+  $codes = array();
+  $errors = array();
+  if (is_array($result) && !empty($result['error_log']) && is_array($result['error_log'])) {
+    foreach ($result['error_log'] as $code => $messages) {
+      $codes[] = (string) $code;
+      foreach ((array) $messages as $message) {
+        $errors[] = (string) $message;
+      }
+    }
+  }
+  return array(
+    'ok' => is_array($result) && isset($result['error_status']) && (int) $result['error_status'] === 0,
+    'codes' => $codes,
+    'errors' => $errors,
+    'log' => array_slice(drush_get_log(), $before),
+  );
+}
+
+/**
+ * Whether a leg logged a line that starts with a marker, at one level or any.
+ */
+function _provision_tasks_extra_upgrade_logged($leg, $marker, $type = NULL) {
+  foreach ($leg['log'] as $entry) {
+    if (!is_array($entry) || !isset($entry['message']) || !is_string($entry['message'])) {
+      continue;
+    }
+    if (strpos($entry['message'], $marker) !== FALSE && ($type === NULL || (isset($entry['type']) && $entry['type'] === $type))) {
+      return TRUE;
+    }
+  }
+  return FALSE;
+}
+
+/**
+ * The warnings this process holds, one printable line each.
+ */
+function _provision_tasks_extra_upgrade_warnings() {
+  $warnings = array();
+  foreach (drush_get_log() as $entry) {
+    if (is_array($entry) && isset($entry['type'], $entry['message']) && $entry['type'] === 'warning' && is_string($entry['message'])) {
+      $text = trim(preg_replace('/\s+/', ' ', strip_tags($entry['message'])));
+      if ($text !== '') {
+        $warnings[$text] = TRUE;
+      }
+    }
+  }
+  return array_keys($warnings);
+}
+
+/**
+ * Why the move leg failed, as a clause.
+ */
+function _provision_tasks_extra_upgrade_why($leg) {
+  $text = implode(' ', $leg['errors']);
+  if (in_array('PROVISION_UPGRADE_UPDATEDB', $leg['codes'], TRUE)) {
+    if (strpos($text, 'could not be run') !== FALSE) {
+      return "the new platform's own Drush could not be run";
+    }
+    if (strpos($text, 'cannot start') !== FALSE) {
+      return "the new platform's own Drush cannot start";
+    }
+    return "Drupal's database updates did not finish on the new platform";
+  }
+  if (in_array('PROVISION_UPGRADE_PAGE_CHECK', $leg['codes'], TRUE)) {
+    $m = array();
+    if (preg_match('/After the move (.+?): the move is undone/s', $text, $m)) {
+      return 'after the move ' . trim(preg_replace('/\s+/', ' ', strip_tags($m[1])));
+    }
+    return 'after the move a page no longer answered as it did before (see above)';
+  }
+  if (in_array('PROVISION_INSUFFICIENT_SPACE', $leg['codes'], TRUE) || in_array('PROVISION_INSUFFICIENT_INODES', $leg['codes'], TRUE)) {
+    return 'the disk was too full for the move (see above)';
+  }
+  if (in_array('PROVISION_CLI_PHP_TARGET', $leg['codes'], TRUE)) {
+    return 'the new platform cannot run this site on its PHP version (see above)';
+  }
+  return 'the move stopped before the site left its platform (see above)';
+}
+
+/**
+ * Removes the copy this run made, and nothing else.
+ *
+ * @return bool|null
+ *   NULL when there is nothing of the copy, TRUE when it is gone, FALSE
+ *   when something of it is left.
+ */
+function _provision_tasks_extra_upgrade_undo($plan) {
+  $copy = $plan['copy'];
+  $dir = $plan['source_root'] . '/sites/' . $copy;
+  clearstatcache();
+  $root = _provision_tasks_extra_upgrade_alias_root($copy);
+  if ($root === FALSE && !file_exists($dir) && !is_link($dir)) {
+    return NULL;
+  }
+  $clean = TRUE;
+  // Only a copy on the site's own platform is this run's.
+  if ($root !== FALSE && $root !== '' && _provision_tasks_extra_upgrade_same_root($root, $plan['source_root'])) {
+    $leg = _provision_tasks_extra_upgrade_leg('@' . $copy, 'delete', array($plan['marker']));
+    foreach ($leg['log'] as $entry) {
+      if (is_array($entry) && isset($entry['type'], $entry['message']) && $entry['type'] === 'warning' && is_string($entry['message']) && stripos($entry['message'], 'database') !== FALSE) {
+        $clean = FALSE;
+      }
+    }
+    $clean = $clean && $leg['ok'];
+  }
+  clearstatcache();
+  return $clean && _provision_tasks_extra_upgrade_alias_root($copy) === FALSE && !file_exists($dir) && !is_link($dir);
+}
+
+/**
+ * Ends a run that did not upgrade the site: the copy goes, the reason stays.
+ */
+function _provision_tasks_extra_upgrade_stop($plan, $why, $move_tried) {
+  $removed = _provision_tasks_extra_upgrade_undo($plan);
+  $line = 'Not upgraded: ' . $why . '. ' . $plan['uri'] . ' is on ' . $plan['source_title'] . ' as before'
+    . ($move_tried ? '; its page cache was cleared.' : '.');
+  if ($removed === TRUE) {
+    $line .= ' The copy made for this run was removed.';
+  }
+  elseif ($removed === FALSE) {
+    $line .= ' The copy made for this run (' . $plan['copy'] . ') could not be fully removed, see above.';
+  }
+  return drush_set_error('PROVISION_UPGRADE_NOT_UPGRADED', dt('UPGRADE/RESULT !line', array('!line' => _provision_tasks_extra_no_markup($line))));
+}
+
+/**
+ * The folder that keeps the database as it was before the move, or ''.
+ */
+function _provision_tasks_extra_upgrade_kept_dump($uri, $since) {
+  $server = d('@server_master');
+  $path = (is_object($server) && !empty($server->backup_path)) ? rtrim($server->backup_path, '/') : '';
+  $names = ($path === '') ? FALSE : @scandir($path);
+  if (!is_array($names)) {
+    return '';
+  }
+  $prefix = $uri . '_sql_dump_deploy_';
+  $found = '';
+  $newest = 0;
+  foreach ($names as $name) {
+    if (strncmp($name, $prefix, strlen($prefix)) !== 0 || !is_dir($path . '/' . $name) || is_link($path . '/' . $name)) {
+      continue;
+    }
+    $mtime = (int) @filemtime($path . '/' . $name);
+    if ($mtime >= $since && $mtime >= $newest) {
+      $newest = $mtime;
+      $found = $path . '/' . $name;
+    }
+  }
+  return $found;
+}
+
+/**
+ * Implements the provision-drupal-upgrade command.
+ *
+ * Two existing tasks as real task rows inside this one: a Clone of the site
+ * on its own platform, switched off, as the way back; then a Migrate onto
+ * the new platform that undoes itself when the updates do not finish or a
+ * page no longer answers. Whatever fails before the site has moved ends
+ * with the site where it was and the copy removed.
+ */
+function drush_provision_tasks_extra_provision_drupal_upgrade() {
+  $plan = drush_get_context('PROVISION_UPGRADE_PLAN');
+  if (!is_array($plan)) {
+    return _provision_tasks_extra_upgrade_refuse('its checks did not run');
+  }
+  $uri = $plan['uri'];
+  $copy = $plan['copy'];
+  $copy_dir = $plan['source_root'] . '/sites/' . $copy;
+  // The name is free now, so whatever holds it after leg 1 is this run's.
+  clearstatcache();
+  if (_provision_tasks_extra_upgrade_alias_root($copy) !== FALSE || file_exists($copy_dir) || is_link($copy_dir)) {
+    return _provision_tasks_extra_upgrade_refuse('the name of the way-back copy, ' . $copy . ', is taken');
+  }
+  $started = time();
+  $when = date('Y-m-d H:i');
+
+  // Leg 1: the way back.
+  drush_log(dt('UPGRADE/1/COPY making the way back: a full copy of @uri as @copy on @platform.', array('@uri' => $uri, '@copy' => $copy, '@platform' => $plan['source_title'])), 'ok');
+  $leg = _provision_tasks_extra_upgrade_leg('@' . $uri, 'clone', array(
+    'target_platform=' . $plan['source_nid'],
+    'new_uri=' . $copy,
+    'new_db_server=' . $plan['db_nid'],
+    $plan['marker'],
+  ));
+  clearstatcache();
+  if (!$leg['ok'] || _provision_tasks_extra_upgrade_alias_root($copy) === FALSE || !is_file($copy_dir . '/settings.php')) {
+    return _provision_tasks_extra_upgrade_stop($plan, 'the copy of the site could not be made (see above)', FALSE);
+  }
+  // Leg 1a: the Import the Clone queued for the copy, run now. Left to the
+  // queue it would run on the switched-off copy and mark it enabled.
+  $leg = _provision_tasks_extra_upgrade_leg('@' . $copy, 'import');
+  if (!$leg['ok']) {
+    return _provision_tasks_extra_upgrade_stop($plan, 'the copy of the site could not be recorded in the panel (see above)', FALSE);
+  }
+  // Leg 1b.
+  $leg = _provision_tasks_extra_upgrade_leg('@' . $copy, 'disable', array($plan['marker']));
+  if (!$leg['ok']) {
+    return _provision_tasks_extra_upgrade_stop($plan, 'the copy of the site could not be switched off (see above)', FALSE);
+  }
+  drush_log(dt('UPGRADE/1/COPY done: @copy holds the site as it was at @when, switched off.', array('@copy' => $copy, '@when' => $when)), 'ok');
+
+  // Leg 2: the move, three tasks deep.
+  drush_log(dt('UPGRADE/2/MOVE moving @uri onto @platform; Drupal\'s database updates run there.', array('@uri' => $uri, '@platform' => $plan['target_title'])), 'ok');
+  $leg = _provision_tasks_extra_upgrade_leg('@' . $uri, 'migrate', array(
+    'target_platform=' . $plan['target_nid'],
+    'new_uri=' . $uri,
+    'new_db_server=' . $plan['db_nid'],
+    'upgrade_strict=1',
+    $plan['marker'],
+  ));
+  clearstatcache();
+  $root = _provision_tasks_extra_upgrade_alias_root($uri);
+  $known = ($root !== FALSE && $root !== '');
+  $on_target = $known && _provision_tasks_extra_upgrade_same_root($root, $plan['target_root']);
+  $on_source = $known && _provision_tasks_extra_upgrade_same_root($root, $plan['source_root']);
+  $way = ' The way back is ' . $copy . ' (Drupal ' . $plan['source_release'] . ', as it was at ' . $when . ').'
+    . ($plan['return'] ? ' If something is wrong, press Go back on the site page.' : ' It is a full copy of the site, switched off.');
+
+  if ($on_source) {
+    return _provision_tasks_extra_upgrade_stop($plan, _provision_tasks_extra_upgrade_why($leg), TRUE);
+  }
+  if (!$on_target) {
+    // Neither platform by the alias: nothing is removed.
+    return drush_set_error('PROVISION_UPGRADE_UNFINISHED', dt('UPGRADE/RESULT Not finished: the move ended without saying which platform @uri is on (see above). Nothing was removed: the copy @copy is kept. Ask support.', array('@uri' => $uri, '@copy' => $copy)));
+  }
+
+  $kept = _provision_tasks_extra_upgrade_kept_dump($uri, $started);
+  if ($kept !== '') {
+    drush_log(dt('UPGRADE/KEPT the database as it was before the move is kept in @path, for support; the panel\'s Restore does not use it.', array('@path' => $kept)), 'ok');
+  }
+  $base = $uri . ' runs Drupal ' . $plan['target_release'] . ' on ' . $plan['target_title'];
+  $gone = !file_exists($plan['source_root'] . '/sites/' . $uri) && !is_link($plan['source_root'] . '/sites/' . $uri);
+  if (!$leg['ok'] || !$gone || !is_dir($plan['target_root'] . '/sites/' . $uri)) {
+    // The move went through and its tidying did not: the site stays where
+    // it is, and so does the way back.
+    return drush_set_error('PROVISION_UPGRADE_UNFINISHED', dt('UPGRADE/RESULT Upgraded, last step unfinished: !base, but tidying @source failed (see above).!way!stays', array(
+      '!base' => _provision_tasks_extra_no_markup($base),
+      '@source' => $plan['source_title'],
+      '!way' => _provision_tasks_extra_no_markup($way),
+      '!stays' => _provision_tasks_extra_no_markup($plan['stays']),
+    )));
+  }
+
+  $tail = _provision_tasks_extra_no_markup($way . $plan['stays']);
+  if (!_provision_tasks_extra_upgrade_logged($leg, 'UPGRADE/UPDATEDB the database updates completed')) {
+    // The move ran, and nothing shows that its two checks did.
+    drush_log(dt('UPGRADE/RESULT Upgraded, not checked: !base, but the move did not say that the database updates completed or that the pages were read. Look at your site now.!tail', array('!base' => _provision_tasks_extra_no_markup($base), '!tail' => $tail)), 'warning');
+    return;
+  }
+  if (_provision_tasks_extra_upgrade_logged($leg, 'UPGRADE/PAGES not checked') || !_provision_tasks_extra_upgrade_logged($leg, 'UPGRADE/PAGES ')) {
+    drush_log(dt('UPGRADE/RESULT Upgraded, not page-checked: !base; the pages could not be read from this server (see above). Look at your site now.!tail', array('!base' => _provision_tasks_extra_no_markup($base), '!tail' => $tail)), 'warning');
+    return;
+  }
+  $pages = _provision_tasks_extra_upgrade_logged($leg, 'UPGRADE/PAGES ', 'ok') ? '; its home and login pages answer' : '';
+  $warnings = _provision_tasks_extra_upgrade_warnings();
+  if ($warnings) {
+    $first = $warnings[0];
+    if (strlen($first) > 240) {
+      $first = substr($first, 0, 237) . '...';
+    }
+    $more = (count($warnings) > 1) ? ' (and ' . (count($warnings) - 1) . ' more, above)' : '';
+    drush_log(dt('UPGRADE/RESULT Upgraded, with a note: !base!pages, and a step warned: "!first"!more.!tail', array(
+      '!base' => _provision_tasks_extra_no_markup($base),
+      '!pages' => $pages,
+      '!first' => _provision_tasks_extra_no_markup($first),
+      '!more' => $more,
+      '!tail' => $tail,
+    )), 'warning');
+    return;
+  }
+  drush_log(dt('UPGRADE/RESULT Upgraded: !base!pages.!tail', array('!base' => _provision_tasks_extra_no_markup($base), '!pages' => $pages, '!tail' => $tail)), 'success');
 }

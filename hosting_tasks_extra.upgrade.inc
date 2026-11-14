@@ -553,7 +553,9 @@ function _provision_tasks_extra_audit_compare($source, $target) {
  *   'changed' (name => what happened to it). 'appeared' and 'gone' (Drupal
  *   packages on one side only). 'named' (what set the level). 'with' (core's
  *   own libraries that crossed a major inside a core move). 'fixed', 'of',
- *   'open', 'added', 'uncovered' (the security half). 'core_move'.
+ *   'open', 'added', 'uncovered' (the security half). 'core_move'. 'locks'
+ *   FALSE when either side has no lock to read. 'patch_change' when a patch
+ *   definition differs.
  */
 function _provision_tasks_extra_lock_classify($source, $target, $source_audit = NULL, $target_audit = NULL) {
   $out = array(
@@ -576,6 +578,8 @@ function _provision_tasks_extra_lock_classify($source, $target, $source_audit = 
     'uncovered' => array(),
     'core_move' => FALSE,
     'patches_ignored' => array(),
+    'locks' => TRUE,
+    'patch_change' => FALSE,
   );
   $missing = array();
   if (empty($source['ok'])) {
@@ -587,6 +591,7 @@ function _provision_tasks_extra_lock_classify($source, $target, $source_audit = 
   if ($missing) {
     $out['why'] = implode(' and ', $missing);
     $out['security_why'] = $out['why'];
+    $out['locks'] = FALSE;
     return $out;
   }
   $S = $source['packages'];
@@ -628,6 +633,7 @@ function _provision_tasks_extra_lock_classify($source, $target, $source_audit = 
     $changed[$name] = $entry;
   }
   $patches = _provision_tasks_extra_lock_patch_changes($source, $target);
+  $out['patch_change'] = ($patches['packages'] || $patches['unknown']);
   foreach (array_keys($patches['packages']) as $name) {
     if (isset($changed[$name])) {
       $changed[$name]['patched'] = TRUE;
@@ -1282,4 +1288,258 @@ function _provision_tasks_extra_database_floor($modules, $source_root, $target_r
   ksort($out['below']);
   sort($out['not_read']);
   return $out;
+}
+
+/**
+ * The docroot of a platform recorded at its docroot or at its project folder.
+ *
+ * The order the backend's own correction of a platform path takes.
+ */
+function _provision_tasks_extra_docroot($root) {
+  $root = rtrim((string) $root, '/');
+  if ($root === '' || is_file($root . '/index.php')) {
+    return $root;
+  }
+  foreach (array('docroot', 'html', 'web') as $sub) {
+    if (is_file($root . '/' . $sub . '/index.php')) {
+      return $root . '/' . $sub;
+    }
+  }
+  return $root;
+}
+
+/**
+ * The Drupal release a codebase carries, or ''.
+ *
+ * Read as text from core/lib/Drupal.php: no code from the tree is loaded.
+ */
+function _provision_tasks_extra_core_release($root) {
+  $text = _provision_tasks_extra_read_plain(rtrim((string) $root, '/') . '/core/lib/Drupal.php', 1048576);
+  if ($text === FALSE) {
+    return '';
+  }
+  $m = array();
+  if (preg_match('/^[ \t]*const[ \t]+VERSION[ \t]*=[ \t]*([\'"])([0-9]+\.[0-9]+(?:\.[0-9]+)?(?:-[A-Za-z0-9.]+)?)\1[ \t]*;/m', $text, $m)) {
+    return $m[2];
+  }
+  return '';
+}
+
+/**
+ * Whether a root is one of the platforms the system itself ships.
+ */
+function _provision_tasks_extra_upgrade_is_catalogue($root) {
+  return strpos(rtrim((string) $root, '/') . '/', '/distro/') !== FALSE;
+}
+
+/**
+ * The major and the minor of a release, or FALSE.
+ */
+function _provision_tasks_extra_release_numbers($release) {
+  $m = array();
+  if (!preg_match('/^([0-9]+)\.([0-9]+)/', (string) $release, $m)) {
+    return FALSE;
+  }
+  return array((int) $m[1], (int) $m[2]);
+}
+
+/**
+ * Why a codebase is no newer version for a site to move onto, or ''.
+ *
+ * A newer core release, or the same release with a lock that raises or adds
+ * a package or changes a patch; one major up at most; a site below 10.3 does
+ * not go to 11; nothing goes to 12 yet.
+ *
+ * @param string $source
+ *   The release the site runs.
+ * @param string $target
+ *   The release it would move onto.
+ * @param array $diff
+ *   _provision_tasks_extra_lock_classify() of the move.
+ *
+ * @return array
+ *   'why' ('' when it is newer) and 'rule': release, major, floor, same or
+ *   older.
+ */
+function _provision_tasks_extra_upgrade_newer($source, $target, $diff) {
+  $s = _provision_tasks_extra_release_numbers($source);
+  $t = _provision_tasks_extra_release_numbers($target);
+  if ($s === FALSE || $t === FALSE) {
+    return array('rule' => 'release', 'why' => 'the Drupal release of ' . ($s === FALSE ? 'the current platform' : 'the new platform') . ' cannot be read');
+  }
+  if ($s[0] < 10 || $t[0] < 10) {
+    return array('rule' => 'release', 'why' => 'the Upgrade is for Drupal 10 and later, and this is Drupal ' . ($s[0] < 10 ? $source : $target));
+  }
+  if ($t[0] >= 12) {
+    return array('rule' => 'major', 'why' => 'Drupal 12 needs Drush 14, which has no stable release yet');
+  }
+  if (version_compare($target, $source, '<')) {
+    return array('rule' => 'older', 'why' => 'it carries Drupal ' . $target . ', older than the ' . $source . ' this site runs');
+  }
+  if ($t[0] - $s[0] > 1) {
+    return array('rule' => 'major', 'why' => 'Drupal ' . $target . ' is more than one major version above ' . $source . '; upgrade one major version at a time');
+  }
+  if ($t[0] === 11 && $s[0] === 10 && $s[1] < 3) {
+    return array('rule' => 'floor', 'why' => 'this site runs Drupal ' . $source . '; Drupal 11 takes a site from 10.3 or later. Move it to a Drupal 10.3 or later platform first (10.6 is the tested route), then upgrade');
+  }
+  if (version_compare($target, $source, '>')) {
+    return array('rule' => '', 'why' => '');
+  }
+  // The same release: only the locks can show a newer codebase.
+  if (empty($diff['locks'])) {
+    return array('rule' => 'same', 'why' => 'it carries the same Drupal ' . $target . ', and nothing shows it is newer: ' . $diff['why']);
+  }
+  if ($diff['scope'] === 'unchanged') {
+    return array('rule' => 'same', 'why' => 'it carries the same code as the platform this site runs on');
+  }
+  if (!empty($diff['patch_change'])) {
+    return array('rule' => '', 'why' => '');
+  }
+  foreach ($diff['changed'] as $c) {
+    if ($c['side'] === 'target' || ($c['side'] === 'both' && !$c['lower'])) {
+      return array('rule' => '', 'why' => '');
+    }
+  }
+  return array('rule' => 'same', 'why' => 'it carries the same Drupal ' . $target . ' and no package in it is newer');
+}
+
+/**
+ * Why a codebase's own Drush is known to be unable to start, or ''.
+ *
+ * One case, read from what Composer recorded: consolidation/robo 5.2.1 to
+ * 5.2.3 calls a Symfony Console 7.4 method and dies at start on an older
+ * Console. Nothing is run.
+ */
+function _provision_tasks_extra_drush_cannot_start($root) {
+  $app = _provision_tasks_extra_app_root($root);
+  $text = ($app === '') ? FALSE : _provision_tasks_extra_read_plain($app . '/vendor/composer/installed.json');
+  if ($text === FALSE) {
+    return '';
+  }
+  $info = json_decode($text, TRUE);
+  if (!is_array($info)) {
+    return '';
+  }
+  $packages = (isset($info['packages']) && is_array($info['packages'])) ? $info['packages'] : $info;
+  $have = array();
+  foreach ($packages as $package) {
+    if (is_array($package) && isset($package['name'], $package['version']) && is_string($package['name']) && is_string($package['version'])) {
+      $have[$package['name']] = ltrim($package['version'], 'vV');
+    }
+  }
+  if (!isset($have['consolidation/robo'], $have['symfony/console'])) {
+    return '';
+  }
+  $robo = $have['consolidation/robo'];
+  $console = $have['symfony/console'];
+  if (!preg_match('/^[0-9]+\.[0-9]+\.[0-9]+$/', $robo) || !preg_match('/^[0-9]+\.[0-9]+/', $console)) {
+    return '';
+  }
+  if (version_compare($robo, '5.2.1', '>=') && version_compare($robo, '5.2.3', '<=') && version_compare($console, '7.4', '<')) {
+    return 'consolidation/robo ' . $robo . ' needs Symfony Console 7.4; this codebase has ' . $console;
+  }
+  return '';
+}
+
+/**
+ * One list's refusal as a clause, with whose list it is and its file.
+ */
+function _provision_tasks_extra_upgrade_list_refusal($whose, $modes, $allow) {
+  $file = (isset($modes['file']) && $modes['file'] !== '') ? basename($modes['file']) : 'its control file';
+  if ($allow['axis'] === 'unreadable') {
+    $line = empty($modes['line']) ? '' : ', line ' . $modes['line'];
+    return 'upgrades are stopped: drupal_upgrade_modes in ' . $whose . ' ' . $file . $line . ' cannot be read (' . (isset($modes['why']) ? $modes['why'] : 'unknown reason') . ')';
+  }
+  if ($allow['axis'] === 'off') {
+    return 'upgrades are switched off by drupal_upgrade_modes in ' . $whose . ' ' . $file;
+  }
+  return 'the list in ' . $whose . ' ' . $file . ' ' . $allow['why'];
+}
+
+/**
+ * Whether a site may move between two codebases, by what their files say.
+ *
+ * The two releases, the two locks and the two lists: the rules the panel
+ * shows a target by and the backend refuses a run by, in one place and one
+ * order. Each list is asked on its own; the word sets are never merged.
+ *
+ * @param string $source_release
+ *   The release the site runs.
+ * @param string $target_release
+ *   The release it would move onto.
+ * @param array $diff
+ *   _provision_tasks_extra_lock_classify() of the move.
+ * @param array $platform_modes
+ *   _provision_tasks_extra_upgrade_modes() of the current platform's file.
+ * @param array $site_modes
+ *   The same for the site's file.
+ * @param bool $best_effort
+ *   TRUE where an early look must not refuse on what it cannot tell: an
+ *   unknown on an axis a list restricts is then left to the run itself.
+ *
+ * @return array
+ *   'ok'. When FALSE: 'rule' (release, major, floor, same, older, downgrade,
+ *   off, unreadable, scope, level, security) and 'why', a clause with no
+ *   full stop. 'pending' TRUE when best effort passed over an unknown.
+ */
+function _provision_tasks_extra_upgrade_judge($source_release, $target_release, $diff, $platform_modes, $site_modes, $best_effort = FALSE) {
+  $newer = _provision_tasks_extra_upgrade_newer($source_release, $target_release, $diff);
+  if ($newer['why'] !== '') {
+    return array('ok' => FALSE, 'rule' => $newer['rule'], 'why' => $newer['why'], 'pending' => FALSE);
+  }
+  if ($diff['downgrades']) {
+    $parts = array();
+    foreach ($diff['downgrades'] as $name => $text) {
+      $parts[] = $name . ' (' . $text . ')';
+    }
+    return array(
+      'ok' => FALSE,
+      'rule' => 'downgrade',
+      'why' => 'it carries an older version of ' . _provision_tasks_extra_upgrade_names($parts) . ' than this site runs now',
+      'pending' => FALSE,
+    );
+  }
+  $pending = FALSE;
+  foreach (array("the platform's" => $platform_modes, "this site's" => $site_modes) as $whose => $modes) {
+    $allow = _provision_tasks_extra_upgrade_modes_allow($modes, $diff);
+    if ($allow['allowed']) {
+      continue;
+    }
+    $unknown = ($allow['axis'] === 'scope' && $diff['scope'] === 'unknown')
+      || ($allow['axis'] === 'level' && $diff['level'] === 'unknown')
+      || ($allow['axis'] === 'security' && $diff['security'] === NULL);
+    if ($best_effort && $unknown) {
+      $pending = TRUE;
+      continue;
+    }
+    return array(
+      'ok' => FALSE,
+      'rule' => $allow['axis'],
+      'why' => _provision_tasks_extra_upgrade_list_refusal($whose, $modes, $allow),
+      'pending' => FALSE,
+    );
+  }
+  return array('ok' => TRUE, 'rule' => '', 'why' => '', 'pending' => $pending);
+}
+
+/**
+ * Why a site's database is too old for a target, as one clause, or ''.
+ *
+ * @param array $floor
+ *   _provision_tasks_extra_database_floor() of the site and the target.
+ * @param string $target_release
+ *   The release the site would move onto.
+ */
+function _provision_tasks_extra_database_floor_text($floor, $target_release) {
+  if (empty($floor['below'])) {
+    return '';
+  }
+  $parts = array();
+  foreach ($floor['below'] as $name => $pair) {
+    $parts[] = $name . ' is at update ' . (int) $pair[0] . ', the new code needs ' . (int) $pair[1];
+  }
+  $numbers = _provision_tasks_extra_release_numbers($target_release);
+  return "this site's database is too old for Drupal " . ($numbers === FALSE ? $target_release : $numbers[0]) . ': '
+    . _provision_tasks_extra_upgrade_names($parts)
+    . '. Migrate the site onto another Drupal 10.3 or later platform first (10.6 is the tested route): the Migrate runs its database updates. Then upgrade. If the site changed since it was last verified (its updates were run, or a backup was restored), verify it and try again';
 }
