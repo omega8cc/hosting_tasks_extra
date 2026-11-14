@@ -397,7 +397,11 @@ function hosting_tasks_extra_drupal_upgrade_return_apply($node, $record, $bare =
  * Implements hook_post_hosting_TASK_TYPE_task().
  */
 function hosting_tasks_extra_post_hosting_drupal_upgrade_return_task($task, $data) {
-  hosting_tasks_extra_drupal_upgrade_return_end($task);
+  // The backend ended well, so the copy holds the site's name on disk. Where
+  // the panel's records do not show it, the task says so.
+  if (hosting_tasks_extra_drupal_upgrade_return_end($task) !== 'back') {
+    drush_log(dt('GOBACK/PANEL the copy was put back, and the panel\'s record of it did not follow: the restored site may still be listed under the copy\'s name, without the settings of the live site. Ask support.'), 'warning');
+  }
 }
 
 /**
@@ -417,18 +421,22 @@ function hosting_tasks_extra_hosting_drupal_upgrade_return_task_rollback($task, 
  * name again, it gets its own settings back. A Verify of each site that was
  * changed writes it out. A run that left the name with neither changes
  * nothing here: the next run finishes it.
+ *
+ * @return string
+ *   'back' where the copy holds the name, 'kept' where the upgraded site
+ *   does, '' otherwise.
  */
 function hosting_tasks_extra_drupal_upgrade_return_end($task) {
   hosting_tasks_extra_drupal_upgrade_cancel_steps($task, 'Go back');
   $record = isset($task->task_args) && is_array($task->task_args) ? $task->task_args : array();
   if (empty($record['return_domain']) || empty($record['return_aside']) || empty($record['return_copy_nid'])) {
-    return;
+    return '';
   }
   $domain = $record['return_domain'];
   $site = node_load($task->rid, NULL, TRUE);
   $copy = node_load($record['return_copy_nid'], NULL, TRUE);
   if (!is_object($site) || $site->type != 'site') {
-    return;
+    return '';
   }
   $site_name = hosting_site_clean_domain($site->title);
   if (is_object($copy) && $copy->type == 'site' && hosting_site_clean_domain($copy->title) == $domain && $site_name == $record['return_aside']) {
@@ -438,7 +446,7 @@ function hosting_tasks_extra_drupal_upgrade_return_end($task) {
     hosting_add_task($site->nid, 'verify');
     hosting_tasks_extra_drupal_upgrade_return_apply($copy, $record);
     hosting_add_task($copy->nid, 'verify');
-    return;
+    return 'back';
   }
   if ($site_name == $domain && $site->site_status == HOSTING_SITE_ENABLED) {
     // Not gone back: the upgraded site holds its name, after a rename away
@@ -446,7 +454,9 @@ function hosting_tasks_extra_drupal_upgrade_return_end($task) {
     if (hosting_tasks_extra_drupal_upgrade_return_apply($site, $record)) {
       hosting_add_task($site->nid, 'verify');
     }
+    return 'kept';
   }
+  return '';
 }
 
 /**
