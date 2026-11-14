@@ -37,6 +37,19 @@ function _provision_tasks_extra_read_plain($path, $max = 33554432) {
 }
 
 /**
+ * Whether a path that lstat() does not find is known to be missing.
+ *
+ * FALSE when a folder on the way cannot be searched: the file may be there.
+ */
+function _provision_tasks_extra_known_missing($path) {
+  $dir = dirname($path);
+  while (@lstat($dir) === FALSE && $dir !== '/' && $dir !== '.' && $dir !== '' && dirname($dir) !== $dir) {
+    $dir = dirname($dir);
+  }
+  return @is_dir($dir) && @is_executable($dir);
+}
+
+/**
  * The folder holding the platform's composer.lock, or ''.
  *
  * The docroot when it holds the lock and vendor, or the folder above it when the
@@ -719,7 +732,13 @@ function _provision_tasks_extra_lock_classify($source, $target, $source_audit = 
         $covered = $sset['packages'] + $tset['packages'];
       }
       $covered += _provision_tasks_extra_lock_reach($T, array_keys($advised), $tstop, $tindex);
-      $covered += _provision_tasks_extra_lock_reach($S, array_keys($advised), $sstop, $sindex);
+      // The source lock is walked only for what the move removes: a kept
+      // package is covered by what the advised package reaches now.
+      foreach (_provision_tasks_extra_lock_reach($S, array_keys($advised), $sstop, $sindex) as $name => $true) {
+        if (!isset($T[$name])) {
+          $covered[$name] = TRUE;
+        }
+      }
       foreach ($changed as $name => $c) {
         if (!isset($covered[$name])) {
           $out['uncovered'][] = $name;
@@ -839,9 +858,17 @@ function _provision_tasks_extra_lock_classify($source, $target, $source_audit = 
   $out['level'] = $level;
 
   if ($patches['unknown']) {
-    $out['scope'] = 'unknown';
-    $out['level'] = 'unknown';
+    // One change belongs to no package: what is known stands only where
+    // nothing could be added to it.
     $out['why'] = 'a patch definition changed in a file that cannot be read package by package';
+    if ($out['scope'] !== 'full') {
+      $out['scope'] = 'unknown';
+    }
+    $out['level'] = _provision_tasks_extra_lock_larger($level, 'unknown');
+    if ($out['security'] === TRUE) {
+      $out['security'] = NULL;
+      $out['security_why'] = $out['why'];
+    }
   }
   elseif ($level === 'unknown') {
     $out['why'] = 'the size of the step cannot be told for ' . _provision_tasks_extra_upgrade_names($out['named']);
@@ -898,10 +925,11 @@ function _provision_tasks_extra_upgrade_kind_text($diff) {
   $levels = array('patch' => 'a patch update', 'minor' => 'a minor update', 'major' => 'a major update');
   $line = isset($scopes[$diff['scope']]) ? $scopes[$diff['scope']] : 'what it changes cannot be told';
   $line .= ', ' . (isset($levels[$diff['level']]) ? $levels[$diff['level']] : 'an update whose size cannot be told');
-  // Core and its companions are said by the scope; the notes name the rest.
+  // Core is said by the scope, and so are its companions when they move with
+  // a core release; the notes name the rest.
   $named = array();
   foreach ($diff['named'] as $name) {
-    if (!_provision_tasks_extra_lock_is_core_name($name)) {
+    if ($name !== 'drupal/core' && !($diff['core_move'] && _provision_tasks_extra_lock_is_core_name($name))) {
       $named[] = $name;
     }
   }
@@ -1033,14 +1061,20 @@ function _provision_tasks_extra_upgrade_modes_parse($text) {
  * Never parse_ini_file(): one bad character elsewhere in the file makes that
  * return nothing, and a list that reads as absent accepts everything. A file
  * that is not there is an absent list; one that is there and cannot be read
- * as a plain file is unreadable.
+ * as a plain file, or whose folder cannot be searched, is unreadable.
  *
  * @return array
  *   See _provision_tasks_extra_upgrade_modes_parse(); 'file' is added.
  */
 function _provision_tasks_extra_upgrade_modes($file) {
+  if (strpos($file, "\0") !== FALSE) {
+    return array('state' => 'unreadable', 'line' => 0, 'why' => 'its name is no file name', 'file' => '');
+  }
   clearstatcache(TRUE, $file);
   if (@lstat($file) === FALSE) {
+    if (!_provision_tasks_extra_known_missing($file)) {
+      return array('state' => 'unreadable', 'line' => 0, 'why' => 'its folder cannot be read', 'file' => $file);
+    }
     return array('state' => 'absent', 'file' => $file);
   }
   $text = _provision_tasks_extra_read_plain($file, 1048576);
@@ -1168,12 +1202,12 @@ function _provision_tasks_extra_upgrade_modes_text($modes) {
  *
  * @return int|false|null
  *   The number; NULL when there is no such file or it names no such function;
- *   FALSE when the file cannot be read, or names the function in a shape the
- *   expression does not match.
+ *   FALSE when the file cannot be read or reached, or names the function in a
+ *   shape the expression does not match.
  */
 function _provision_tasks_extra_update_last_removed($install_file, $module) {
   if (@lstat($install_file) === FALSE) {
-    return NULL;
+    return _provision_tasks_extra_known_missing($install_file) ? NULL : FALSE;
   }
   $source = _provision_tasks_extra_read_plain($install_file, 8388608);
   if ($source === FALSE) {

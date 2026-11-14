@@ -8,8 +8,11 @@
  */
 
 // The readers of a tenant's tree and what judges a move between two
-// codebases: one file, which the panel loads too.
-include_once dirname(__FILE__) . '/../hosting_tasks_extra.upgrade.inc';
+// codebases: one file, which the panel loads too. Another copy of it may be
+// loaded already while the panel moves to a new tree.
+if (!function_exists('_provision_tasks_extra_read_plain')) {
+  include_once dirname(__FILE__) . '/../hosting_tasks_extra.upgrade.inc';
+}
 
 /**
  * Implementation of hook_drush_command().
