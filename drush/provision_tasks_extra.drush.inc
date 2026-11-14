@@ -7,6 +7,10 @@
  * These are the hooks that will be executed by the drush_invoke function.
  */
 
+// The readers of a tenant's tree and what judges a move between two
+// codebases: one file, which the panel loads too.
+include_once dirname(__FILE__) . '/../hosting_tasks_extra.upgrade.inc';
+
 /**
  * Implementation of hook_drush_command().
  */
@@ -263,20 +267,41 @@ function _provision_tasks_extra_release_types($release) {
 
 /**
  * Drupal 8 and newer: composer audit of the platform's lock.
+ */
+function _provision_tasks_extra_updates_report_audit() {
+  drush_log(dt('Available updates ###---### composer audit --locked ###---### start'), 'notice');
+  $audit = _provision_tasks_extra_lock_advisories(d()->root);
+  if ($audit['lines'] === FALSE) {
+    drush_log(dt('Available updates ###---### advisories: unknown (@why)', array('@why' => $audit['why'])), 'success');
+    return;
+  }
+  $lines = $audit['lines'];
+  drush_log(dt('Available updates ###---### read from @path: the whole platform, not only what this site installed.', array('@path' => _provision_tasks_extra_no_markup($audit['lock']))), 'notice');
+  _provision_tasks_extra_updates_report_log($lines);
+  drush_log(dt('Available updates ###---### @first', array('@first' => $lines[0])), 'success');
+}
+
+/**
+ * The advisory report of one codebase's lock.
  *
  * It works on a disposable copy, never in the platform: Composer runs a
  * composer.json's init and pre-command-run scripts even for audit, which would
  * run tenant code as this user, and a platform's config and repositories can
  * hide advisories. The copy's composer.json declares drupal.org's repository,
  * the only way its advisories reach composer audit.
+ *
+ * @param string $root
+ *   A platform's docroot.
+ *
+ * @return array
+ *   'lines': the report's lines, FALSE when no audit finished. 'why': the
+ *   reason when it did not. 'lock': the path of the lock that was read.
  */
-function _provision_tasks_extra_updates_report_audit() {
-  drush_log(dt('Available updates ###---### composer audit --locked ###---### start'), 'notice');
-  $app = _provision_tasks_extra_app_root(d()->root);
+function _provision_tasks_extra_lock_advisories($root) {
+  $app = _provision_tasks_extra_app_root($root);
   $lock = ($app === '') ? FALSE : _provision_tasks_extra_read_plain($app . '/composer.lock');
   if ($lock === FALSE) {
-    drush_log(dt('Available updates ###---### advisories: unknown (no composer.lock at the platform root)'), 'success');
-    return;
+    return array('lines' => FALSE, 'why' => 'no composer.lock at the platform root', 'lock' => '');
   }
   // Only what the platform carries is audited.
   $dev = '';
@@ -298,8 +323,7 @@ function _provision_tasks_extra_updates_report_audit() {
     if ($scratch !== FALSE) {
       _provision_tasks_extra_scratch_remove($scratch);
     }
-    drush_log(dt('Available updates ###---### advisories: unknown (cannot write the audit copy)'), 'success');
-    return;
+    return array('lines' => FALSE, 'why' => 'cannot write the audit copy', 'lock' => $app . '/composer.lock');
   }
   // A home of its own, so no global Composer config (ignore lists,
   // ignore-unreachable) reaches the audit. The exit code is not the verdict:
@@ -317,13 +341,10 @@ function _provision_tasks_extra_updates_report_audit() {
   $lines = ($ran === NULL) ? FALSE : _provision_tasks_extra_audit_lines($audit, $lock, $dev !== '');
   if ($lines === FALSE) {
     $why = ($ran === NULL) ? 'it ran out of time' : _provision_tasks_extra_audit_why($err);
-    drush_log(dt('Available updates ###---### advisories: unknown (composer audit did not finish: @why)', array('@why' => $why)), 'success');
-    return;
+    return array('lines' => FALSE, 'why' => 'composer audit did not finish: ' . $why, 'lock' => $app . '/composer.lock');
   }
   $lines[] = ($dev !== '') ? '# require-dev: not installed in the platform, not audited' : '# require-dev: audited (installed, or no installed.json to tell)';
-  drush_log(dt('Available updates ###---### read from @path: the whole platform, not only what this site installed.', array('@path' => _provision_tasks_extra_no_markup($app . '/composer.lock'))), 'notice');
-  _provision_tasks_extra_updates_report_log($lines);
-  drush_log(dt('Available updates ###---### @first', array('@first' => $lines[0])), 'success');
+  return array('lines' => $lines, 'why' => '', 'lock' => $app . '/composer.lock');
 }
 
 /**
@@ -341,25 +362,6 @@ function _provision_tasks_extra_updates_report_log($lines) {
  */
 function _provision_tasks_extra_no_markup($text) {
   return str_replace(array('<', '>'), '', $text);
-}
-
-/**
- * The folder holding the platform's composer.lock, or ''.
- *
- * The docroot when it holds the lock and vendor, or the folder above it when the
- * docroot's own autoload.php says so, as a Composer project's scaffold writes it. A
- * lock anywhere else is not this platform's, whatever folder it lies in.
- */
-function _provision_tasks_extra_app_root($root) {
-  $root = rtrim($root, '/');
-  if (is_dir($root . '/vendor') && is_file($root . '/composer.lock')) {
-    return $root;
-  }
-  $autoload = _provision_tasks_extra_read_plain($root . '/autoload.php', 65536);
-  if ($autoload !== FALSE && strpos($autoload, '/../vendor/autoload.php') !== FALSE && is_dir(dirname($root) . '/vendor')) {
-    return dirname($root);
-  }
-  return '';
 }
 
 /**
@@ -433,32 +435,6 @@ function _provision_tasks_extra_exec($command, $dir, $out, $err, $limit = 900) {
     }
     usleep(100000);
   }
-}
-
-/**
- * The bytes of a plain file in a codebase the account can write, or FALSE.
- *
- * This runs as the backend user on a tenant's tree: a link or a FIFO planted
- * under the name is never followed, also when it is swapped in between the check
- * and the open, and the size is bounded. "n" opens without blocking on a FIFO.
- */
-function _provision_tasks_extra_read_plain($path, $max = 33554432) {
-  $before = @lstat($path);
-  if ($before === FALSE || ($before['mode'] & 0170000) !== 0100000 || $before['size'] > $max) {
-    return FALSE;
-  }
-  $handle = @fopen($path, 'rn');
-  if ($handle === FALSE) {
-    return FALSE;
-  }
-  $now = fstat($handle);
-  if ($now === FALSE || $now['ino'] !== $before['ino'] || $now['dev'] !== $before['dev']) {
-    fclose($handle);
-    return FALSE;
-  }
-  $bytes = stream_get_contents($handle, $max);
-  fclose($handle);
-  return $bytes;
 }
 
 /**
