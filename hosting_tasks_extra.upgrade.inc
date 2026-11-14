@@ -231,12 +231,17 @@ function _provision_tasks_extra_lock_providers($packages) {
  *   The names to start at; each is in the result when it is locked.
  * @param array $stop
  *   name => TRUE for packages the walk never enters.
+ * @param array|null $index
+ *   _provision_tasks_extra_lock_providers() of the same packages, when the
+ *   caller walks them more than once.
  *
  * @return array
  *   name => TRUE.
  */
-function _provision_tasks_extra_lock_reach($packages, $from, $stop = array()) {
-  $index = _provision_tasks_extra_lock_providers($packages);
+function _provision_tasks_extra_lock_reach($packages, $from, $stop = array(), $index = NULL) {
+  if ($index === NULL) {
+    $index = _provision_tasks_extra_lock_providers($packages);
+  }
   $seen = array();
   $todo = array();
   foreach ($from as $name) {
@@ -278,11 +283,13 @@ function _provision_tasks_extra_lock_reach($packages, $from, $stop = array()) {
  * @param bool $tooling
  *   FALSE leaves out what only the development companion (drupal/core-dev)
  *   brings: its advisories are no core advisories.
+ * @param array|null $index
+ *   See _provision_tasks_extra_lock_reach().
  *
  * @return array
  *   'packages' and 'names', each name => TRUE.
  */
-function _provision_tasks_extra_lock_core_set($packages, $tooling = TRUE) {
+function _provision_tasks_extra_lock_core_set($packages, $tooling = TRUE, $index = NULL) {
   $roots = array();
   $names = array();
   foreach ($packages as $name => $p) {
@@ -299,7 +306,7 @@ function _provision_tasks_extra_lock_core_set($packages, $tooling = TRUE) {
       }
     }
   }
-  return array('packages' => _provision_tasks_extra_lock_reach($packages, $roots), 'names' => $names);
+  return array('packages' => _provision_tasks_extra_lock_reach($packages, $roots, array(), $index), 'names' => $names);
 }
 
 /**
@@ -571,8 +578,10 @@ function _provision_tasks_extra_lock_classify($source, $target, $source_audit = 
   }
   $S = $source['packages'];
   $T = $target['packages'];
-  $sset = _provision_tasks_extra_lock_core_set($S);
-  $tset = _provision_tasks_extra_lock_core_set($T);
+  $sindex = _provision_tasks_extra_lock_providers($S);
+  $tindex = _provision_tasks_extra_lock_providers($T);
+  $sset = _provision_tasks_extra_lock_core_set($S, TRUE, $sindex);
+  $tset = _provision_tasks_extra_lock_core_set($T, TRUE, $tindex);
 
   // Every changed package, placed and measured.
   $changed = array();
@@ -691,7 +700,7 @@ function _provision_tasks_extra_lock_classify($source, $target, $source_audit = 
       $out['security_why'] = 'it fixes no security advisory';
     }
     else {
-      $sproper = _provision_tasks_extra_lock_core_set($S, FALSE);
+      $sproper = _provision_tasks_extra_lock_core_set($S, FALSE, $sindex);
       $core_advisory = FALSE;
       foreach ($compare['cleared'] as $pair) {
         $cols = explode("\t", $pair);
@@ -709,8 +718,8 @@ function _provision_tasks_extra_lock_classify($source, $target, $source_audit = 
       if ($core_advisory) {
         $covered = $sset['packages'] + $tset['packages'];
       }
-      $covered += _provision_tasks_extra_lock_reach($T, array_keys($advised), $tstop);
-      $covered += _provision_tasks_extra_lock_reach($S, array_keys($advised), $sstop);
+      $covered += _provision_tasks_extra_lock_reach($T, array_keys($advised), $tstop, $tindex);
+      $covered += _provision_tasks_extra_lock_reach($S, array_keys($advised), $sstop, $sindex);
       foreach ($changed as $name => $c) {
         if (!isset($covered[$name])) {
           $out['uncovered'][] = $name;
@@ -758,7 +767,7 @@ function _provision_tasks_extra_lock_classify($source, $target, $source_audit = 
     foreach (array_keys($advised) as $from) {
       if (isset($S[$from], $T[$from])) {
         $its = _provision_tasks_extra_lock_step($S[$from], $T[$from]);
-        $advised_reach[$from] = array('step' => $its['step'], 'reach' => _provision_tasks_extra_lock_reach($T, array($from), $tstop));
+        $advised_reach[$from] = array('step' => $its['step'], 'reach' => _provision_tasks_extra_lock_reach($T, array($from), $tstop, $tindex));
       }
     }
   }
