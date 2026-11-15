@@ -81,7 +81,7 @@ function hosting_tasks_extra_task_accounts($task) {
   if ($name !== '' && $name !== $account->name) {
     $queuer = user_load_by_name($name);
     if (!is_object($queuer) || empty($queuer->status)) {
-      return 'the user who queued this task is not known or is blocked';
+      return 'the user who queued this task again, ' . $name . ', is not known or is blocked';
     }
     $accounts[] = $queuer;
   }
@@ -330,6 +330,17 @@ function hosting_tasks_extra_drupal_upgrade_return_start($task) {
   }
   if ($state['state'] === 'resume') {
     $record = $state['record'];
+    if (hosting_site_clean_domain($site->title) === $record['return_domain']) {
+      // Under its own name again: the renames drop HTTPS, nothing else that
+      // stays with the node. The rest is the live site's own, which may have
+      // been changed since the run that stopped.
+      $live = hosting_tasks_extra_drupal_upgrade_return_settings($site);
+      $https = array();
+      if (!empty($record['return_ssl_enabled']) && empty($live['return_ssl_enabled'])) {
+        $https = array('return_ssl_enabled' => $record['return_ssl_enabled'], 'return_ssl_key' => isset($record['return_ssl_key']) ? $record['return_ssl_key'] : '');
+      }
+      $record = $https + $live + $record;
+    }
   }
   else {
     // The name the upgraded site is kept under: only a site or an alias
@@ -476,7 +487,7 @@ function hosting_tasks_extra_drupal_upgrade_return_apply($node, $record, $bare =
 function hosting_tasks_extra_post_hosting_drupal_upgrade_return_task($task, $data) {
   // The backend ended well, so the copy holds the site's name on disk. Where
   // the panel's records do not show it, the task says so.
-  if (hosting_tasks_extra_drupal_upgrade_return_end($task, $data) !== 'back') {
+  if (hosting_tasks_extra_drupal_upgrade_return_end($task, $data, TRUE) !== 'back') {
     drush_log(dt('GOBACK/PANEL the copy was put back, and the panel\'s record of it did not follow: the restored site may still be listed under the copy\'s name, without the settings of the live site. Ask support.'), 'warning');
   }
 }
@@ -497,32 +508,35 @@ function hosting_tasks_extra_hosting_drupal_upgrade_return_task_rollback($task, 
  * then gets what the first run recorded; where the upgraded site holds its
  * name again, it gets its own settings back, also when the step that was to
  * switch it on failed. A Verify of each site that was changed writes it
- * out; a site the panel holds as switched off is written by its Enable. A
- * run that left the name with neither changes nothing here: the next run
- * finishes it.
+ * out. A run that left the name with neither changes nothing here: the next
+ * run finishes it.
  *
  * Every end leaves its mark on the run's own row (return_end), which is
  * what tells a later run whether this one finished
  * (_provision_tasks_extra_return_offer()): 'stuck' where the backend ended
- * in a state no run can go on from, else 'back', 'kept' or 'open'.
+ * in a state no run can go on from, 'panel' where it ended well and the
+ * panel's records did not follow (a later run would only say so again),
+ * else 'back', 'kept' or 'open'.
  *
  * @param object $task
  *   The Go back task.
  * @param mixed $data
  *   What the backend returned.
+ * @param bool $ended_well
+ *   Called from the post hook: the backend ended well.
  *
  * @return string
  *   'back' where the copy holds the name, 'kept' where the upgraded site
  *   does, '' otherwise.
  */
-function hosting_tasks_extra_drupal_upgrade_return_end($task, $data = NULL) {
+function hosting_tasks_extra_drupal_upgrade_return_end($task, $data = NULL, $ended_well = FALSE) {
   hosting_tasks_extra_drupal_upgrade_cancel_steps($task, 'Go back');
   $record = isset($task->task_args) && is_array($task->task_args) ? $task->task_args : array();
   if (empty($record['return_domain']) || empty($record['return_aside']) || empty($record['return_copy_nid'])) {
     return '';
   }
   $end = hosting_tasks_extra_drupal_upgrade_return_settle($task, $record);
-  $mark = ($end === '') ? 'open' : $end;
+  $mark = ($end !== '') ? $end : ($ended_well ? 'panel' : 'open');
   if (is_array($data) && !empty($data['error_log']) && is_array($data['error_log']) && isset($data['error_log']['PROVISION_UPGRADE_RETURN_STUCK'])) {
     $mark = 'stuck';
   }
@@ -555,10 +569,11 @@ function hosting_tasks_extra_drupal_upgrade_return_settle($task, $record) {
   }
   if ($site_name == $domain) {
     // Not gone back: the upgraded site holds its name, after a rename away
-    // and back when a step ran. What that dropped is put back. A Verify of a
-    // site the panel holds as switched off would switch it off on the
-    // server too, where the rename left it served.
-    if (hosting_tasks_extra_drupal_upgrade_return_apply($site, $record) && $site->site_status == HOSTING_SITE_ENABLED) {
+    // and back when a step ran. What that dropped is put back, also on a
+    // site the panel holds as switched off (the Enable after the rename back
+    // failed): its Verify writes the settings and leaves the site as served
+    // as its own record says, and an Enable saves none of them.
+    if (hosting_tasks_extra_drupal_upgrade_return_apply($site, $record)) {
       hosting_add_task($site->nid, 'verify');
     }
     return 'kept';

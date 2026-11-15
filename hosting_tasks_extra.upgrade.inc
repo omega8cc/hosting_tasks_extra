@@ -1648,10 +1648,10 @@ function _provision_tasks_extra_upgrade_run_moved($failed, $copy_kept, $codes) {
  * What a Go back row says a later run on a site node has to do.
  *
  * Read from the mark the run's own end left on its row (return_end: 'back',
- * 'kept', 'open' or 'stuck', and 'pending' from its start until then), not
- * from the row's status: a runner that is killed reaches no end, and the
- * panel's "Update status" sets a status from whatever its log holds by then.
- * A row from before the mark is read by its status, as it was.
+ * 'kept', 'panel', 'open' or 'stuck', and 'pending' from its start until
+ * then), not from the row's status: a runner that is killed reaches no end,
+ * and the panel's "Update status" sets a status from whatever its log holds
+ * by then. A row from before the mark is read by its status, as it was.
  *
  * @param string $title
  *   The node's name now.
@@ -1664,13 +1664,15 @@ function _provision_tasks_extra_upgrade_run_moved($failed, $copy_kept, $codes) {
  * @param int $upgrade
  *   The node id of the newest Upgrade that moved the site and left it where
  *   it is, 0 for none.
+ * @param bool $renamed
+ *   The row's run started a rename of its own (a step row of it).
  *
  * @return string
  *   'resume' (a later run finishes it from the row's record), 'busy', 'done',
  *   'stuck' (stopped where no run can go on), or '' when the row says
  *   nothing about the node as it is now.
  */
-function _provision_tasks_extra_return_offer($title, $record, $under_way, $failed, $upgrade) {
+function _provision_tasks_extra_return_offer($title, $record, $under_way, $failed, $upgrade, $renamed = FALSE) {
   $aside = isset($record['return_aside']) ? (string) $record['return_aside'] : '';
   $domain = isset($record['return_domain']) ? (string) $record['return_domain'] : '';
   if ($aside === '' || $domain === '') {
@@ -1687,12 +1689,13 @@ function _provision_tasks_extra_return_offer($title, $record, $under_way, $faile
     if ($end === 'stuck') {
       return 'stuck';
     }
-    return ($end === 'back' || $end === 'kept') ? 'done' : 'resume';
+    return ($end === 'back' || $end === 'kept' || $end === 'panel') ? 'done' : 'resume';
   }
-  // Under its own name again, after a run that never reached its end (killed
-  // once it had renamed the upgraded site back, say): the renames may have
-  // dropped settings only that run's record still holds.
-  if ($title === $domain && $end === 'pending' && !$under_way && (int) $upgrade > 0
+  // Under its own name again, after a run that never reached its end and
+  // had begun to rename (killed once it had renamed the upgraded site back,
+  // say): the renames may have dropped settings only that run's record
+  // still holds. One killed before any rename changed nothing.
+  if ($title === $domain && $end === 'pending' && !$under_way && $renamed && (int) $upgrade > 0
     && isset($record['return_upgrade']) && (int) $record['return_upgrade'] === (int) $upgrade) {
     return 'resume';
   }

@@ -86,6 +86,7 @@ function provision_tasks_extra_drush_command() {
       'return_when' => 'When the copy was made, for the log.',
       'return_aside_on' => 'Set when the panel holds the upgraded site as switched on.',
       'return_copy_on' => 'Set when the panel holds the copy as switched on.',
+      'return_copy_was_on' => 'Set when the copy was switched on before Go back began.',
       'return_copy_secs' => 'How long the site\'s newest Backup or Clone took, in seconds.',
       'return_ceiling' => 'How long one task may run, in seconds.',
     ),
@@ -1697,6 +1698,9 @@ function _provision_tasks_extra_upgrade_leg($context, $type, $args = array(), $q
       'codes' => $codes,
       'errors' => $errors,
       'log' => (is_array($result) && isset($result['log']) && is_array($result['log'])) ? $result['log'] : array(),
+      // What a step that ended with no closing report printed, as Drush
+      // gave it back.
+      'output' => (is_array($result) && !array_key_exists('error_log', $result) && isset($result['output']) && is_string($result['output'])) ? $result['output'] : '',
     );
   }
   return array(
@@ -1737,6 +1741,11 @@ function _provision_tasks_extra_quiet_invoke($target, $command, $arguments, $dat
 
 /**
  * Logs here what a quiet leg logged, its errors as warnings when $demote.
+ *
+ * A step run by a task is in Drush's backend mode, where an error goes to
+ * the caller and into no line of the step's own log: its errors are logged
+ * after its log, and after them what a step that ended with no closing
+ * report printed last.
  */
 function _provision_tasks_extra_upgrade_replay($leg, $demote) {
   foreach ($leg['log'] as $entry) {
@@ -1749,6 +1758,16 @@ function _provision_tasks_extra_upgrade_replay($leg, $demote) {
       $type = 'warning';
     }
     drush_log($message, $type);
+  }
+  foreach ($leg['errors'] as $error) {
+    drush_log((string) $error, $demote ? 'warning' : 'error');
+  }
+  $output = isset($leg['output']) ? trim((string) $leg['output']) : '';
+  if ($output !== '') {
+    if (strlen($output) > 2000) {
+      $output = '...' . substr($output, -2000);
+    }
+    drush_log('The step ended with no closing report; what it printed last: ' . $output, 'warning');
   }
 }
 
@@ -2519,6 +2538,11 @@ function _provision_tasks_extra_return_plan() {
     // (step 3), with the checks of its own rename.
     $plan['no_copy'] = $copy_fault;
   }
+  // Put back already, the copy serves the name from that platform: a run
+  // that only finishes it must not say so of a platform with no code.
+  if ($stage === 'back' && !is_file($old_root . '/core/lib/Drupal.php')) {
+    return $old_title . ' holds no Drupal code any more, so the copy cannot be served from it';
+  }
   elseif ($stage !== 'back') {
     $renames[] = array('path' => $old_root . '/sites/' . $copy, 'root' => $old_root);
   }
@@ -2604,12 +2628,13 @@ function drush_provision_tasks_extra_provision_drupal_upgrade_return_validate() 
 /**
  * Ends a Go back that left neither version under the site's name.
  */
-function _provision_tasks_extra_return_unfinished($plan, $why) {
-  return drush_set_error('PROVISION_UPGRADE_RETURN_UNFINISHED', dt('GOBACK/RESULT Not finished: !why@domain is not being served right now. Both versions are intact (@aside and @copy). Press Go back again to finish, or ask support.', array(
+function _provision_tasks_extra_return_unfinished($plan, $why, $tail = '') {
+  return drush_set_error('PROVISION_UPGRADE_RETURN_UNFINISHED', dt('GOBACK/RESULT Not finished: !why@domain is not being served right now. Both versions are intact (@aside and @copy).!tail Press Go back again to finish, or ask support.', array(
     '!why' => ($why === '') ? '' : _provision_tasks_extra_no_markup($why) . '. ',
     '@domain' => $plan['domain'],
     '@aside' => $plan['aside'],
     '@copy' => $plan['copy'],
+    '!tail' => _provision_tasks_extra_no_markup($tail),
   )));
 }
 
@@ -2789,10 +2814,11 @@ function drush_provision_tasks_extra_provision_drupal_upgrade_return() {
       $both = ($why === '') ? $back : $why . ', and then ' . $back;
       // Undone by its own rollback, the rename left the name free and both
       // versions where they were: a later run tries again.
+      $on = ($copy_enabled || ($plan['copy_on'] && !$plan['copy_was_on'])) ? ' The copy ' . $copy . ' is switched on.' : '';
       if ($stage === 'aside') {
-        return _provision_tasks_extra_return_unfinished($plan, $both);
+        return _provision_tasks_extra_return_unfinished($plan, $both, $on);
       }
-      return _provision_tasks_extra_return_stuck($plan, $both);
+      return _provision_tasks_extra_return_stuck($plan, $both, $on);
     }
     // A rename brings the site out switched on in the backend; the panel
     // still holds it as switched off.

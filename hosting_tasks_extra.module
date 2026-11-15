@@ -1346,15 +1346,24 @@ function hosting_tasks_extra_drupal_upgrade_return_state($node, $account, $excep
   if ($row) {
     $record = db_query("SELECT name, value FROM {hosting_task_arguments} WHERE vid = :vid AND name LIKE :prefix", array(':vid' => $row->vid, ':prefix' => db_like('return_') . '%'))->fetchAllKeyed();
     // Under its own name again, a run is finished only for the Upgrade it
-    // went back from.
+    // went back from, and only one that had begun to rename.
     $upgrade = 0;
+    $renamed = FALSE;
     if (isset($record['return_domain']) && $record['return_domain'] === $title) {
       $newest = hosting_tasks_extra_drupal_upgrade_left($node);
       $upgrade = (int) $newest['task'];
+      $renamed = (bool) db_query_range("SELECT 1 FROM {hosting_task_arguments} a
+          INNER JOIN {hosting_task_arguments} s ON s.vid = a.vid AND s.name = :step AND s.value IN (:renames)
+        WHERE a.name = :run AND a.value = :nid", 0, 1, array(
+          ':step' => 'return_step',
+          ':renames' => array('1', '3'),
+          ':run' => 'upgrade_run',
+          ':nid' => (string) $row->nid,
+        ))->fetchField();
     }
     $offer = _provision_tasks_extra_return_offer($title, $record,
       in_array($row->task_status, array(HOSTING_TASK_QUEUED, HOSTING_TASK_PROCESSING)),
-      $row->task_status == HOSTING_TASK_ERROR, $upgrade);
+      $row->task_status == HOSTING_TASK_ERROR, $upgrade, $renamed);
   }
   if ($offer === 'busy' || $offer === 'done') {
     // Gone back already, or a run is still under way.
