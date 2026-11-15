@@ -1665,7 +1665,8 @@ function _provision_tasks_extra_upgrade_run_moved($failed, $copy_kept, $codes) {
  *   The node id of the newest Upgrade that moved the site and left it where
  *   it is, 0 for none.
  * @param bool $renamed
- *   The row's run started a rename of its own (a step row of it).
+ *   The row's run started a rename (a step row of it), or carried on the
+ *   record of an earlier run.
  *
  * @return string
  *   'resume' (a later run finishes it from the row's record), 'busy', 'done',
@@ -1694,7 +1695,7 @@ function _provision_tasks_extra_return_offer($title, $record, $under_way, $faile
   // Under its own name again, after a run that never reached its end and
   // had begun to rename (killed once it had renamed the upgraded site back,
   // say): the renames may have dropped settings only that run's record
-  // still holds. One killed before any rename changed nothing.
+  // still holds. A first run killed before any rename changed nothing.
   if ($title === $domain && $end === 'pending' && !$under_way && $renamed && (int) $upgrade > 0
     && isset($record['return_upgrade']) && (int) $record['return_upgrade'] === (int) $upgrade) {
     return 'resume';

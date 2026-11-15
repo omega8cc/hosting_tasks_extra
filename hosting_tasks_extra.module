@@ -1346,13 +1346,17 @@ function hosting_tasks_extra_drupal_upgrade_return_state($node, $account, $excep
   if ($row) {
     $record = db_query("SELECT name, value FROM {hosting_task_arguments} WHERE vid = :vid AND name LIKE :prefix", array(':vid' => $row->vid, ':prefix' => db_like('return_') . '%'))->fetchAllKeyed();
     // Under its own name again, a run is finished only for the Upgrade it
-    // went back from, and only one that had begun to rename.
+    // went back from, and only one that had begun to rename: a step row of
+    // its own, or a record it carried on from an earlier run (whose aside
+    // name was made by another task), which only a run that renamed leaves.
     $upgrade = 0;
     $renamed = FALSE;
     if (isset($record['return_domain']) && $record['return_domain'] === $title) {
       $newest = hosting_tasks_extra_drupal_upgrade_left($node);
       $upgrade = (int) $newest['task'];
-      $renamed = (bool) db_query_range("SELECT 1 FROM {hosting_task_arguments} a
+      $made = array();
+      $carried = isset($record['return_aside']) && preg_match('/^upgraded-([0-9]+)\.temp\./', $record['return_aside'], $made) && (int) $made[1] !== (int) $row->nid;
+      $renamed = $carried || (bool) db_query_range("SELECT 1 FROM {hosting_task_arguments} a
           INNER JOIN {hosting_task_arguments} s ON s.vid = a.vid AND s.name = :step AND s.value IN (:renames)
         WHERE a.name = :run AND a.value = :nid", 0, 1, array(
           ':step' => 'return_step',

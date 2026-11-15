@@ -79,11 +79,16 @@ function hosting_tasks_extra_task_accounts($task) {
   $accounts = array($account);
   $name = isset($task->queued_by) ? (string) $task->queued_by : '';
   if ($name !== '' && $name !== $account->name) {
+    // A name no account holds any more is not checked (the author's own
+    // name before a rename, or a user deleted since): the author's rights
+    // still apply.
     $queuer = user_load_by_name($name);
-    if (!is_object($queuer) || empty($queuer->status)) {
-      return 'the user who queued this task again, ' . $name . ', is not known or is blocked';
+    if (is_object($queuer) && (int) $queuer->uid !== (int) $account->uid) {
+      if (empty($queuer->status)) {
+        return 'the user who queued this task again, ' . $name . ', is blocked';
+      }
+      $accounts[] = $queuer;
     }
-    $accounts[] = $queuer;
   }
   return $accounts;
 }

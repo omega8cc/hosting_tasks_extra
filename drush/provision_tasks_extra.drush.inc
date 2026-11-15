@@ -1762,7 +1762,10 @@ function _provision_tasks_extra_upgrade_replay($leg, $demote) {
   foreach ($leg['errors'] as $error) {
     drush_log((string) $error, $demote ? 'warning' : 'error');
   }
-  $output = isset($leg['output']) ? trim((string) $leg['output']) : '';
+  // Raw output, never decoded: only printable ASCII and line breaks go into
+  // a log line, and no angle brackets, which Drush's own report markers use.
+  $output = isset($leg['output']) ? (string) $leg['output'] : '';
+  $output = trim(_provision_tasks_extra_no_markup(preg_replace('/[^\x20-\x7e\n]+/', ' ', $output)));
   if ($output !== '') {
     if (strlen($output) > 2000) {
       $output = '...' . substr($output, -2000);
@@ -2167,6 +2170,28 @@ function _provision_tasks_extra_return_left_aside($domain_root, $copy_root, $asi
 }
 
 /**
+ * What a run does with the copy's rename, by the stage it starts at.
+ *
+ * @param string $stage
+ *   As _provision_tasks_extra_return_stage() gives it.
+ * @param string $copy_fault
+ *   Why the copy cannot be served, '' when it can.
+ *
+ * @return string
+ *   'rename' (the run renames the copy, and its checks count it), 'skip'
+ *   (the copy cannot be served: the run renames the upgraded site back
+ *   instead, and nothing of the copy is counted) or 'none' (the copy holds
+ *   the name already). A first run with a copy fault is refused before
+ *   this is asked.
+ */
+function _provision_tasks_extra_return_copy_step($stage, $copy_fault) {
+  if ($stage === 'back') {
+    return 'none';
+  }
+  return ($stage === 'aside' && $copy_fault !== '') ? 'skip' : 'rename';
+}
+
+/**
  * Where the three names of a Go back point on disk now.
  *
  * @return array
@@ -2533,18 +2558,20 @@ function _provision_tasks_extra_return_plan() {
     }
     $renames[] = array('path' => $new_root . '/sites/' . $domain, 'root' => $new_root);
   }
-  if ($stage === 'aside' && $copy_fault !== '') {
+  $copy_step = _provision_tasks_extra_return_copy_step($stage, $copy_fault);
+  if ($copy_step === 'skip') {
     // The copy's rename is not tried: the upgraded site is renamed back
     // (step 3), with the checks of its own rename.
     $plan['no_copy'] = $copy_fault;
   }
-  // Put back already, the copy serves the name from that platform: a run
-  // that only finishes it must not say so of a platform with no code.
-  if ($stage === 'back' && !is_file($old_root . '/core/lib/Drupal.php')) {
-    return $old_title . ' holds no Drupal code any more, so the copy cannot be served from it';
-  }
-  elseif ($stage !== 'back') {
+  elseif ($copy_step === 'rename') {
     $renames[] = array('path' => $old_root . '/sites/' . $copy, 'root' => $old_root);
+  }
+  // Put back already, the copy holds the name on that platform: a run that
+  // only finishes it must not say it serves the site from a platform with
+  // no code.
+  if ($stage === 'back' && !is_file($old_root . '/core/lib/Drupal.php')) {
+    return 'an earlier Go back handed the name ' . $domain . ' to the copy on ' . $old_title . ', which holds no Drupal code any more, so ' . $domain . ' cannot be served from it. Ask support';
   }
 
   if ($renames) {
