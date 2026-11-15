@@ -1558,10 +1558,17 @@ function _provision_tasks_extra_upgrade_judge($source_release, $target_release, 
       $pending = TRUE;
       continue;
     }
+    $why = _provision_tasks_extra_upgrade_list_refusal($whose, $modes, $allow);
+    // A size or scope that cannot be told says why it cannot (which side
+    // has no lock, a tree that does not match it); the security axis says
+    // its own.
+    if ($unknown && $allow['axis'] !== 'security' && isset($diff['why']) && $diff['why'] !== '') {
+      $why .= ' (' . $diff['why'] . ')';
+    }
     return array(
       'ok' => FALSE,
       'rule' => $allow['axis'],
-      'why' => _provision_tasks_extra_upgrade_list_refusal($whose, $modes, $allow),
+      'why' => $why,
       'pending' => FALSE,
     );
   }
