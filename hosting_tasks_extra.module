@@ -787,6 +787,10 @@ function _hosting_tasks_extra_drupal_upgrade_targets($site, $account) {
     $instances += hosting_package_instances_load(array('r.type' => 'platform', 'p.old_short_name' => $profile->short_name, 'h.status' => HOSTING_PLATFORM_ENABLED));
   }
   $allowed = ($account->uid == 1) ? NULL : _hosting_get_allowed_platforms($account->uid);
+  // A platform the site was upgraded away from takes no Migrate of it back
+  // (hosting_tasks_extra_drupal_upgrade_migrate_start()), whatever release it
+  // carries now: the Upgrade's own move would be refused there.
+  $left = hosting_tasks_extra_drupal_upgrade_left_platforms($site);
   foreach ($instances as $instance) {
     $nid = (int) $instance->rid;
     if ($nid == $site->platform || isset($out['targets'][$nid])) {
@@ -804,7 +808,16 @@ function _hosting_tasks_extra_drupal_upgrade_targets($site, $account) {
       || (function_exists('hosting_txp_platform_is_txp') && hosting_txp_platform_is_txp($nid))) {
       continue;
     }
-    $out['targets'][$nid] = _hosting_tasks_extra_drupal_upgrade_target($site, $platform, $source_root, $release, $modules, $platform_modes, $site_modes, $target, $instance);
+    $entry = _hosting_tasks_extra_drupal_upgrade_target($site, $platform, $source_root, $release, $modules, $platform_modes, $site_modes, $target, $instance);
+    // Only one that would be offered as a newer version is said to be left:
+    // an older one is not shown at all.
+    if ($entry['listed'] && in_array($nid, $left)) {
+      $entry['ready'] = FALSE;
+      $entry['pending'] = FALSE;
+      $entry['why'] = 'this site was upgraded away from it, and a move back onto it is refused; a newer version is another platform';
+      $entry['rule'] = 'left';
+    }
+    $out['targets'][$nid] = $entry;
   }
 
   // The newest release first.
@@ -848,7 +861,8 @@ function _hosting_tasks_extra_drupal_upgrade_target($site, $platform, $source_ro
     // A platform that is no newer version is not shown at all.
     'listed' => FALSE,
     'why' => '',
-    // What refused it: catalogue, older, a rule of the judge, floor, missing.
+    // What refused it: catalogue, older, a rule of the judge, floor, missing,
+    // left (set by the caller).
     'rule' => '',
     'kind' => '',
     'pending' => FALSE,
@@ -1141,15 +1155,17 @@ function hosting_tasks_extra_drupal_upgrade_step_title($node) {
  *
  * A row counts by what it did: it ran, the platform the site left is known
  * (from the row, or from where its copy is), and it ended well, or it ended
- * in error with its copy kept (the move went through and its last step did
- * not). A row that was cancelled, refused or undone moved nothing and hides
- * nothing.
+ * in error with its copy kept and its log naming no ending in which the site
+ * stayed (_provision_tasks_extra_upgrade_run_moved()). A row that was
+ * cancelled, refused or undone moved nothing and hides nothing, also when
+ * the removal of its copy failed.
  *
  * @return array
  *   One array a run: 'task', 'date', 'source' and 'target' (platform node
  *   ids) and 'copy' (the name of its way back, '' when that site is gone).
  */
 function hosting_tasks_extra_drupal_upgrade_runs($site) {
+  hosting_tasks_extra_upgrade_include();
   $runs = array();
   $rows = db_query("SELECT t.nid, t.vid, t.task_status, t.executed FROM {hosting_task} t
       INNER JOIN {node} n ON n.vid = t.vid
@@ -1169,8 +1185,16 @@ function hosting_tasks_extra_drupal_upgrade_runs($site) {
     if (empty($args['target_platform']) || !$source || $source == $args['target_platform']) {
       continue;
     }
-    if ($row->task_status == HOSTING_TASK_ERROR && !is_object($copy_node)) {
-      continue;
+    if ($row->task_status == HOSTING_TASK_ERROR) {
+      $codes = is_object($copy_node) ? db_query("SELECT DISTINCT error FROM {hosting_task_log} WHERE vid = :vid AND type IN ('error', 'failed') AND error <> ''", array(':vid' => $row->vid))->fetchCol() : array();
+      // An older copy of the shared include, loaded while the panel moves to
+      // a new version, keeps the rule that came before.
+      $moved = function_exists('_provision_tasks_extra_upgrade_run_moved')
+        ? _provision_tasks_extra_upgrade_run_moved(TRUE, is_object($copy_node), $codes)
+        : is_object($copy_node);
+      if (!$moved) {
+        continue;
+      }
     }
     $runs[] = array(
       'task' => (int) $row->nid,
@@ -1255,9 +1279,12 @@ function hosting_tasks_extra_drupal_upgrade_migrate_validate($form, &$form_state
  * Two states. After an Upgrade: its newest run left the site on its target,
  * the site is switched on and still there, and the copy that run made is
  * recorded, on the platform the site left. After a Go back that stopped
- * midway: the node carries a run that recorded its names and ended in
- * error, and the node's name is the one that run set it aside as; the node
- * is then renamed and may be switched off, and the task finishes that run.
+ * midway: the node's newest run that recorded its names did not finish
+ * (_provision_tasks_extra_return_offer(): read from the mark its own end left,
+ * and a runner that was killed left none), and the node's name is the one
+ * that run set it aside as, or the site's own name again for the Upgrade
+ * that run went back from; the node may then be switched off, and the task
+ * finishes that run from its record.
  *
  * It restates the panel's own task check where that one cannot be used: the
  * permission, the right to change both sites, not the panel's own site, not
@@ -1292,11 +1319,17 @@ function hosting_tasks_extra_drupal_upgrade_return_state($node, $account, $excep
     return $out;
   }
   $title = hosting_site_clean_domain($node->title);
+  // The rule that reads a run's end comes with the shared include; while the
+  // panel moves to a new version an older copy of it may be loaded.
+  if (!hosting_tasks_extra_upgrade_include() || !function_exists('_provision_tasks_extra_return_offer')) {
+    $out['why'] = 'the control panel is being updated; look again in a few minutes';
+    return $out;
+  }
 
   // A run that stopped midway: the newest one that recorded its names. A
   // row counts only with the record its own start wrote (return_run): Retry
   // and Run Again copy every argument into a row that may never run.
-  $row = db_query_range("SELECT t.nid, t.vid, t.task_status, a.value FROM {hosting_task} t
+  $row = db_query_range("SELECT t.nid, t.vid, t.task_status FROM {hosting_task} t
       INNER JOIN {node} n ON n.vid = t.vid
       INNER JOIN {hosting_task_arguments} a ON a.vid = t.vid AND a.name = :name
       INNER JOIN {hosting_task_arguments} r ON r.vid = t.vid AND r.name = :run AND r.value = CAST(t.nid AS CHAR)
@@ -1308,12 +1341,30 @@ function hosting_tasks_extra_drupal_upgrade_return_state($node, $account, $excep
       ':type' => 'drupal_upgrade_return',
       ':except' => (int) $except_nid,
     ))->fetchObject();
-  if ($row && $row->value !== '' && $row->value == $title) {
-    if ($row->task_status != HOSTING_TASK_ERROR) {
-      // Gone back already, or a run is still under way.
-      return $out;
-    }
+  $offer = '';
+  $record = array();
+  if ($row) {
     $record = db_query("SELECT name, value FROM {hosting_task_arguments} WHERE vid = :vid AND name LIKE :prefix", array(':vid' => $row->vid, ':prefix' => db_like('return_') . '%'))->fetchAllKeyed();
+    // Under its own name again, a run is finished only for the Upgrade it
+    // went back from.
+    $upgrade = 0;
+    if (isset($record['return_domain']) && $record['return_domain'] === $title) {
+      $newest = hosting_tasks_extra_drupal_upgrade_left($node);
+      $upgrade = (int) $newest['task'];
+    }
+    $offer = _provision_tasks_extra_return_offer($title, $record,
+      in_array($row->task_status, array(HOSTING_TASK_QUEUED, HOSTING_TASK_PROCESSING)),
+      $row->task_status == HOSTING_TASK_ERROR, $upgrade);
+  }
+  if ($offer === 'busy' || $offer === 'done') {
+    // Gone back already, or a run is still under way.
+    return $out;
+  }
+  if ($offer === 'stuck') {
+    $out['why'] = 'an earlier Go back stopped where it cannot go on by itself; ask support';
+    return $out;
+  }
+  if ($offer === 'resume') {
     $copy = empty($record['return_copy_nid']) ? NULL : node_load($record['return_copy_nid']);
     if (empty($record['return_domain']) || empty($record['return_copy']) || !is_object($copy) || $copy->type != 'site' || $copy->site_status == HOSTING_SITE_DELETED) {
       $out['why'] = 'an earlier Go back stopped midway and the copy it was putting back is gone; ask support';

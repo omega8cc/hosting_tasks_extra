@@ -1616,3 +1616,85 @@ function _provision_tasks_extra_lock_slim($lock) {
   }
   return $lock;
 }
+
+/**
+ * Whether an Upgrade's row counts as one that moved its site.
+ *
+ * A row that ended well moved it. One that ended in error moved it only
+ * while its way-back copy is kept and its log names no ending in which the
+ * site stayed where it was: the move went through and its last step did
+ * not, or nothing says where the site is. A run that was not upgraded can
+ * keep its copy too (its removal failed), and moved nothing.
+ *
+ * @param bool $failed
+ *   The row ended in error.
+ * @param bool $copy_kept
+ *   The panel still holds the copy the run made.
+ * @param array $codes
+ *   The error codes the row's log holds.
+ */
+function _provision_tasks_extra_upgrade_run_moved($failed, $copy_kept, $codes) {
+  if (!$failed) {
+    return TRUE;
+  }
+  if (!$copy_kept) {
+    return FALSE;
+  }
+  $stayed = array('PROVISION_UPGRADE_NOT_UPGRADED', 'PROVISION_UPGRADE_NOT_STARTED', 'HOSTING_UPGRADE_NOT_STARTED');
+  return !array_intersect($stayed, (array) $codes);
+}
+
+/**
+ * What a Go back row says a later run on a site node has to do.
+ *
+ * Read from the mark the run's own end left on its row (return_end: 'back',
+ * 'kept', 'open' or 'stuck', and 'pending' from its start until then), not
+ * from the row's status: a runner that is killed reaches no end, and the
+ * panel's "Update status" sets a status from whatever its log holds by then.
+ * A row from before the mark is read by its status, as it was.
+ *
+ * @param string $title
+ *   The node's name now.
+ * @param array $record
+ *   The row's return_* arguments.
+ * @param bool $under_way
+ *   The row is queued or running.
+ * @param bool $failed
+ *   The row ended in error.
+ * @param int $upgrade
+ *   The node id of the newest Upgrade that moved the site and left it where
+ *   it is, 0 for none.
+ *
+ * @return string
+ *   'resume' (a later run finishes it from the row's record), 'busy', 'done',
+ *   'stuck' (stopped where no run can go on), or '' when the row says
+ *   nothing about the node as it is now.
+ */
+function _provision_tasks_extra_return_offer($title, $record, $under_way, $failed, $upgrade) {
+  $aside = isset($record['return_aside']) ? (string) $record['return_aside'] : '';
+  $domain = isset($record['return_domain']) ? (string) $record['return_domain'] : '';
+  if ($aside === '' || $domain === '') {
+    return '';
+  }
+  $end = isset($record['return_end']) ? (string) $record['return_end'] : NULL;
+  if ($title === $aside) {
+    if ($under_way) {
+      return 'busy';
+    }
+    if ($end === NULL) {
+      return $failed ? 'resume' : 'done';
+    }
+    if ($end === 'stuck') {
+      return 'stuck';
+    }
+    return ($end === 'back' || $end === 'kept') ? 'done' : 'resume';
+  }
+  // Under its own name again, after a run that never reached its end (killed
+  // once it had renamed the upgraded site back, say): the renames may have
+  // dropped settings only that run's record still holds.
+  if ($title === $domain && $end === 'pending' && !$under_way && (int) $upgrade > 0
+    && isset($record['return_upgrade']) && (int) $record['return_upgrade'] === (int) $upgrade) {
+    return 'resume';
+  }
+  return '';
+}

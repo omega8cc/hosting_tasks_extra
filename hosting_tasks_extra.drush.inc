@@ -62,11 +62,38 @@ function hosting_tasks_extra_drupal_upgrade_refuse($why) {
 }
 
 /**
+ * The users a task is checked for as it starts.
+ *
+ * The row's author, and the user who queued this row when that is another
+ * one: Retry and Run Again copy a row with its author and record who pressed
+ * them, and a role that may press them need not hold what the task asks.
+ *
+ * @return array|string
+ *   The accounts, the author first, or why the task is refused.
+ */
+function hosting_tasks_extra_task_accounts($task) {
+  $account = user_load($task->uid);
+  if (!is_object($account) || empty($account->status)) {
+    return 'the user who queued this task is not known or is blocked';
+  }
+  $accounts = array($account);
+  $name = isset($task->queued_by) ? (string) $task->queued_by : '';
+  if ($name !== '' && $name !== $account->name) {
+    $queuer = user_load_by_name($name);
+    if (!is_object($queuer) || empty($queuer->status)) {
+      return 'the user who queued this task is not known or is blocked';
+    }
+    $accounts[] = $queuer;
+  }
+  return $accounts;
+}
+
+/**
  * Checks an Upgrade once more as it starts and tells the backend what to run.
  *
  * The row may have been queued without the form, so nothing the form
- * checked is taken as checked; and the question is asked for the user who
- * queued the task, not for the runner.
+ * checked is taken as checked; and the question is asked for the users who
+ * queued the task (hosting_tasks_extra_task_accounts()), not for the runner.
  */
 function hosting_tasks_extra_drupal_upgrade_start($task) {
   $site = $task->ref;
@@ -78,10 +105,11 @@ function hosting_tasks_extra_drupal_upgrade_start($task) {
   if (db_driver() === 'mysql' && (int) db_query('SELECT @@global.read_only')->fetchField() === 1) {
     return hosting_tasks_extra_drupal_upgrade_refuse('this server is a standby copy, where sites are not changed');
   }
-  $account = user_load($task->uid);
-  if (!is_object($account) || empty($account->status)) {
-    return hosting_tasks_extra_drupal_upgrade_refuse('the user who queued this task is not known or is blocked');
+  $accounts = hosting_tasks_extra_task_accounts($task);
+  if (!is_array($accounts)) {
+    return hosting_tasks_extra_drupal_upgrade_refuse($accounts);
   }
+  $account = $accounts[0];
   if ($target_nid < 1) {
     return hosting_tasks_extra_drupal_upgrade_refuse('the task names no platform to upgrade onto');
   }
@@ -95,6 +123,12 @@ function hosting_tasks_extra_drupal_upgrade_start($task) {
   $entry = hosting_tasks_extra_drupal_upgrade_target($site, $account, $target_nid, TRUE);
   if (!$entry['ready']) {
     return hosting_tasks_extra_drupal_upgrade_refuse(($entry['title'] !== '' ? $entry['title'] . ': ' : '') . $entry['why']);
+  }
+  if (isset($accounts[1])) {
+    $other = hosting_tasks_extra_drupal_upgrade_target($site, $accounts[1], $target_nid);
+    if (!$other['ready']) {
+      return hosting_tasks_extra_drupal_upgrade_refuse('for the user who queued it again, ' . ($other['title'] !== '' ? $other['title'] . ': ' : '') . $other['why']);
+    }
   }
   // The copy's name: nothing but a site or an alias that holds it can
   // refuse it, and a nested task checks no name on its own.
@@ -273,13 +307,19 @@ function hosting_tasks_extra_drupal_upgrade_return_start($task) {
   if (db_driver() === 'mysql' && (int) db_query('SELECT @@global.read_only')->fetchField() === 1) {
     return hosting_tasks_extra_drupal_upgrade_return_refuse('this server is a standby copy, where sites are not changed');
   }
-  $account = user_load($task->uid);
-  if (!is_object($account) || empty($account->status)) {
-    return hosting_tasks_extra_drupal_upgrade_return_refuse('the user who queued this task is not known or is blocked');
+  $accounts = hosting_tasks_extra_task_accounts($task);
+  if (!is_array($accounts)) {
+    return hosting_tasks_extra_drupal_upgrade_return_refuse($accounts);
   }
-  $state = hosting_tasks_extra_drupal_upgrade_return_state($site, $account, $task->nid);
+  $state = hosting_tasks_extra_drupal_upgrade_return_state($site, $accounts[0], $task->nid);
   if ($state['state'] === '') {
     return hosting_tasks_extra_drupal_upgrade_return_refuse($state['why'] !== '' ? $state['why'] : 'there is nothing to go back to for this site');
+  }
+  if (isset($accounts[1])) {
+    $other = hosting_tasks_extra_drupal_upgrade_return_state($site, $accounts[1], $task->nid);
+    if ($other['state'] !== $state['state']) {
+      return hosting_tasks_extra_drupal_upgrade_return_refuse('for the user who queued it again, ' . ($other['why'] !== '' ? $other['why'] : 'there is nothing to go back to for this site'));
+    }
   }
   $copy_node = node_load($state['copy_nid'], NULL, TRUE);
   foreach (array($site->nid, $state['copy_nid']) as $nid) {
@@ -305,11 +345,17 @@ function hosting_tasks_extra_drupal_upgrade_return_start($task) {
       'return_aside' => $aside,
       'return_upgrade' => (int) $state['upgrade'],
       'return_when' => $state['date'] ? format_date($state['date'], 'custom', 'Y-m-d H:i') : '',
+      // A run that switches the copy on for its rename switches it off again
+      // when the rename fails, unless it was on before Go back began.
+      'return_copy_was_on' => ($copy_node->site_status == HOSTING_SITE_ENABLED) ? 1 : 0,
     ) + hosting_tasks_extra_drupal_upgrade_return_settings($site);
   }
   // Retry and Run Again copy a row's arguments into a row that never ran:
   // the record counts only on the row that wrote it.
   $record['return_run'] = (int) $task->nid;
+  // Until the run's own end says how it ended: a runner that is killed never
+  // gets there (hosting_tasks_extra_drupal_upgrade_return_end()).
+  $record['return_end'] = 'pending';
   hosting_tasks_extra_task_args_keep($task, $record);
 
   $new = node_load($site->platform);
@@ -336,6 +382,9 @@ function hosting_tasks_extra_drupal_upgrade_return_start($task) {
   }
   if ($copy_node->site_status == HOSTING_SITE_ENABLED) {
     $task->options['return_copy_on'] = 1;
+  }
+  if (!empty($record['return_copy_was_on'])) {
+    $task->options['return_copy_was_on'] = 1;
   }
 }
 
@@ -427,7 +476,7 @@ function hosting_tasks_extra_drupal_upgrade_return_apply($node, $record, $bare =
 function hosting_tasks_extra_post_hosting_drupal_upgrade_return_task($task, $data) {
   // The backend ended well, so the copy holds the site's name on disk. Where
   // the panel's records do not show it, the task says so.
-  if (hosting_tasks_extra_drupal_upgrade_return_end($task) !== 'back') {
+  if (hosting_tasks_extra_drupal_upgrade_return_end($task, $data) !== 'back') {
     drush_log(dt('GOBACK/PANEL the copy was put back, and the panel\'s record of it did not follow: the restored site may still be listed under the copy\'s name, without the settings of the live site. Ask support.'), 'warning');
   }
 }
@@ -436,7 +485,7 @@ function hosting_tasks_extra_post_hosting_drupal_upgrade_return_task($task, $dat
  * Implements hook_hosting_TASK_TYPE_task_rollback().
  */
 function hosting_tasks_extra_hosting_drupal_upgrade_return_task_rollback($task, $data) {
-  hosting_tasks_extra_drupal_upgrade_return_end($task);
+  hosting_tasks_extra_drupal_upgrade_return_end($task, $data);
 }
 
 /**
@@ -446,20 +495,48 @@ function hosting_tasks_extra_hosting_drupal_upgrade_return_task_rollback($task, 
  * the copy holds the site's name, the site that was set aside loses its
  * custom aliases, its redirection and its cron first, and the restored site
  * then gets what the first run recorded; where the upgraded site holds its
- * name again, it gets its own settings back. A Verify of each site that was
- * changed writes it out. A run that left the name with neither changes
- * nothing here: the next run finishes it.
+ * name again, it gets its own settings back, also when the step that was to
+ * switch it on failed. A Verify of each site that was changed writes it
+ * out; a site the panel holds as switched off is written by its Enable. A
+ * run that left the name with neither changes nothing here: the next run
+ * finishes it.
+ *
+ * Every end leaves its mark on the run's own row (return_end), which is
+ * what tells a later run whether this one finished
+ * (_provision_tasks_extra_return_offer()): 'stuck' where the backend ended
+ * in a state no run can go on from, else 'back', 'kept' or 'open'.
+ *
+ * @param object $task
+ *   The Go back task.
+ * @param mixed $data
+ *   What the backend returned.
  *
  * @return string
  *   'back' where the copy holds the name, 'kept' where the upgraded site
  *   does, '' otherwise.
  */
-function hosting_tasks_extra_drupal_upgrade_return_end($task) {
+function hosting_tasks_extra_drupal_upgrade_return_end($task, $data = NULL) {
   hosting_tasks_extra_drupal_upgrade_cancel_steps($task, 'Go back');
   $record = isset($task->task_args) && is_array($task->task_args) ? $task->task_args : array();
   if (empty($record['return_domain']) || empty($record['return_aside']) || empty($record['return_copy_nid'])) {
     return '';
   }
+  $end = hosting_tasks_extra_drupal_upgrade_return_settle($task, $record);
+  $mark = ($end === '') ? 'open' : $end;
+  if (is_array($data) && !empty($data['error_log']) && is_array($data['error_log']) && isset($data['error_log']['PROVISION_UPGRADE_RETURN_STUCK'])) {
+    $mark = 'stuck';
+  }
+  hosting_tasks_extra_task_args_keep($task, array('return_end' => $mark));
+  return $end;
+}
+
+/**
+ * Puts the recorded settings on the site that holds the name now.
+ *
+ * @return string
+ *   As hosting_tasks_extra_drupal_upgrade_return_end().
+ */
+function hosting_tasks_extra_drupal_upgrade_return_settle($task, $record) {
   $domain = $record['return_domain'];
   $site = node_load($task->rid, NULL, TRUE);
   $copy = node_load($record['return_copy_nid'], NULL, TRUE);
@@ -476,10 +553,12 @@ function hosting_tasks_extra_drupal_upgrade_return_end($task) {
     hosting_add_task($copy->nid, 'verify');
     return 'back';
   }
-  if ($site_name == $domain && $site->site_status == HOSTING_SITE_ENABLED) {
+  if ($site_name == $domain) {
     // Not gone back: the upgraded site holds its name, after a rename away
-    // and back when a step ran. What that dropped is put back.
-    if (hosting_tasks_extra_drupal_upgrade_return_apply($site, $record)) {
+    // and back when a step ran. What that dropped is put back. A Verify of a
+    // site the panel holds as switched off would switch it off on the
+    // server too, where the rename left it served.
+    if (hosting_tasks_extra_drupal_upgrade_return_apply($site, $record) && $site->site_status == HOSTING_SITE_ENABLED) {
       hosting_add_task($site->nid, 'verify');
     }
     return 'kept';
