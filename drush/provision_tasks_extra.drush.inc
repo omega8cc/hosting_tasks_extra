@@ -1817,6 +1817,10 @@ function _provision_tasks_extra_upgrade_why($leg) {
     if (strpos($text, 'cannot start') !== FALSE) {
       return "the new platform's own Drush cannot start";
     }
+    // The updates ran; only Drupal's requirements check failed before them.
+    if (strpos($text, 'requirements check reported errors') !== FALSE) {
+      return "Drupal's requirements check reported errors on the new platform (its database updates ran)";
+    }
     return "Drupal's database updates did not finish on the new platform";
   }
   if (in_array('PROVISION_UPGRADE_PAGE_CHECK', $leg['codes'], TRUE)) {
