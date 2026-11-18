@@ -1692,6 +1692,13 @@ function _provision_tasks_extra_upgrade_leg($context, $type, $args = array(), $q
     }
   }
   $ok = is_array($result) && isset($result['error_status']) && (int) $result['error_status'] === 0;
+  // A step the panel could not start because it is moving to its new
+  // version: its hosting-task stops at bootstrap and says so only on its
+  // own output, which no log line here carries.
+  if (!$ok && _provision_tasks_extra_upgrade_panel_moving()) {
+    $codes[] = 'PROVISION_UPGRADE_PANEL_MOVING';
+    $errors[] = 'The control panel is moving to its new version.';
+  }
   if ($quiet) {
     return array(
       'ok' => $ok && array_key_exists('error_log', $result),
@@ -1709,6 +1716,24 @@ function _provision_tasks_extra_upgrade_leg($context, $type, $args = array(), $q
     'errors' => $errors,
     'log' => array_slice(drush_get_log(), $before),
   );
+}
+
+/**
+ * Whether this account's control panel is moving to its new version now.
+ */
+function _provision_tasks_extra_upgrade_panel_moving() {
+  $hm = d('@hostmaster');
+  return is_object($hm) && !empty($hm->root) && _provision_tasks_extra_panel_moving_at($hm->root, time());
+}
+
+/**
+ * The reason a step gives: the panel's move when that stopped it, else $why.
+ */
+function _provision_tasks_extra_upgrade_step_why($leg, $why) {
+  if (in_array('PROVISION_UPGRADE_PANEL_MOVING', $leg['codes'], TRUE)) {
+    return 'the control panel is moving to its new version, so the panel could not start this step; start again in a few minutes';
+  }
+  return $why;
 }
 
 /**
@@ -1809,6 +1834,9 @@ function _provision_tasks_extra_upgrade_warnings() {
  * Why the move leg failed, as a clause.
  */
 function _provision_tasks_extra_upgrade_why($leg) {
+  if (in_array('PROVISION_UPGRADE_PANEL_MOVING', $leg['codes'], TRUE)) {
+    return _provision_tasks_extra_upgrade_step_why($leg, '');
+  }
   $text = implode(' ', $leg['errors']);
   if (in_array('PROVISION_UPGRADE_UPDATEDB', $leg['codes'], TRUE)) {
     if (strpos($text, 'could not be run') !== FALSE) {
@@ -1858,7 +1886,9 @@ function _provision_tasks_extra_upgrade_undo($plan) {
   // Only a copy on the site's own platform is this run's.
   if ($root !== FALSE && $root !== '' && _provision_tasks_extra_upgrade_same_root($root, $plan['source_root'])) {
     $leg = _provision_tasks_extra_upgrade_leg('@' . $copy, 'delete', array($plan['marker']));
-    $no_task = !$leg['ok'] && in_array('HOSTING_TASK_LOAD_FAILED', $leg['codes'], TRUE);
+    // A panel moving to its new version makes no task either: its own
+    // hosting-task stops at bootstrap, with no error code of hosting's.
+    $no_task = !$leg['ok'] && (in_array('HOSTING_TASK_LOAD_FAILED', $leg['codes'], TRUE) || in_array('PROVISION_UPGRADE_PANEL_MOVING', $leg['codes'], TRUE));
     if ($no_task && !empty($plan['recorded'])) {
       // The panel made its record of the copy when the Clone ended well,
       // and still made no task now (it is moving to its new version, say).
@@ -1975,18 +2005,18 @@ function drush_provision_tasks_extra_provision_drupal_upgrade() {
   // The panel records the copy when its Clone ends well, and only then.
   $plan['recorded'] = $leg['ok'];
   if (!$leg['ok'] || _provision_tasks_extra_upgrade_alias_root($copy) === FALSE || !is_file($copy_dir . '/settings.php')) {
-    return _provision_tasks_extra_upgrade_stop($plan, 'the copy of the site could not be made (see above)', FALSE);
+    return _provision_tasks_extra_upgrade_stop($plan, _provision_tasks_extra_upgrade_step_why($leg, 'the copy of the site could not be made (see above)'), FALSE);
   }
   // Leg 1a: the Import the Clone queued for the copy, run now. Left to the
   // queue it would run on the switched-off copy and mark it enabled.
   $leg = _provision_tasks_extra_upgrade_leg('@' . $copy, 'import');
   if (!$leg['ok']) {
-    return _provision_tasks_extra_upgrade_stop($plan, 'the copy of the site could not be recorded in the panel (see above)', FALSE);
+    return _provision_tasks_extra_upgrade_stop($plan, _provision_tasks_extra_upgrade_step_why($leg, 'the copy of the site could not be recorded in the panel (see above)'), FALSE);
   }
   // Leg 1b.
   $leg = _provision_tasks_extra_upgrade_leg('@' . $copy, 'disable', array($plan['marker']));
   if (!$leg['ok']) {
-    return _provision_tasks_extra_upgrade_stop($plan, 'the copy of the site could not be switched off (see above)', FALSE);
+    return _provision_tasks_extra_upgrade_stop($plan, _provision_tasks_extra_upgrade_step_why($leg, 'the copy of the site could not be switched off (see above)'), FALSE);
   }
   drush_log(dt('UPGRADE/1/COPY done: @copy holds the site as it was at @when, switched off.', array('@copy' => $copy, '@when' => $when)), 'ok');
 
@@ -2417,6 +2447,9 @@ function _provision_tasks_extra_return_db_answers() {
  * $target the name it was to take, where a rename checks for a store.
  */
 function _provision_tasks_extra_return_why($leg, $what, $target) {
+  if (in_array('PROVISION_UPGRADE_PANEL_MOVING', $leg['codes'], TRUE)) {
+    return 'the control panel is moving to its new version, so the panel could not start the step for ' . $what . '; start again in a few minutes';
+  }
   if (in_array('PROVISION_SITE_STORE_AT_NAME', $leg['codes'], TRUE)) {
     return 'a store of uploaded files is still at the name ' . $target . ' and could not be set aside (see above)';
   }

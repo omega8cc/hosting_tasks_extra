@@ -1332,6 +1332,27 @@ function _provision_tasks_extra_core_release($root) {
 }
 
 /**
+ * Whether the control panel at a root is moving to its new version.
+ *
+ * BOA writes sites/.panel-move.info beside the panel's sites.php while an
+ * upgrade moves the panel; under it the panel makes no task and its own
+ * hosting-task command stops at bootstrap with the page a visitor gets. A
+ * marker an hour old or older no longer counts, as in hosting.
+ */
+function _provision_tasks_extra_panel_moving_at($root, $now) {
+  $root = rtrim((string) $root, '/');
+  if ($root === '') {
+    return FALSE;
+  }
+  $marker = $root . '/sites/.panel-move.info';
+  // A run lasts long enough for the marker to come or go meanwhile: never a
+  // cached answer.
+  clearstatcache(TRUE, $marker);
+  $t = @filemtime($marker);
+  return $t !== FALSE && ($now - $t) < 3600;
+}
+
+/**
  * A platform's release in its code against the panel's record of it.
  *
  * The record is written by the platform's last Verify, together with the
