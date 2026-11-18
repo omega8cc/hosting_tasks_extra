@@ -1332,6 +1332,23 @@ function _provision_tasks_extra_core_release($root) {
 }
 
 /**
+ * A platform's release in its code against the panel's record of it.
+ *
+ * The record is written by the platform's last Verify, together with the
+ * module rows the panel compares; the backend reads the code. Code changed in
+ * place since that Verify makes the two differ. Returns '' when they agree or
+ * when either is unknown (the backend decides then), otherwise both in words.
+ */
+function _provision_tasks_extra_release_changed($disk, $recorded) {
+  $disk = (string) $disk;
+  $recorded = (string) $recorded;
+  if ($disk === '' || $recorded === '' || version_compare($disk, $recorded, '==')) {
+    return '';
+  }
+  return 'Drupal ' . $disk . ' in its files, ' . $recorded . ' in the control panel';
+}
+
+/**
  * Whether a root is one of the platforms the system itself ships.
  */
 function _provision_tasks_extra_upgrade_is_catalogue($root) {

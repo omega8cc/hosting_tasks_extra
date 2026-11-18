@@ -779,6 +779,16 @@ function _hosting_tasks_extra_drupal_upgrade_targets($site, $account) {
     }
   }
 
+  // The release above is the panel's record of the platform's last Verify,
+  // and so are the site's module rows. Code changed in place since then (a
+  // Composer update in the platform) is what the backend reads: ask for the
+  // Verify that brings the record up to it.
+  $changed = _provision_tasks_extra_release_changed(_provision_tasks_extra_core_release($source_root), $release);
+  if ($changed !== '') {
+    $out['why'] = "this site's platform " . $platform->title . ' changed since its last Verify (' . $changed . '): run Verify on that platform first';
+    return $out;
+  }
+
   // Rules 2 and 3: the platforms this account may use that carry the site's
   // install profile, as the Migrate form finds them.
   $profile = node_load($site->profile);
@@ -861,8 +871,8 @@ function _hosting_tasks_extra_drupal_upgrade_target($site, $platform, $source_ro
     // A platform that is no newer version is not shown at all.
     'listed' => FALSE,
     'why' => '',
-    // What refused it: catalogue, older, a rule of the judge, floor, missing,
-    // left (set by the caller).
+    // What refused it: catalogue, changed, older, a rule of the judge, floor,
+    // missing, left (set by the caller).
     'rule' => '',
     'kind' => '',
     'pending' => FALSE,
@@ -875,6 +885,17 @@ function _hosting_tasks_extra_drupal_upgrade_target($site, $platform, $source_ro
   if (_provision_tasks_extra_upgrade_is_catalogue($target_root)) {
     $entry['why'] = 'it is one of the platforms the system ships, which are no upgrade targets';
     $entry['rule'] = 'catalogue';
+    return $entry;
+  }
+  // A platform whose code changed in place since its last Verify: the panel's
+  // release and package rows are those of the code before. Shown, greyed, only
+  // where its code is a newer version than the site's.
+  $disk = _provision_tasks_extra_core_release($target_root);
+  $changed = _provision_tasks_extra_release_changed($disk, $entry['release']);
+  if ($changed !== '') {
+    $entry['why'] = 'its code changed since its last Verify (' . $changed . '): run Verify on this platform first';
+    $entry['rule'] = 'changed';
+    $entry['listed'] = version_compare($disk, $release, '>');
     return $entry;
   }
   // Rules 5 and 6 and the release half of 7. An older release needs no lock.
