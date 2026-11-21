@@ -2645,8 +2645,16 @@ function _provision_tasks_extra_return_plan() {
           return 'Go back needs about ' . number_format($short['inodes'] + $short['inodes_margin'], 0, '.', ',') . ' free inodes on the filesystem holding ' . $short['path'] . ' (every file of the sites under their new names takes one; ' . number_format($short['inodes_margin'], 0, '.', ',') . ' of them headroom), and ' . number_format($short['inodes_free'], 0, '.', ',') . ' are free. Free inodes first';
         }
         if ($short !== NULL) {
+          // in a unit that tells the need from the free space (provision's
+          // provision_space_figures()), in gigabytes before provision has it
           $gb = 1073741824;
-          return 'Go back needs about ' . round(($short['need'] + $short['margin']) / $gb, 1) . ' GB free on the filesystem holding ' . $short['path'] . ' (the safety copies, the two sites under their new names and their own copies of the uploaded files; ' . round($short['margin'] / $gb, 1) . ' GB of it headroom), and ' . round($short['free'] / $gb, 1) . ' GB is free. Free space first';
+          $fig = function_exists('provision_space_figures') ? provision_space_figures($short['need'] + $short['margin'], $short['margin'], $short['free']) : array(
+            '@need' => round(($short['need'] + $short['margin']) / $gb, 1),
+            '@margin' => round($short['margin'] / $gb, 1),
+            '@free' => round($short['free'] / $gb, 1),
+            '@unit' => 'GB',
+          );
+          return 'Go back needs about ' . $fig['@need'] . ' ' . $fig['@unit'] . ' free on the filesystem holding ' . $short['path'] . ' (the safety copies, the two sites under their new names and their own copies of the uploaded files; ' . $fig['@margin'] . ' ' . $fig['@unit'] . ' of it headroom), and ' . $fig['@free'] . ' ' . $fig['@unit'] . ' is free. Free space first';
         }
       }
     }
