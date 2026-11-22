@@ -1800,6 +1800,32 @@ function hosting_tasks_extra_drupal_upgrade_all_failed($token, $before = 0) {
 }
 
 /**
+ * Why a site of a run may not start yet, from the rows before it, or ''.
+ *
+ * The queue runs one task at a time, so a row before this one that is still
+ * processing has lost its runner (the queue's reaper marks it failed only
+ * later) or runs beside a holder past its time; one still queued was passed
+ * by the queue, which is no promise of order. Either way this site waits for
+ * nothing: it is not started, so a site after one that does not upgrade is
+ * never upgraded.
+ */
+function hosting_tasks_extra_drupal_upgrade_all_blocked($token, $order) {
+  foreach (hosting_tasks_extra_drupal_upgrade_all_members($token) as $member) {
+    if ($member->order >= $order) {
+      break;
+    }
+    $name = hosting_tasks_extra_node_title($member->rid);
+    if ($member->task_status == HOSTING_TASK_ERROR || $member->task_status == HOSTING_TASK_PROCESSING) {
+      return 'the upgrade of ' . $name . ', before this one in Upgrade all sites, did not finish';
+    }
+    if ($member->task_status == HOSTING_TASK_QUEUED) {
+      return 'the upgrade of ' . $name . ', before this one in Upgrade all sites, has not run yet';
+    }
+  }
+  return '';
+}
+
+/**
  * The title of a node, or its number when it is gone.
  */
 function hosting_tasks_extra_node_title($nid) {
@@ -2099,7 +2125,8 @@ function hosting_task_drupal_upgrade_all_form($node) {
     }
     $rows = array();
     foreach ($target['verdicts'] as $site_nid => $verdict) {
-      $rows[] = array(check_plain($judged['sites'][$site_nid]), check_plain($verdict['text']));
+      // The verdict is t()'s output, escaped already.
+      $rows[] = array(check_plain($judged['sites'][$site_nid]), $verdict['text']);
     }
     $form[$target_nid]['sites'] = array(
       '#type' => 'container',
@@ -2289,14 +2316,27 @@ function _hosting_tasks_extra_drupal_upgrade_all_enqueue($platform_nid, $target_
     $out['rollup'] = (int) $row->nid;
   }
   catch (Exception $e) {
-    $transaction->rollback();
-    entity_get_controller('node')->resetCache(array($platform->nid));
-    $out['queued'] = array();
-    $out['rollup'] = 0;
-    $out['why'] = $e->getMessage();
-    return $out;
+    return _hosting_tasks_extra_drupal_upgrade_all_undo($transaction, $platform, $out, $e->getMessage());
+  }
+  // An Error left uncaught would end the transaction's object, which
+  // commits what was written so far. PHP 5.6 has no such class and never
+  // matches it.
+  catch (Throwable $e) {
+    return _hosting_tasks_extra_drupal_upgrade_all_undo($transaction, $platform, $out, $e->getMessage());
   }
   unset($transaction);
+  return $out;
+}
+
+/**
+ * Rolls back a run that was being queued: no lock, no row.
+ */
+function _hosting_tasks_extra_drupal_upgrade_all_undo($transaction, $platform, $out, $why) {
+  $transaction->rollback();
+  entity_get_controller('node')->resetCache(array($platform->nid));
+  $out['queued'] = array();
+  $out['rollup'] = 0;
+  $out['why'] = $why;
   return $out;
 }
 
@@ -2339,14 +2379,15 @@ function hosting_tasks_extra_drupal_upgrade_all_line($platform) {
       $said[] = $n . ' ' . $what;
     }
   }
+  // t()'s output, escaped already.
   if ($open) {
-    return check_plain(t('Upgrading all sites (started @when): @counts.', array('@when' => format_date($parts['time'], 'custom', 'j M H:i'), '@counts' => implode(', ', $said))));
+    return t('Upgrading all sites (started @when): @counts.', array('@when' => format_date($parts['time'], 'custom', 'j M H:i'), '@counts' => implode(', ', $said)));
   }
   $text = t('The last Upgrade all sites (@when): @counts.', array('@when' => format_date($parts['time'], 'custom', 'j M'), '@counts' => implode(', ', $said)));
   if ($platform->platform_status == HOSTING_PLATFORM_LOCKED) {
     $text .= ' ' . t('This platform stays locked.');
   }
-  return check_plain($text);
+  return $text;
 }
 
 /**

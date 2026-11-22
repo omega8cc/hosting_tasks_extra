@@ -107,8 +107,9 @@ function hosting_tasks_extra_drupal_upgrade_start($task) {
   $site = $task->ref;
   $target_nid = isset($task->task_args['target_platform']) ? (int) $task->task_args['target_platform'] : 0;
   // A site of an Upgrade all sites run: only one its run vouches for, still
-  // on the platform the run was for, and only while no site before it in
-  // the run ended in error (a runner that was killed cancels nothing).
+  // on the platform the run was for, and only after every site before it in
+  // the run has ended without error (a runner that was killed cancels
+  // nothing, and the queue does not promise the run's order).
   $member = hosting_tasks_extra_drupal_upgrade_all_membership($task);
   if ($member['member']) {
     if ($member['why'] !== '') {
@@ -117,9 +118,9 @@ function hosting_tasks_extra_drupal_upgrade_start($task) {
     if ((int) $site->platform !== $member['platform']) {
       return hosting_tasks_extra_drupal_upgrade_refuse('this site is no longer on the platform its Upgrade all sites was for');
     }
-    $before = hosting_tasks_extra_drupal_upgrade_all_failed($member['token'], $member['order']);
-    if ($before) {
-      return hosting_tasks_extra_drupal_upgrade_refuse('the upgrade of ' . hosting_tasks_extra_node_title($before->rid) . ', before this one in Upgrade all sites, did not finish');
+    $blocked = hosting_tasks_extra_drupal_upgrade_all_blocked($member['token'], $member['order']);
+    if ($blocked !== '') {
+      return hosting_tasks_extra_drupal_upgrade_refuse($blocked);
     }
   }
   if (function_exists('hosting_panel_is_moving') && hosting_panel_is_moving()) {
@@ -397,7 +398,9 @@ function hosting_tasks_extra_drupal_upgrade_all_end($task, $verified) {
   if (!$verified) {
     drush_log(dt('UPGRADE-ALL/VERIFY the Verify of @platform did not finish (see above): its packages are recorded as they were.', array('@platform' => $title)), 'warning');
   }
-  $count = array('moved' => 0, 'error' => 0, 'cancelled' => 0, 'hand' => 0, 'open' => 0);
+  // 'moved': sites this run's rows moved; 'there': sites of the run that
+  // are on the target now, by whatever task.
+  $count = array('moved' => 0, 'there' => 0, 'error' => 0, 'cancelled' => 0, 'hand' => 0, 'open' => 0);
   $members = hosting_tasks_extra_drupal_upgrade_all_members($token);
   $sites = array();
   $rows = array();
@@ -421,8 +424,9 @@ function hosting_tasks_extra_drupal_upgrade_all_end($task, $verified) {
 
   // What now.
   if (is_object($platform) && $platform->platform_status == HOSTING_PLATFORM_LOCKED) {
-    if (!$count['moved'] && !$count['open']) {
-      // The run took the lock from an enabled platform.
+    if (!$count['there'] && !$count['open']) {
+      // The run took the lock from an enabled platform, and no site of it
+      // left the platform, by this run or another task.
       $platform->platform_status = HOSTING_PLATFORM_ENABLED;
       $platform->no_verify = TRUE;
       node_save($platform);
@@ -528,14 +532,44 @@ function _hosting_tasks_extra_drupal_upgrade_all_site_line($member, $target_nid,
     $count['open']++;
     return 'not finished (still running)';
   }
-  if ($member->platform && (int) $member->platform === (int) $target_nid) {
-    $count['moved']++;
-    if ($member->task_status == HOSTING_TASK_ERROR) {
-      $count['error']++;
-      return 'upgraded, last step unfinished (' . ($result !== '' ? $result : 'see its task log') . ')';
+  // What this row did, by the rule the site page reads an Upgrade's rows
+  // with: a site on the target that another task moved there (a Retry) is
+  // not this row's doing.
+  $moved = FALSE;
+  $site = node_load($member->rid, NULL, TRUE);
+  if (is_object($site) && $site->type == 'site') {
+    foreach (hosting_tasks_extra_drupal_upgrade_runs($site) as $run) {
+      if ((int) $run['task'] === (int) $member->nid) {
+        $moved = TRUE;
+      }
     }
-    return 'upgraded onto ' . $target . ($result !== '' ? ' (' . $result . ')' : '');
   }
+  $there = ($member->platform && (int) $member->platform === (int) $target_nid);
+  if ($there) {
+    $count['there']++;
+  }
+  if (!$moved) {
+    $line = _hosting_tasks_extra_drupal_upgrade_all_unmoved($member, $found, $count);
+    return $there ? $line . '; the site is on ' . $target . ' now, moved there by another task' : $line;
+  }
+  $count['moved']++;
+  if ($member->task_status == HOSTING_TASK_ERROR) {
+    $count['error']++;
+    return 'upgraded, last step unfinished (' . ($result !== '' ? $result : 'see its task log') . ')';
+  }
+  return 'upgraded onto ' . $target . ($result !== '' ? ' (' . $result . ')' : '');
+}
+
+/**
+ * The line of a site whose row of the run did not move it.
+ *
+ * @param array $found
+ *   The row's result, cancel, hand and lost log lines.
+ * @param array $count
+ *   The run's counts, added to.
+ */
+function _hosting_tasks_extra_drupal_upgrade_all_unmoved($member, $found, &$count) {
+  $result = $found['result'];
   if ($member->task_status == HOSTING_TASK_ERROR) {
     $count['error']++;
     if ($result === '' && $found['lost'] !== '') {
