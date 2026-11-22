@@ -576,7 +576,7 @@ function _hosting_tasks_extra_drupal_upgrade_all_unmoved($member, $found, &$coun
       return 'failed: its runner was lost';
     }
     if (strpos($result, 'Not started: ') === 0) {
-      return 'not started (' . rtrim(substr($result, strlen('Not started: ')), '.') . ')';
+      return 'not started (' . rtrim(preg_replace('/\.? Nothing was changed\.$/', '', substr($result, strlen('Not started: '))), '.') . ')';
     }
     return 'failed (' . ($result !== '' ? $result : 'see its task log') . ')';
   }
