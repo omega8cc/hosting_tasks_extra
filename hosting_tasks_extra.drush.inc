@@ -548,7 +548,14 @@ function _hosting_tasks_extra_drupal_upgrade_all_site_line($member, $target_nid,
   if ($there) {
     $count['there']++;
   }
-  if (!$moved) {
+  // That rule counts a row cut off with its copy kept as one that may have
+  // moved the site, which the site page needs; here the site's place says
+  // whether it did.
+  if ($moved && !$there && $member->task_status != HOSTING_TASK_ERROR) {
+    $count['moved']++;
+    return 'upgraded onto ' . $target . ($result !== '' ? ' (' . $result . ')' : '') . '; the site has left it since';
+  }
+  if (!$moved || !$there) {
     $line = _hosting_tasks_extra_drupal_upgrade_all_unmoved($member, $found, $count);
     return $there ? $line . '; the site is on ' . $target . ' now, moved there by another task' : $line;
   }
