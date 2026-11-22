@@ -1940,6 +1940,76 @@ function _provision_tasks_extra_upgrade_stop($plan, $why, $move_tried) {
 }
 
 /**
+ * A size in bytes as people read it.
+ */
+function _provision_tasks_extra_human_bytes($bytes) {
+  $units = array('GB' => 1073741824, 'MB' => 1048576, 'KB' => 1024);
+  foreach ($units as $unit => $size) {
+    if ($bytes >= $size) {
+      return round($bytes / $size, 1) . ' ' . $unit;
+    }
+  }
+  return (int) $bytes . ' bytes';
+}
+
+/**
+ * The database a site's folder names, in bytes, or FALSE.
+ *
+ * The name from the folder's own drushrc.php, read and never included, and
+ * the size from the database server of the site this process runs for: a
+ * way-back copy is made on that same server.
+ */
+function _provision_tasks_extra_upgrade_db_bytes($site_dir) {
+  $body = @file_get_contents($site_dir . '/drushrc.php');
+  $m = array();
+  if (!is_string($body) || !preg_match('/\$options\s*\[\s*[\'"]db_name[\'"]\s*\]\s*=\s*[\'"]([A-Za-z0-9_]+)[\'"]/', $body, $m)) {
+    return FALSE;
+  }
+  try {
+    $db = d()->service('db');
+    if (!is_object($db) || !method_exists($db, 'query') || $db instanceof Provision_Service_null) {
+      return FALSE;
+    }
+    $result = $db->query("SELECT COALESCE(SUM(data_length + index_length), 0) FROM information_schema.tables WHERE table_schema = '%s'", $m[1]);
+    if (!is_object($result) || !method_exists($result, 'fetch')) {
+      return FALSE;
+    }
+    $row = $result->fetch(PDO::FETCH_NUM);
+    return (is_array($row) && isset($row[0])) ? (float) $row[0] : FALSE;
+  }
+  catch (Exception $e) {
+    return FALSE;
+  }
+}
+
+/**
+ * What a way-back copy uses on disk, as the end of a log line, or ''.
+ *
+ * Its folder followed through its links, as a copy of it would be, without
+ * the cache folders an archive leaves out; and its own database. Each figure
+ * is also given in bytes, for the panel to read.
+ */
+function _provision_tasks_extra_upgrade_copy_size($copy_dir) {
+  $files = function_exists('provision_site_bytes') ? provision_site_bytes($copy_dir, TRUE) : FALSE;
+  if ($files !== FALSE && function_exists('provision_site_excluded_bytes')) {
+    $excluded = provision_site_excluded_bytes($copy_dir);
+    if ($excluded > 0 && $excluded < $files) {
+      $files -= $excluded;
+    }
+  }
+  $database = _provision_tasks_extra_upgrade_db_bytes($copy_dir);
+  if ($files === FALSE && $database === FALSE) {
+    return '';
+  }
+  $parts = array();
+  $parts[] = ($files === FALSE) ? 'files not measured' : sprintf('files %.0f bytes', $files);
+  $parts[] = ($database === FALSE) ? 'database not measured' : sprintf('database %.0f bytes', $database);
+  $total = ($files === FALSE ? 0 : $files) + ($database === FALSE ? 0 : $database);
+  $about = ($files === FALSE || $database === FALSE) ? 'at least ' : 'about ';
+  return $about . _provision_tasks_extra_human_bytes($total) . ' on disk (' . implode(', ', $parts) . ')';
+}
+
+/**
  * The folder that keeps the database as it was before the move, or ''.
  */
 function _provision_tasks_extra_upgrade_kept_dump($uri, $since) {
@@ -2019,6 +2089,12 @@ function drush_provision_tasks_extra_provision_drupal_upgrade() {
     return _provision_tasks_extra_upgrade_stop($plan, _provision_tasks_extra_upgrade_step_why($leg, 'the copy of the site could not be switched off (see above)'), FALSE);
   }
   drush_log(dt('UPGRADE/1/COPY done: @copy holds the site as it was at @when, switched off.', array('@copy' => $copy, '@when' => $when)), 'ok');
+  // What the way back costs, for the site page: measured once, as it does
+  // not change while it is switched off.
+  $size = _provision_tasks_extra_upgrade_copy_size($copy_dir);
+  if ($size !== '') {
+    drush_log(dt('UPGRADE/1/COPY size: @copy uses !size.', array('@copy' => $copy, '!size' => $size)), 'ok');
+  }
 
   // Leg 2: the move, three tasks deep.
   drush_log(dt('UPGRADE/2/MOVE moving @uri onto @platform; Drupal\'s database updates run there.', array('@uri' => $uri, '@platform' => $plan['target_title'])), 'ok');

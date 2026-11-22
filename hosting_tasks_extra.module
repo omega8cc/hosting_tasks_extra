@@ -1243,6 +1243,7 @@ function hosting_tasks_extra_drupal_upgrade_runs($site) {
     }
     $runs[] = array(
       'task' => (int) $row->nid,
+      'vid' => (int) $row->vid,
       'date' => (int) $row->executed,
       'source' => $source,
       'target' => (int) $args['target_platform'],
@@ -1258,14 +1259,36 @@ function hosting_tasks_extra_drupal_upgrade_runs($site) {
  *
  * @return array
  *   'platform' (the one it left, or 0), 'task' (the Upgrade's node id),
- *   'date' and 'copy' (the name of the way back).
+ *   'date', 'copy' (the name of the way back), 'made' (when the panel
+ *   recorded that copy, or 0) and 'files' and 'database' (what the copy uses,
+ *   in bytes, as its Upgrade measured them, or FALSE).
  */
 function hosting_tasks_extra_drupal_upgrade_left($site) {
+  $out = array('platform' => 0, 'task' => 0, 'date' => 0, 'copy' => '', 'made' => 0, 'files' => FALSE, 'database' => FALSE);
   $runs = hosting_tasks_extra_drupal_upgrade_runs($site);
   if (!$runs || $runs[0]['target'] != $site->platform) {
-    return array('platform' => 0, 'task' => 0, 'date' => 0, 'copy' => '');
+    return $out;
   }
-  return array('platform' => $runs[0]['source'], 'task' => $runs[0]['task'], 'date' => $runs[0]['date'], 'copy' => $runs[0]['copy']);
+  $out['platform'] = $runs[0]['source'];
+  $out['task'] = $runs[0]['task'];
+  $out['date'] = $runs[0]['date'];
+  $out['copy'] = $runs[0]['copy'];
+  if ($out['copy'] !== '') {
+    $copy = hosting_get_site_by_url($out['copy']);
+    $out['made'] = is_object($copy) ? (int) $copy->created : 0;
+    $line = db_query_range("SELECT message FROM {hosting_task_log} WHERE vid = :vid AND message LIKE :size ORDER BY lid DESC", 0, 1, array(
+      ':vid' => $runs[0]['vid'],
+      ':size' => db_like('UPGRADE/1/COPY size: ') . '%',
+    ))->fetchField();
+    $m = array();
+    if (is_string($line) && preg_match('/\bfiles ([0-9]+) bytes\b/', $line, $m)) {
+      $out['files'] = (float) $m[1];
+    }
+    if (is_string($line) && preg_match('/\bdatabase ([0-9]+) bytes\b/', $line, $m)) {
+      $out['database'] = (float) $m[1];
+    }
+  }
+  return $out;
 }
 
 /**
@@ -1639,7 +1662,7 @@ function hosting_tasks_extra_drupal_upgrade_line($site, $account) {
   if ($left['task']) {
     $text = t('Upgraded on @date.', array('@date' => format_date($left['date'], 'custom', 'Y-m-d')));
     if ($left['copy'] !== '') {
-      $text .= ' ' . t('The way back is @copy.', array('@copy' => $left['copy']));
+      $text .= ' ' . hosting_tasks_extra_drupal_upgrade_copy_text($left);
       // The button, once the copy is recorded and for those who may use it.
       $back = hosting_tasks_extra_drupal_upgrade_return_state($site, $account);
       if ($back['state'] === 'upgraded') {
@@ -1653,6 +1676,40 @@ function hosting_tasks_extra_drupal_upgrade_line($site, $account) {
     $lines[] = $supported;
   }
   return implode('<br />', $lines);
+}
+
+/**
+ * The sentence of the site line that names the way back, its age and size.
+ *
+ * @param array $left
+ *   hosting_tasks_extra_drupal_upgrade_left() with a copy.
+ */
+function hosting_tasks_extra_drupal_upgrade_copy_text($left) {
+  $parts = array();
+  if ($left['made'] > 0) {
+    $parts[] = t('made @age ago', array('@age' => format_interval(max(60, REQUEST_TIME - $left['made']), 1)));
+  }
+  if ($left['files'] !== FALSE && $left['database'] !== FALSE) {
+    $parts[] = t('@size on disk (files @files, database @database)', array(
+      '@size' => format_size($left['files'] + $left['database']),
+      '@files' => format_size($left['files']),
+      '@database' => format_size($left['database']),
+    ));
+  }
+  elseif ($left['files'] !== FALSE) {
+    $parts[] = t('at least @size on disk (its database was not measured)', array('@size' => format_size($left['files'])));
+  }
+  elseif ($left['database'] !== FALSE) {
+    $parts[] = t('at least @size on disk (its files were not measured)', array('@size' => format_size($left['database'])));
+  }
+  $text = t('The way back is @copy', array('@copy' => $left['copy']));
+  foreach ($parts as $part) {
+    $text .= ', ' . $part;
+  }
+  if ($left['files'] === FALSE && $left['database'] === FALSE) {
+    return $text . ', ' . t('kept until you delete it; its size was not recorded.');
+  }
+  return $text . ', ' . t('kept until you delete it.');
 }
 
 /**
