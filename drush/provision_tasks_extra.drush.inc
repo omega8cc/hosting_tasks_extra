@@ -65,6 +65,7 @@ function provision_tasks_extra_drush_command() {
       'upgrade_copy_secs' => 'How long the site\'s newest Backup or Clone took, in seconds.',
       'upgrade_ceiling' => 'How long one task may run, in seconds.',
       'upgrade_return' => 'Set when the panel offers Go back.',
+      'upgrade_tidy' => 'Set when the run may remove what an earlier run of the site left when it was cut off before its move.',
     ),
   );
   $items['provision-drupal-upgrade-return'] = array(
@@ -1469,6 +1470,7 @@ function _provision_tasks_extra_upgrade_mark($plan, $phase) {
     @unlink($file . '.new');
     return FALSE;
   }
+  drush_set_context('PROVISION_UPGRADE_MARKED', TRUE);
   return TRUE;
 }
 
@@ -1706,7 +1708,7 @@ function _provision_tasks_extra_upgrade_plan() {
       continue;
     }
     if ($provable) {
-      return 'an earlier upgrade (task ' . $run . ') was cut off on ' . $when . ' before it moved the site and left the copy ' . $name . ' on ' . $source_title . '. Delete that site in the panel, then start again';
+      return 'an earlier upgrade (task ' . $run . ') was cut off on ' . $when . ' before it moved the site and left the copy ' . $name . ' on ' . $source_title . '. Delete that site in the panel, then start again; when the panel does not list it, ask support';
     }
     if (in_array($name, $in_dir, TRUE)) {
       return 'an earlier upgrade left the copy ' . $name . ' on ' . $source_title . '. Delete that site in the panel, or its folder ' . $dir . ' when the panel does not list it, then start again';
@@ -2068,6 +2070,14 @@ function _provision_tasks_extra_upgrade_undo($plan) {
     return NULL;
   }
   $clean = TRUE;
+  // A delete drops the database the copy's settings name, and a deploy cut
+  // off before it wrote the copy's own still names the site's: such a copy
+  // is left for support, never deleted.
+  $unsafe = _provision_tasks_extra_upgrade_copy_db_unsafe($dir, $plan);
+  if ($unsafe !== '') {
+    drush_log(dt('UPGRADE/UNDO @copy is left as it is: @why. Ask support.', array('@copy' => $copy, '@why' => $unsafe)), 'warning');
+    return FALSE;
+  }
   // Only a copy on the site's own platform is this run's.
   if ($root !== FALSE && $root !== '' && _provision_tasks_extra_upgrade_same_root($root, $plan['source_root'])) {
     $leg = _provision_tasks_extra_upgrade_leg('@' . $copy, 'delete', array($plan['marker']));
@@ -2115,6 +2125,47 @@ function _provision_tasks_extra_upgrade_undo($plan) {
 }
 
 /**
+ * Why deleting a way-back copy could drop another database, or ''.
+ *
+ * A delete drops the database the copy's folder names. A copy whose deploy
+ * was cut off before it wrote its own settings still names the site's
+ * database, as provision's own clean-up of an unfinished copy knows.
+ */
+function _provision_tasks_extra_upgrade_copy_db_unsafe($dir, $plan) {
+  if (!file_exists($dir) && !is_link($dir)) {
+    return '';
+  }
+  if (is_link($dir) || !is_dir($dir)) {
+    return 'its folder is not a plain folder';
+  }
+  if (!function_exists('_provision_target_copy_parse_db')) {
+    return 'this server cannot read the database it names';
+  }
+  $parsed = _provision_target_copy_parse_db($dir);
+  if ($parsed['db_name'] === '') {
+    return 'the database it names cannot be read';
+  }
+  $own = array();
+  if (!empty($plan['uri'])) {
+    $site = _provision_target_copy_parse_db($plan['source_root'] . '/sites/' . $plan['uri']);
+    if ($site['db_name'] !== '') {
+      $own[] = $site['db_name'];
+    }
+  }
+  $option = drush_get_option('db_name', '', 'site');
+  if (is_string($option) && $option !== '') {
+    $own[] = $option;
+  }
+  if (!$own) {
+    return "the site's own database cannot be read to tell the two apart";
+  }
+  if (in_array($parsed['db_name'], $own, TRUE)) {
+    return "its settings still name the site's own database (" . $parsed['db_name'] . ')';
+  }
+  return '';
+}
+
+/**
  * Ends a run that did not upgrade the site: the copy goes, the reason stays.
  */
 function _provision_tasks_extra_upgrade_stop($plan, $why, $move_tried) {
@@ -2148,7 +2199,10 @@ function _provision_tasks_extra_human_bytes($bytes) {
  *
  * The name from the folder's own drushrc.php, read and never included, and
  * the size from the database server of the site this process runs for: a
- * way-back copy is made on that same server.
+ * way-back copy is made on that same server. The figure is worth no warning
+ * and no failure of the run, so it is read on a connection of its own,
+ * opened quietly (the one the run opened before its steps can have timed
+ * out since), and nothing it meets is logged.
  */
 function _provision_tasks_extra_upgrade_db_bytes($site_dir) {
   $body = @file_get_contents($site_dir . '/drushrc.php');
@@ -2156,30 +2210,19 @@ function _provision_tasks_extra_upgrade_db_bytes($site_dir) {
   if (!is_string($body) || !preg_match('/\$options\s*\[\s*[\'"]db_name[\'"]\s*\]\s*=\s*[\'"]([A-Za-z0-9_]+)[\'"]/', $body, $m)) {
     return FALSE;
   }
-  // A server that cannot be reached sets the connection error: the figure
-  // is worth no failure of the run, so the error state is put back after.
-  $code = drush_get_context('DRUSH_ERROR_CODE', DRUSH_SUCCESS);
-  $errors = drush_get_context('DRUSH_ERROR_LOG', array());
-  $bytes = _provision_tasks_extra_upgrade_db_bytes_read($m[1]);
-  drush_set_context('DRUSH_ERROR_CODE', $code);
-  drush_set_context('DRUSH_ERROR_LOG', $errors);
-  return $bytes;
-}
-
-/**
- * Reads a database's size through the database server of this site.
- */
-function _provision_tasks_extra_upgrade_db_bytes_read($name) {
   try {
     $db = d()->service('db');
-    if (!is_object($db) || !method_exists($db, 'query') || $db instanceof Provision_Service_null) {
+    if (!is_object($db) || !($db instanceof Provision_Service_db_pdo)) {
       return FALSE;
     }
-    $result = $db->query("SELECT COALESCE(SUM(data_length + index_length), 0) FROM information_schema.tables WHERE table_schema = '%s'", $name);
-    if (!is_object($result) || !method_exists($result, 'fetch')) {
+    $db->close();
+    if (!$db->connect(TRUE) || !is_object($db->conn)) {
+      $db->close();
       return FALSE;
     }
-    $row = $result->fetch(PDO::FETCH_NUM);
+    $statement = @$db->conn->prepare('SELECT COALESCE(SUM(data_length + index_length), 0) FROM information_schema.tables WHERE table_schema = ?');
+    $row = ($statement && @$statement->execute(array($m[1]))) ? $statement->fetch(PDO::FETCH_NUM) : FALSE;
+    $db->close();
     return (is_array($row) && isset($row[0])) ? (float) $row[0] : FALSE;
   }
   catch (Exception $e) {
@@ -2259,8 +2302,12 @@ function drush_provision_tasks_extra_provision_drupal_upgrade() {
   putenv('BOA_UPGRADE_RUN=' . (int) $plan['task_nid']);
   $result = _provision_tasks_extra_upgrade_run($plan);
   // The run ended by its own code, whichever way: its mark goes. Only a run
-  // that never got here leaves one.
-  _provision_tasks_extra_upgrade_mark_clear($plan['task_nid']);
+  // that never got here leaves one, and a run that wrote none (refused
+  // before its first step, a task run again under the same number) leaves
+  // an earlier run's mark as it is.
+  if (drush_get_context('PROVISION_UPGRADE_MARKED', FALSE)) {
+    _provision_tasks_extra_upgrade_mark_clear($plan['task_nid']);
+  }
   return $result;
 }
 
@@ -2291,6 +2338,7 @@ function _provision_tasks_extra_upgrade_run($plan) {
   // Leg 0: what a run cut off before its move left.
   foreach ($plan['tidy'] as $item) {
     $removed = _provision_tasks_extra_upgrade_undo(array(
+      'uri' => $uri,
       'copy' => $item['copy'],
       'source_root' => $plan['source_root'],
       'marker' => $plan['marker'],
