@@ -22,6 +22,9 @@ function drush_hosting_tasks_extra_pre_hosting_task() {
   if ($task->ref->type == 'site' && $task->task_type == 'drupal_upgrade_return') {
     hosting_tasks_extra_drupal_upgrade_return_start($task);
   }
+  if ($task->ref->type == 'platform' && $task->task_type == 'drupal_upgrade_all') {
+    hosting_tasks_extra_drupal_upgrade_all_start($task);
+  }
   // The Upgrade's move: a Migrate that is undone when the database updates
   // do not finish or a page no longer answers as it did.
   if ($task->ref->type == 'site' && $task->task_type == 'migrate' && !empty($task->task_args['upgrade_strict'])) {
@@ -103,6 +106,22 @@ function hosting_tasks_extra_task_accounts($task) {
 function hosting_tasks_extra_drupal_upgrade_start($task) {
   $site = $task->ref;
   $target_nid = isset($task->task_args['target_platform']) ? (int) $task->task_args['target_platform'] : 0;
+  // A site of an Upgrade all sites run: only one its run vouches for, still
+  // on the platform the run was for, and only while no site before it in
+  // the run ended in error (a runner that was killed cancels nothing).
+  $member = hosting_tasks_extra_drupal_upgrade_all_membership($task);
+  if ($member['member']) {
+    if ($member['why'] !== '') {
+      return hosting_tasks_extra_drupal_upgrade_refuse($member['why']);
+    }
+    if ((int) $site->platform !== $member['platform']) {
+      return hosting_tasks_extra_drupal_upgrade_refuse('this site is no longer on the platform its Upgrade all sites was for');
+    }
+    $before = hosting_tasks_extra_drupal_upgrade_all_failed($member['token'], $member['order']);
+    if ($before) {
+      return hosting_tasks_extra_drupal_upgrade_refuse('the upgrade of ' . hosting_tasks_extra_node_title($before->rid) . ', before this one in Upgrade all sites, did not finish');
+    }
+  }
   if (function_exists('hosting_panel_is_moving') && hosting_panel_is_moving()) {
     return hosting_tasks_extra_drupal_upgrade_refuse('the control panel is moving to its new version; start again in a few minutes');
   }
@@ -300,6 +319,247 @@ function hosting_tasks_extra_drupal_upgrade_keep_size($task) {
       ->fields(array('vid' => $task->vid, 'nid' => $task->nid, 'name' => $name, 'value' => $value))
       ->execute();
   }
+}
+
+/**
+ * Refuses the last row of an Upgrade all sites run as it starts.
+ */
+function hosting_tasks_extra_drupal_upgrade_all_refuse($why) {
+  return drush_set_error('HOSTING_UPGRADE_ALL_NOT_STARTED', dt('UPGRADE-ALL/RESULT Not started: !why. Nothing was changed.', array('!why' => str_replace(array('<', '>'), '', $why))));
+}
+
+/**
+ * Checks the last row of an Upgrade all sites run as it starts.
+ *
+ * Only the row the run itself queued goes on to its Verify: a row of this
+ * type queued any other way ends here.
+ */
+function hosting_tasks_extra_drupal_upgrade_all_start($task) {
+  $token = isset($task->task_args['batch']) ? (string) $task->task_args['batch'] : '';
+  $parts = hosting_tasks_extra_drupal_upgrade_all_token($token);
+  $rollup = $parts ? hosting_tasks_extra_drupal_upgrade_all_rollup($token) : FALSE;
+  if (!$parts || $parts['platform'] !== (int) $task->rid || empty($task->created) || (int) $task->created !== $parts['time']
+    || !$rollup || (int) $rollup->nid !== (int) $task->nid) {
+    return hosting_tasks_extra_drupal_upgrade_all_refuse('start this from Upgrade all sites');
+  }
+}
+
+/**
+ * Implements hook_post_hosting_TASK_TYPE_task().
+ *
+ * The row rides a Verify of the old platform, and the panel's own hook for a
+ * Verify is keyed by its task type: it is called here first, so the
+ * platform's packages are recorded as any Verify records them.
+ */
+function hosting_tasks_extra_post_hosting_drupal_upgrade_all_task($task, $data) {
+  if (function_exists('hosting_platform_post_hosting_verify_task')) {
+    hosting_platform_post_hosting_verify_task($task, $data);
+  }
+  hosting_tasks_extra_drupal_upgrade_all_end($task, TRUE);
+}
+
+/**
+ * Implements hook_hosting_TASK_TYPE_task_rollback().
+ *
+ * Also called when the post hook ends the row in error.
+ */
+function hosting_tasks_extra_hosting_drupal_upgrade_all_task_rollback($task, $data) {
+  hosting_tasks_extra_drupal_upgrade_all_end($task, FALSE);
+}
+
+/**
+ * Says what each site of an Upgrade all sites run did, and what now.
+ *
+ * Read from the sites' rows and their nodes, never from the order the queue
+ * ran them in: a site is upgraded when its node is on the target. A run that
+ * moved no site unlocks the platform it locked.
+ *
+ * @param object $task
+ *   The run's last row.
+ * @param bool $verified
+ *   The Verify of the old platform ended well.
+ */
+function hosting_tasks_extra_drupal_upgrade_all_end($task, $verified) {
+  $done = &drupal_static(__FUNCTION__, array());
+  if (isset($done[$task->nid])) {
+    return;
+  }
+  $done[$task->nid] = TRUE;
+  $token = isset($task->task_args['batch']) ? (string) $task->task_args['batch'] : '';
+  $rollup = hosting_tasks_extra_drupal_upgrade_all_rollup($token);
+  if (!$rollup || (int) $rollup->nid !== (int) $task->nid) {
+    return;
+  }
+  $target_nid = (int) $rollup->target;
+  $target = hosting_tasks_extra_node_title($target_nid);
+  $platform = node_load($task->rid, NULL, TRUE);
+  $title = is_object($platform) ? $platform->title : hosting_tasks_extra_node_title($task->rid);
+  if (!$verified) {
+    drush_log(dt('UPGRADE-ALL/VERIFY the Verify of @platform did not finish (see above): its packages are recorded as they were.', array('@platform' => $title)), 'warning');
+  }
+  $count = array('moved' => 0, 'error' => 0, 'cancelled' => 0, 'hand' => 0, 'open' => 0);
+  $members = hosting_tasks_extra_drupal_upgrade_all_members($token);
+  $sites = array();
+  $rows = array();
+  foreach ($members as $member) {
+    $sites[] = (int) $member->rid;
+    $rows[] = (int) $member->nid;
+    drush_log(dt('UPGRADE-ALL/SITE @site: !line', array(
+      '@site' => hosting_tasks_extra_node_title($member->rid),
+      '!line' => _hosting_tasks_extra_drupal_upgrade_all_site_line($member, $target_nid, $target, $count),
+    )), 'ok');
+  }
+  $left = 0;
+  $items = isset($task->task_args['left_out']) ? explode("\n", (string) $task->task_args['left_out']) : array();
+  foreach ($items as $item) {
+    $pair = explode("\t", $item, 2);
+    if (count($pair) == 2 && ctype_digit($pair[0])) {
+      $left++;
+      drush_log(dt('UPGRADE-ALL/SITE @site: left out at the start (@why).', array('@site' => hosting_tasks_extra_node_title($pair[0]), '@why' => $pair[1])), 'ok');
+    }
+  }
+
+  // What now.
+  if (is_object($platform) && $platform->platform_status == HOSTING_PLATFORM_LOCKED) {
+    if (!$count['moved'] && !$count['open']) {
+      // The run took the lock from an enabled platform.
+      $platform->platform_status = HOSTING_PLATFORM_ENABLED;
+      $platform->no_verify = TRUE;
+      node_save($platform);
+      drush_log(dt('UPGRADE-ALL/NEXT @platform is unlocked again: no site moved off it.', array('@platform' => $title)), 'ok');
+    }
+    else {
+      $copies = 0;
+      $stay = 0;
+      $names = db_query("SELECT n.title FROM {hosting_site} s INNER JOIN {node} n ON n.vid = s.vid WHERE s.platform = :platform AND s.status <> :deleted", array(
+        ':platform' => (int) $platform->nid,
+        ':deleted' => HOSTING_SITE_DELETED,
+      ))->fetchCol();
+      foreach ($names as $name) {
+        if (preg_match('/^back-[0-9]+\.temp\./', hosting_site_clean_domain($name))) {
+          $copies++;
+        }
+        else {
+          $stay++;
+        }
+      }
+      drush_log(dt('UPGRADE-ALL/NEXT @platform stays locked: it holds @copies and @sites still on it, which cannot be moved or cloned from the panel until it is unlocked. When the upgraded sites are checked, delete their way-back copies; Delete the platform when no site is left on it.', array(
+        '@platform' => $title,
+        '@copies' => format_plural($copies, '1 way-back copy', '@count way-back copies'),
+        '@sites' => format_plural($stay, '1 site', '@count sites'),
+      )), 'ok');
+    }
+  }
+  // What the sites' own runs queued after them, such as their Verifies.
+  if ($sites) {
+    $after = db_query("SELECT t.task_type, t.rid FROM {hosting_task} t INNER JOIN {node} n ON n.vid = t.vid
+      WHERE t.rid IN (:sites) AND t.nid NOT IN (:rows) AND t.task_status = :queued ORDER BY t.nid", array(
+        ':sites' => $sites,
+        ':rows' => $rows,
+        ':queued' => HOSTING_TASK_QUEUED,
+      ))->fetchAll();
+    $queued = array();
+    foreach ($after as $row) {
+      $queued[] = $row->task_type . ' of ' . hosting_tasks_extra_node_title($row->rid);
+    }
+    if ($queued) {
+      drush_log(dt('UPGRADE-ALL/NEXT still queued after this run: @rows.', array('@rows' => implode(', ', $queued))), 'ok');
+    }
+  }
+
+  $text = $count['moved'] . ' of ' . count($members) . ' sites upgraded onto ' . $target;
+  $said = array(
+    'error' => '@count ended in error',
+    'cancelled' => '@count cancelled after it',
+    'hand' => '@count cancelled by hand',
+    'open' => '@count not finished',
+  );
+  foreach ($said as $key => $words) {
+    if ($count[$key]) {
+      $text .= '; ' . str_replace('@count', $count[$key], $words);
+    }
+  }
+  if ($left) {
+    $text .= '; ' . $left . ' left out at the start';
+  }
+  if ($count['error']) {
+    drush_set_error('HOSTING_UPGRADE_ALL_FAILED', dt('UPGRADE-ALL/RESULT !text.', array('!text' => $text)));
+  }
+  elseif ($count['hand'] || $count['open']) {
+    drush_log(dt('UPGRADE-ALL/RESULT !text.', array('!text' => $text)), 'warning');
+  }
+  else {
+    drush_log(dt('UPGRADE-ALL/RESULT !text.', array('!text' => $text)), 'success');
+  }
+}
+
+/**
+ * One site's line of an Upgrade all sites run's result.
+ *
+ * @param array $count
+ *   The run's counts, added to.
+ */
+function _hosting_tasks_extra_drupal_upgrade_all_site_line($member, $target_nid, $target, &$count) {
+  $messages = db_query("SELECT message FROM {hosting_task_log} WHERE vid = :vid
+      AND (message LIKE :result OR message LIKE :cancel OR message LIKE :hand OR message LIKE :lost)
+    ORDER BY lid DESC", array(
+      ':vid' => (int) $member->vid,
+      ':result' => db_like('UPGRADE/RESULT ') . '%',
+      ':cancel' => db_like('Cancelled: the upgrade of ') . '%',
+      ':hand' => db_like('Task was cancelled') . '%',
+      ':lost' => db_like('Task runner process ') . '%',
+    ))->fetchCol();
+  $found = array('result' => '', 'cancel' => '', 'hand' => '', 'lost' => '');
+  $starts = array('result' => 'UPGRADE/RESULT ', 'cancel' => 'Cancelled: the upgrade of ', 'hand' => 'Task was cancelled', 'lost' => 'Task runner process ');
+  foreach ($messages as $message) {
+    $message = trim(str_replace(array('<', '>'), '', (string) $message));
+    foreach ($starts as $key => $start) {
+      if ($found[$key] === '' && strpos($message, $start) === 0) {
+        $found[$key] = ($key === 'result') ? substr($message, strlen($start)) : $message;
+      }
+    }
+  }
+  $result = $found['result'];
+  if ($member->task_status == HOSTING_TASK_QUEUED) {
+    $count['open']++;
+    return 'not finished (still queued)';
+  }
+  if ($member->task_status == HOSTING_TASK_PROCESSING) {
+    $count['open']++;
+    return 'not finished (still running)';
+  }
+  if ($member->platform && (int) $member->platform === (int) $target_nid) {
+    $count['moved']++;
+    if ($member->task_status == HOSTING_TASK_ERROR) {
+      $count['error']++;
+      return 'upgraded, last step unfinished (' . ($result !== '' ? $result : 'see its task log') . ')';
+    }
+    return 'upgraded onto ' . $target . ($result !== '' ? ' (' . $result . ')' : '');
+  }
+  if ($member->task_status == HOSTING_TASK_ERROR) {
+    $count['error']++;
+    if ($result === '' && $found['lost'] !== '') {
+      return 'failed: its runner was lost';
+    }
+    if (strpos($result, 'Not started: ') === 0) {
+      return 'not started (' . rtrim(substr($result, strlen('Not started: ')), '.') . ')';
+    }
+    return 'failed (' . ($result !== '' ? $result : 'see its task log') . ')';
+  }
+  if ($member->task_status == HOSTING_TASK_WARNING) {
+    $m = array();
+    if ($found['cancel'] !== '' && preg_match('/^Cancelled: the upgrade of (.+), before this one/', $found['cancel'], $m)) {
+      $count['cancelled']++;
+      return 'cancelled after ' . $m[1] . ' did not upgrade';
+    }
+    $count['hand']++;
+    if ($found['hand'] === '' || $found['hand'] === 'Task was cancelled.') {
+      return 'cancelled by hand';
+    }
+    return 'cancelled (' . rtrim(preg_replace('/^Task was cancelled: */', '', $found['hand']), '.') . ')';
+  }
+  $count['error']++;
+  return 'ended without moving the site (' . ($result !== '' ? $result : 'see its task log') . ')';
 }
 
 /**
