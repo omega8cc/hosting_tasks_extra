@@ -1722,8 +1722,14 @@ function hosting_tasks_extra_drupal_upgrade_all_members($token) {
       ':node_type' => 'task',
       ':type' => 'drupal_upgrade',
     ))->fetchAll();
+  // Only the rows the run's last row vouches for: a row written by hand with
+  // the token and the time, by another user, is no site of the run.
+  $rollup = $rows ? hosting_tasks_extra_drupal_upgrade_all_rollup($token) : FALSE;
   $members = array();
   foreach ($rows as $row) {
+    if (!$rollup || (int) $row->uid !== (int) $rollup->uid || (string) $row->queued_by !== (string) $rollup->queued_by || (string) $row->target !== (string) $rollup->target) {
+      continue;
+    }
     $row->order = ctype_digit((string) $row->batch_order) ? (int) $row->batch_order : 0;
     $row->platform = (int) $row->platform;
     $row->not_started = !empty($row->not_started);
