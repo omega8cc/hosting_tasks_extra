@@ -1421,7 +1421,7 @@ function _provision_tasks_extra_upgrade_newer($source, $target, $diff) {
     return array('rule' => 'release', 'why' => 'the Upgrade is for Drupal 10 and later, and this is Drupal ' . ($s[0] < 10 ? $source : $target));
   }
   if ($t[0] >= 12) {
-    return array('rule' => 'major', 'why' => 'Drupal 12 needs Drush 14, which has no stable release yet');
+    return array('rule' => 'major', 'why' => 'the Upgrade does not take a site to Drupal 12 yet');
   }
   if (version_compare($target, $source, '<')) {
     return array('rule' => 'older', 'why' => 'it carries Drupal ' . $target . ', older than the ' . $source . ' this site runs');
