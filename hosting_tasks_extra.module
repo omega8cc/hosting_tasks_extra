@@ -654,6 +654,18 @@ function hosting_tasks_extra_drupal_upgrade_diff($source_nid, $source_root, $tar
 }
 
 /**
+ * The condition that keeps a load over platforms to their own rows, or none.
+ *
+ * A profile instance's iid can equal a platform's nid, and the profile's
+ * packages, its own profile among them, are recorded under that number on
+ * another platform. A panel whose package module does not know the condition
+ * yet would take it for a column.
+ */
+function hosting_tasks_extra_platform_own() {
+  return function_exists('hosting_package_ref_ambiguous') ? array('platform_own' => TRUE) : array();
+}
+
+/**
  * The switched-on modules of a site as the panel holds them.
  *
  * Rows of the site itself: a profile's rows can carry the same number as a
@@ -665,9 +677,15 @@ function hosting_tasks_extra_drupal_upgrade_diff($source_nid, $source_root, $tar
  */
 function hosting_tasks_extra_drupal_upgrade_modules($site_nid) {
   $modules = array();
+  // The site's own rows: those of its platform, of none, and its own packages.
+  $platforms = array(0, -1);
+  $platform = (int) db_query("SELECT s.platform FROM {hosting_site} s INNER JOIN {node} n ON n.vid = s.vid WHERE n.nid = :nid", array(':nid' => $site_nid))->fetchField();
+  if ($platform > 0) {
+    $platforms[] = $platform;
+  }
   $rows = db_query("SELECT p.short_name, i.schema_version, i.filename FROM {hosting_package_instance} i
       INNER JOIN {hosting_package} p ON p.nid = i.package_id
-    WHERE i.rid = :rid AND p.package_type = :type AND i.status = 1", array(':rid' => $site_nid, ':type' => 'module'));
+    WHERE i.rid = :rid AND p.package_type = :type AND i.status = 1 AND i.platform IN (:platforms)", array(':rid' => $site_nid, ':type' => 'module', ':platforms' => $platforms));
   foreach ($rows as $row) {
     $modules[$row->short_name] = array('schema_version' => $row->schema_version, 'filename' => (string) $row->filename);
   }
@@ -792,9 +810,10 @@ function _hosting_tasks_extra_drupal_upgrade_targets($site, $account) {
   // Rules 2 and 3: the platforms this account may use that carry the site's
   // install profile, as the Migrate form finds them.
   $profile = node_load($site->profile);
-  $instances = hosting_package_instances_load(array('r.type' => 'platform', 'n.nid' => $site->profile, 'h.status' => HOSTING_PLATFORM_ENABLED));
+  $own = hosting_tasks_extra_platform_own();
+  $instances = hosting_package_instances_load(array('r.type' => 'platform', 'n.nid' => $site->profile, 'h.status' => HOSTING_PLATFORM_ENABLED) + $own);
   if (is_object($profile) && !empty($profile->short_name)) {
-    $instances += hosting_package_instances_load(array('r.type' => 'platform', 'p.old_short_name' => $profile->short_name, 'h.status' => HOSTING_PLATFORM_ENABLED));
+    $instances += hosting_package_instances_load(array('r.type' => 'platform', 'p.old_short_name' => $profile->short_name, 'h.status' => HOSTING_PLATFORM_ENABLED) + $own);
   }
   $allowed = ($account->uid == 1) ? NULL : _hosting_get_allowed_platforms($account->uid);
   // A platform the site was upgraded away from takes no Migrate of it back
