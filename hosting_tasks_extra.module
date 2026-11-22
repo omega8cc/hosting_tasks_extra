@@ -98,6 +98,20 @@ function hosting_tasks_extra_hosting_tasks() {
     'parameters' => array(),
   );
 
+  // Its dialog queues one Upgrade per site and then this row, which runs
+  // last: it records the platform's packages again, as a Verify does, and
+  // says what each site did.
+  $tasks['platform']['drupal_upgrade_all'] = array(
+    'title' => t('Upgrade all sites'),
+    'description' => t('Upgrade every site on this platform onto a newer one, one at a time, each exactly like its own Upgrade.'),
+    'command' => 'provision-verify',
+    'provision_save' => TRUE,
+    // The panel's own check for platforms takes a fixed list of tasks.
+    'access callback' => 'hosting_tasks_extra_drupal_upgrade_all_task_access',
+    'dialog' => TRUE,
+    'parameters' => array('target_platform'),
+  );
+
   return $tasks;
 }
 
@@ -313,6 +327,10 @@ function hosting_tasks_extra_permission() {
       'title' => t('create drupal_upgrade_return task'),
       'description' => t('Put back the copy an Upgrade kept of a Drupal 10 or later site.'),
     ),
+    'create drupal_upgrade_all task' => array(
+      'title' => t('create drupal_upgrade_all task'),
+      'description' => t('Upgrade every Drupal 10 or later site of a platform, one at a time, each as its own Upgrade would.'),
+    ),
   );
 }
 
@@ -457,6 +475,14 @@ function hosting_tasks_extra_form_alter(&$form, &$form_state, $form_id) {
         if (!empty($form['nid']['#value']) && ($site = node_load($form['nid']['#value']))) {
           drupal_set_title(t('Upgrade @site', array('@site' => $site->title)));
         }
+        break;
+
+      case 'drupal_upgrade_all':
+        if (!empty($form['nid']['#value']) && ($platform = node_load($form['nid']['#value']))) {
+          drupal_set_title(t('Upgrade all sites on @platform', array('@platform' => $platform->title)));
+        }
+        // One function queues the whole run, in place of the panel's one row.
+        $form['#submit'] = array('hosting_tasks_extra_drupal_upgrade_all_submit');
         break;
 
     }
@@ -1596,12 +1622,804 @@ function hosting_task_drupal_upgrade_return_form_validate($form, &$form_state) {
 }
 
 /**
+ * The Drupal release the panel holds for a platform, or ''.
+ */
+function hosting_tasks_extra_platform_release($platform) {
+  return (is_object($platform) && isset($platform->release) && is_object($platform->release) && isset($platform->release->version)) ? (string) $platform->release->version : '';
+}
+
+/**
+ * Whether a platform runs Backdrop, Grav or Textpattern.
+ */
+function hosting_tasks_extra_platform_is_foreign($nid) {
+  return (function_exists('hosting_backdrop_platform_is_backdrop') && hosting_backdrop_platform_is_backdrop($nid))
+    || (function_exists('hosting_grav_platform_is_grav') && hosting_grav_platform_is_grav($nid))
+    || (function_exists('hosting_txp_platform_is_txp') && hosting_txp_platform_is_txp($nid));
+}
+
+/**
+ * The parts of an Upgrade all sites token, or FALSE.
+ *
+ * A run's token is <platform node id>-<time it was queued>-<8 hex digits>.
+ * Every row of the run carries it as its batch argument.
+ */
+function hosting_tasks_extra_drupal_upgrade_all_token($token) {
+  $m = array();
+  if (!is_string($token) || !preg_match('/^([1-9][0-9]{0,9})-([1-9][0-9]{0,10})-[0-9a-f]{8}$/', $token, $m)) {
+    return FALSE;
+  }
+  return array('platform' => (int) $m[1], 'time' => (int) $m[2]);
+}
+
+/**
+ * The column a task row's queuer is read from, for a query.
+ */
+function hosting_tasks_extra_queued_by_column($alias) {
+  return (function_exists('_hosting_task_has_queued_by') && _hosting_task_has_queued_by()) ? $alias . '.queued_by' : "''";
+}
+
+/**
+ * The last row of an Upgrade all sites run, or FALSE.
+ *
+ * The drupal_upgrade_all row the run queued on the token's platform at the
+ * token's time.
+ */
+function hosting_tasks_extra_drupal_upgrade_all_rollup($token) {
+  $parts = hosting_tasks_extra_drupal_upgrade_all_token($token);
+  if (!$parts) {
+    return FALSE;
+  }
+  return db_query_range("SELECT t.nid, t.vid, t.task_status, n.uid, " . hosting_tasks_extra_queued_by_column('t') . " AS queued_by, g.value AS target
+      FROM {hosting_task} t
+      INNER JOIN {node} n ON n.vid = t.vid
+      INNER JOIN {hosting_task_arguments} a ON a.vid = t.vid AND a.name = :batch AND a.value = :token
+      LEFT JOIN {hosting_task_arguments} g ON g.vid = t.vid AND g.name = :target
+    WHERE t.rid = :platform AND t.task_type = :type AND n.created = :time
+    ORDER BY t.nid ASC", 0, 1, array(
+      ':batch' => 'batch',
+      ':token' => $token,
+      ':target' => 'target_platform',
+      ':platform' => $parts['platform'],
+      ':type' => 'drupal_upgrade_all',
+      ':time' => $parts['time'],
+    ))->fetchObject();
+}
+
+/**
+ * The sites' rows of an Upgrade all sites run, in the run's order.
+ *
+ * A row of the run is a drupal_upgrade row with the run's token as its batch
+ * argument, made at the token's time: the rows the run queued. A Retry or a
+ * Run again of one is a new node, made later, and an ordinary Upgrade of its
+ * site.
+ *
+ * @return array
+ *   Objects with nid, vid, rid (the site), task_status, uid, queued_by,
+ *   target, order, platform (the site's now) and not_started (its log says it
+ *   was refused at its start).
+ */
+function hosting_tasks_extra_drupal_upgrade_all_members($token) {
+  $parts = hosting_tasks_extra_drupal_upgrade_all_token($token);
+  if (!$parts) {
+    return array();
+  }
+  $rows = db_query("SELECT t.nid, t.vid, t.rid, t.task_status, n.uid, " . hosting_tasks_extra_queued_by_column('t') . " AS queued_by, g.value AS target, o.value AS batch_order, s.platform,
+        (SELECT 1 FROM {hosting_task_log} l WHERE l.vid = t.vid AND l.message LIKE :not_started LIMIT 1) AS not_started
+      FROM {node} n
+      INNER JOIN {hosting_task} t ON t.vid = n.vid
+      INNER JOIN {hosting_task_arguments} a ON a.vid = t.vid AND a.name = :batch AND a.value = :token
+      LEFT JOIN {hosting_task_arguments} g ON g.vid = t.vid AND g.name = :target
+      LEFT JOIN {hosting_task_arguments} o ON o.vid = t.vid AND o.name = :order
+      LEFT JOIN {node} sn ON sn.nid = t.rid
+      LEFT JOIN {hosting_site} s ON s.vid = sn.vid
+    WHERE n.created = :time AND n.type = :node_type AND t.task_type = :type", array(
+      ':not_started' => db_like('UPGRADE/RESULT Not started:') . '%',
+      ':batch' => 'batch',
+      ':token' => $token,
+      ':target' => 'target_platform',
+      ':order' => 'batch_order',
+      ':time' => $parts['time'],
+      ':node_type' => 'task',
+      ':type' => 'drupal_upgrade',
+    ))->fetchAll();
+  // Only the rows the run's last row vouches for: a row written by hand with
+  // the token and the time, by another user, is no site of the run.
+  $rollup = $rows ? hosting_tasks_extra_drupal_upgrade_all_rollup($token) : FALSE;
+  $members = array();
+  foreach ($rows as $row) {
+    if (!$rollup || (int) $row->uid !== (int) $rollup->uid || (string) $row->queued_by !== (string) $rollup->queued_by || (string) $row->target !== (string) $rollup->target) {
+      continue;
+    }
+    $row->order = ctype_digit((string) $row->batch_order) ? (int) $row->batch_order : 0;
+    $row->platform = (int) $row->platform;
+    $row->not_started = !empty($row->not_started);
+    $members[] = $row;
+  }
+  usort($members, '_hosting_tasks_extra_drupal_upgrade_all_order');
+  return $members;
+}
+
+/**
+ * Sorts the rows of a run by their place in it.
+ */
+function _hosting_tasks_extra_drupal_upgrade_all_order($a, $b) {
+  if ($a->order != $b->order) {
+    return ($a->order < $b->order) ? -1 : 1;
+  }
+  return ($a->nid < $b->nid) ? -1 : (($a->nid > $b->nid) ? 1 : 0);
+}
+
+/**
+ * Whether an Upgrade's row is a site of an Upgrade all sites run.
+ *
+ * Its token must be one the run's last row carries, with the same author,
+ * the same queuer and the same target, and that author must still hold the
+ * permission.
+ *
+ * @return array
+ *   'member': FALSE for an ordinary Upgrade. For a row of a run: 'token',
+ *   'order', 'platform' (the one the run was for) and 'why', '' when the
+ *   run's own last row vouches for it.
+ */
+function hosting_tasks_extra_drupal_upgrade_all_membership($task) {
+  $out = array('member' => FALSE, 'token' => '', 'order' => 0, 'platform' => 0, 'why' => '');
+  $args = (isset($task->task_args) && is_array($task->task_args)) ? $task->task_args : array();
+  if (empty($args['batch'])) {
+    return $out;
+  }
+  $parts = hosting_tasks_extra_drupal_upgrade_all_token((string) $args['batch']);
+  // A row made at another time than its token's is not one the run queued.
+  if (!$parts || empty($task->created) || (int) $task->created !== $parts['time']) {
+    return $out;
+  }
+  $out['member'] = TRUE;
+  $out['token'] = (string) $args['batch'];
+  $out['order'] = (isset($args['batch_order']) && ctype_digit((string) $args['batch_order'])) ? (int) $args['batch_order'] : 0;
+  $out['platform'] = $parts['platform'];
+  $rollup = hosting_tasks_extra_drupal_upgrade_all_rollup($out['token']);
+  $author = $rollup ? user_load($rollup->uid) : FALSE;
+  $target = isset($args['target_platform']) ? (string) $args['target_platform'] : '';
+  if (!$rollup || $out['order'] < 1 || (int) $rollup->uid !== (int) $task->uid
+    || (string) $rollup->queued_by !== (isset($task->queued_by) ? (string) $task->queued_by : '')
+    || (string) $rollup->target !== $target
+    || !is_object($author) || !user_access('create drupal_upgrade_all task', $author)) {
+    $out['why'] = 'start this from Upgrade all sites';
+  }
+  return $out;
+}
+
+/**
+ * The first row of a run that ended in error, before a place in it, or FALSE.
+ *
+ * @param string $token
+ *   The run's token.
+ * @param int $before
+ *   Only rows before this place; 0 for any.
+ */
+function hosting_tasks_extra_drupal_upgrade_all_failed($token, $before = 0) {
+  foreach (hosting_tasks_extra_drupal_upgrade_all_members($token) as $member) {
+    if (($before < 1 || $member->order < $before) && $member->task_status == HOSTING_TASK_ERROR) {
+      return $member;
+    }
+  }
+  return FALSE;
+}
+
+/**
+ * Why a site of a run may not start yet, from the rows before it, or ''.
+ *
+ * The queue runs one task at a time, so a row before this one that is still
+ * processing has lost its runner (the queue's reaper marks it failed only
+ * later) or runs beside a holder past its time; one still queued was passed
+ * by the queue, which is no promise of order. Either way this site waits for
+ * nothing: it is not started, so a site after one that does not upgrade is
+ * never upgraded.
+ */
+function hosting_tasks_extra_drupal_upgrade_all_blocked($token, $order) {
+  foreach (hosting_tasks_extra_drupal_upgrade_all_members($token) as $member) {
+    if ($member->order >= $order) {
+      break;
+    }
+    $name = hosting_tasks_extra_node_title($member->rid);
+    if ($member->task_status == HOSTING_TASK_ERROR || $member->task_status == HOSTING_TASK_PROCESSING) {
+      return 'the upgrade of ' . $name . ', before this one in Upgrade all sites, did not finish';
+    }
+    if ($member->task_status == HOSTING_TASK_QUEUED) {
+      return 'the upgrade of ' . $name . ', before this one in Upgrade all sites, has not run yet';
+    }
+  }
+  return '';
+}
+
+/**
+ * The title of a node, or its number when it is gone.
+ */
+function hosting_tasks_extra_node_title($nid) {
+  $title = db_query("SELECT title FROM {node} WHERE nid = :nid", array(':nid' => (int) $nid))->fetchField();
+  return ($title === FALSE) ? 'node ' . (int) $nid : (string) $title;
+}
+
+/**
+ * Implements hook_hosting_task_update_status().
+ *
+ * Stops an Upgrade all sites run at a site that ends in error: the run's
+ * later sites that still wait are cancelled. A runner that is killed writes
+ * no status, and the queue's reaper marks its row failed without this hook:
+ * the next site's own start refuses then
+ * (hosting_tasks_extra_drupal_upgrade_start()).
+ */
+function hosting_tasks_extra_hosting_task_update_status($task, $status) {
+  if ($status != HOSTING_TASK_ERROR || !is_object($task) || !isset($task->task_type) || $task->task_type != 'drupal_upgrade' || empty($task->task_args['batch'])) {
+    return;
+  }
+  $member = hosting_tasks_extra_drupal_upgrade_all_membership($task);
+  if (!$member['member'] || $member['why'] !== '') {
+    return;
+  }
+  $first = hosting_tasks_extra_drupal_upgrade_all_failed($member['token']);
+  $name = hosting_tasks_extra_node_title($first ? $first->rid : $task->rid);
+  foreach (hosting_tasks_extra_drupal_upgrade_all_members($member['token']) as $other) {
+    if ($other->order <= $member['order'] || $other->task_status != HOSTING_TASK_QUEUED) {
+      continue;
+    }
+    $node = node_load($other->nid, NULL, TRUE);
+    if (is_object($node) && $node->type == 'task' && $node->task_status == HOSTING_TASK_QUEUED) {
+      $node->task_status = HOSTING_TASK_WARNING;
+      node_save($node);
+      hosting_task_log($node->vid, 'warning', t('Cancelled: the upgrade of @site, before this one in Upgrade all sites, did not finish.', array('@site' => $name)));
+    }
+  }
+}
+
+/**
+ * What a platform's page and task list need, in one query a request.
+ *
+ * @return array
+ *   'busy': a Delete or an Upgrade all sites waits or runs on it; 'site': it
+ *   holds an enabled site other than the panel's own; 'run', 'run_status',
+ *   'run_token': its newest Upgrade all sites row (0 and '' for none).
+ */
+function hosting_tasks_extra_drupal_upgrade_all_facts($platform_nid) {
+  $facts = &drupal_static(__FUNCTION__, array());
+  $nid = (int) $platform_nid;
+  if (isset($facts[$nid])) {
+    return $facts[$nid];
+  }
+  $row = db_query("SELECT
+      (SELECT 1 FROM {hosting_task} t INNER JOIN {node} tn ON tn.vid = t.vid
+        WHERE t.rid = :nid AND t.task_type IN (:busy) AND t.task_status IN (:open) LIMIT 1) AS busy,
+      (SELECT 1 FROM {hosting_site} s INNER JOIN {node} sn ON sn.vid = s.vid
+        WHERE s.platform = :nid AND s.status = :enabled AND sn.nid <> :panel LIMIT 1) AS site,
+      (SELECT CONCAT_WS(' ', t.nid, t.task_status, a.value) FROM {hosting_task} t INNER JOIN {node} tn ON tn.vid = t.vid
+          INNER JOIN {hosting_task_arguments} a ON a.vid = t.vid AND a.name = :batch
+        WHERE t.rid = :nid AND t.task_type = :all ORDER BY t.nid DESC LIMIT 1) AS run", array(
+      ':nid' => $nid,
+      ':busy' => array('delete', 'drupal_upgrade_all'),
+      ':open' => array(HOSTING_TASK_QUEUED, HOSTING_TASK_PROCESSING),
+      ':enabled' => HOSTING_SITE_ENABLED,
+      ':panel' => (int) hosting_get_hostmaster_site_nid(),
+      ':batch' => 'batch',
+      ':all' => 'drupal_upgrade_all',
+    ))->fetchObject();
+  $run = ($row && is_string($row->run)) ? explode(' ', $row->run) : array();
+  $facts[$nid] = array(
+    'busy' => $row && !empty($row->busy),
+    'site' => $row && !empty($row->site),
+    'run' => (count($run) == 3) ? (int) $run[0] : 0,
+    'run_status' => (count($run) == 3) ? (int) $run[1] : 0,
+    'run_token' => (count($run) == 3) ? $run[2] : '',
+  );
+  return $facts[$nid];
+}
+
+/**
+ * Access callback for the drupal_upgrade_all task.
+ *
+ * It runs on every view of a platform's page, so whether a site is ready is
+ * left to the dialog. A locked platform shows no button, which also keeps a
+ * second run off while the first holds the lock.
+ */
+function hosting_tasks_extra_drupal_upgrade_all_task_access($node, $task) {
+  if (!user_access('create drupal_upgrade_all task') || !is_object($node) || $node->type != 'platform'
+    || !isset($node->platform_status) || $node->platform_status != HOSTING_PLATFORM_ENABLED
+    || !node_access('update', $node, $GLOBALS['user'])) {
+    return FALSE;
+  }
+  $release = hosting_tasks_extra_platform_release($node);
+  if ($release === '' || version_compare($release, '10', '<') || hosting_tasks_extra_platform_is_foreign($node->nid)) {
+    return FALSE;
+  }
+  $facts = hosting_tasks_extra_drupal_upgrade_all_facts($node->nid);
+  return !$facts['busy'] && $facts['site'];
+}
+
+/**
+ * Why an account cannot start an Upgrade all sites of a platform, or ''.
+ *
+ * Read fresh, for the dialog and for the queueing.
+ */
+function hosting_tasks_extra_drupal_upgrade_all_why($platform, $account) {
+  if (!user_access('create drupal_upgrade_all task', $account)) {
+    return 'this account may not upgrade all sites of a platform';
+  }
+  if (!is_object($platform) || $platform->type != 'platform' || !node_access('update', $platform, $account)) {
+    return 'this account may not change this platform';
+  }
+  if ($platform->platform_status == HOSTING_PLATFORM_LOCKED) {
+    return 'this platform is locked';
+  }
+  if ($platform->platform_status != HOSTING_PLATFORM_ENABLED || hosting_task_outstanding($platform->nid, 'delete')) {
+    return 'this platform is not enabled';
+  }
+  $release = hosting_tasks_extra_platform_release($platform);
+  if ($release === '' || version_compare($release, '10', '<') || hosting_tasks_extra_platform_is_foreign($platform->nid)) {
+    return 'Upgrade all sites is for platforms of Drupal 10 and later';
+  }
+  if (hosting_task_outstanding($platform->nid, 'drupal_upgrade_all')) {
+    return 'an Upgrade all sites of this platform is waiting or running';
+  }
+  return '';
+}
+
+/**
+ * Why the panel takes no Upgrade all sites now, or ''.
+ */
+function hosting_tasks_extra_drupal_upgrade_all_refusal() {
+  if (function_exists('hosting_panel_is_moving') && hosting_panel_is_moving()) {
+    return 'the control panel is moving to its new version; start again in a few minutes';
+  }
+  // A standby copy of a server takes no writes of its own.
+  if (db_driver() === 'mysql' && (int) db_query('SELECT @@global.read_only')->fetchField() === 1) {
+    return 'this server is a standby copy, where sites are not changed';
+  }
+  if (variable_get('maintenance_mode', 0)) {
+    return 'the control panel is in maintenance mode';
+  }
+  return '';
+}
+
+/**
+ * Every enabled site of a platform, judged for each platform it could go onto.
+ *
+ * Each site against the chosen platform exactly as its own Upgrade judges it
+ * (hosting_tasks_extra_drupal_upgrade_targets()), with its own two lists.
+ *
+ * @return array
+ *   'sites': nid => title, lowest node id first (the run's order); 'hidden':
+ *   how many the account cannot see; 'copy': nid => TRUE for a way-back copy;
+ *   'targets': nid => array('nid', 'title', 'release', 'ready' (how many
+ *   sites are), 'verdicts' => site nid => array('ready', 'text', 'why')).
+ */
+function hosting_tasks_extra_drupal_upgrade_all_judge($platform, $account) {
+  $out = array('sites' => array(), 'hidden' => 0, 'copy' => array(), 'targets' => array());
+  $nids = db_query("SELECT n.nid FROM {hosting_site} s INNER JOIN {node} n ON n.vid = s.vid
+    WHERE s.platform = :platform AND s.status = :enabled AND n.nid <> :panel
+    ORDER BY n.nid ASC", array(
+      ':platform' => (int) $platform->nid,
+      ':enabled' => HOSTING_SITE_ENABLED,
+      ':panel' => (int) hosting_get_hostmaster_site_nid(),
+    ))->fetchCol();
+  // Read once for all the sites, fresh.
+  drupal_static_reset('hosting_tasks_extra_drupal_upgrade_targets');
+  drupal_static_reset('hosting_tasks_extra_drupal_upgrade_lock');
+  drupal_static_reset('hosting_tasks_extra_drupal_upgrade_report');
+  $sites = array();
+  foreach ($nids as $nid) {
+    $site = node_load($nid, NULL, TRUE);
+    if (!is_object($site) || $site->type != 'site') {
+      continue;
+    }
+    if (!node_access('view', $site, $account)) {
+      $out['hidden']++;
+      continue;
+    }
+    $sites[$nid] = $site;
+    $out['sites'][$nid] = $site->title;
+    if (preg_match('/^back-[0-9]+\.temp\./', hosting_site_clean_domain($site->title))) {
+      $out['copy'][$nid] = TRUE;
+    }
+  }
+  if ($out['hidden']) {
+    return $out;
+  }
+  // The platforms that are a newer version for at least one site.
+  foreach ($sites as $nid => $site) {
+    if (isset($out['copy'][$nid])) {
+      continue;
+    }
+    $found = hosting_tasks_extra_drupal_upgrade_targets($site, $account);
+    foreach ($found['targets'] as $target_nid => $entry) {
+      if ($entry['listed'] && !isset($out['targets'][$target_nid])) {
+        $out['targets'][$target_nid] = array('nid' => (int) $target_nid, 'title' => $entry['title'], 'release' => $entry['release'], 'ready' => 0, 'verdicts' => array());
+      }
+    }
+  }
+  foreach (array_keys($out['targets']) as $target_nid) {
+    foreach ($sites as $nid => $site) {
+      $verdict = _hosting_tasks_extra_drupal_upgrade_all_verdict($site, $account, $target_nid, isset($out['copy'][$nid]));
+      $out['targets'][$target_nid]['verdicts'][$nid] = $verdict;
+      if ($verdict['ready']) {
+        $out['targets'][$target_nid]['ready']++;
+      }
+    }
+  }
+  return $out;
+}
+
+/**
+ * One site against one platform, as the dialog shows it.
+ *
+ * @return array
+ *   'ready', 'text' (for the table) and 'why' (why it is left out, or '').
+ */
+function _hosting_tasks_extra_drupal_upgrade_all_verdict($site, $account, $target_nid, $copy) {
+  if ($copy) {
+    return array('ready' => FALSE, 'text' => t('A way-back copy'), 'why' => 'a way-back copy');
+  }
+  $found = hosting_tasks_extra_drupal_upgrade_targets($site, $account);
+  if ($found['state'] === 'off' || $found['state'] === 'unreadable') {
+    return array('ready' => FALSE, 'text' => t('Not allowed: @why', array('@why' => $found['why'])), 'why' => 'not allowed: ' . $found['why']);
+  }
+  $entry = hosting_tasks_extra_drupal_upgrade_target($site, $account, $target_nid);
+  if (!$entry['ready']) {
+    if (in_array($entry['rule'], array('scope', 'level', 'security'), TRUE)) {
+      return array('ready' => FALSE, 'text' => t('Not allowed: @why', array('@why' => $entry['why'])), 'why' => 'not allowed: ' . $entry['why']);
+    }
+    return array('ready' => FALSE, 'text' => t('Not ready: @why', array('@why' => $entry['why'])), 'why' => 'not ready: ' . $entry['why']);
+  }
+  $busy = hosting_tasks_extra_drupal_upgrade_busy($site->nid);
+  if ($busy !== '') {
+    return array('ready' => FALSE, 'text' => t('Busy: a @type task is waiting or running', array('@type' => $busy)), 'why' => 'busy: a ' . $busy . ' task is waiting or running');
+  }
+  return array('ready' => TRUE, 'text' => ($entry['kind'] !== '') ? t('Ready — @kind', array('@kind' => $entry['kind'])) : t('Ready'), 'why' => '');
+}
+
+/**
+ * Implements hosting_task_TASK_TYPE_form().
+ */
+function hosting_task_drupal_upgrade_all_form($node) {
+  $form = array();
+  $account = $GLOBALS['user'];
+  $why = hosting_tasks_extra_drupal_upgrade_all_why($node, $account);
+  $judged = ($why === '') ? hosting_tasks_extra_drupal_upgrade_all_judge($node, $account) : array('sites' => array(), 'hidden' => 0, 'copy' => array(), 'targets' => array());
+  $count = count($judged['sites']);
+  $form['now'] = array(
+    '#markup' => '<p>' . t('Now: @platform, Drupal @release, @sites.', array(
+      '@platform' => $node->title,
+      '@release' => hosting_tasks_extra_platform_release($node),
+      '@sites' => format_plural($count, '1 site', '@count sites'),
+    )) . '</p>',
+    '#weight' => -100,
+  );
+  if ($why === '' && $judged['hidden']) {
+    $why = 'this platform holds sites this account cannot see';
+  }
+  if ($why === '' && !$judged['targets']) {
+    $why = 'no newer platform is there for these sites';
+  }
+  if ($why !== '') {
+    $form['none'] = array(
+      '#markup' => '<p><strong>' . t('Nothing can be upgraded from here.') . '</strong> ' . check_plain(drupal_ucfirst($why)) . '.</p>',
+      '#weight' => -95,
+    );
+    return $form;
+  }
+  // The platform with most ready sites first, then the newest.
+  $order = $judged['targets'];
+  uasort($order, '_hosting_tasks_extra_drupal_upgrade_all_targets_order');
+  $default = 0;
+  $weight = -90;
+  foreach ($order as $target_nid => $target) {
+    $form[$target_nid]['target_platform'] = array(
+      '#type' => 'radio',
+      '#title' => t('@title: Drupal @release — @ready of @count sites ready', array(
+        '@title' => $target['title'],
+        '@release' => $target['release'],
+        '@ready' => $target['ready'],
+        '@count' => $count,
+      )),
+      '#parents' => array('parameters', 'target_platform'),
+      '#return_value' => $target_nid,
+      '#weight' => $weight++,
+    );
+    if (!$target['ready']) {
+      $form[$target_nid]['target_platform']['#disabled'] = TRUE;
+    }
+    elseif (!$default) {
+      $default = $target_nid;
+      $form[$target_nid]['target_platform']['#default_value'] = $target_nid;
+    }
+    $rows = array();
+    foreach ($target['verdicts'] as $site_nid => $verdict) {
+      // The verdict is t()'s output, escaped already.
+      $rows[] = array(check_plain($judged['sites'][$site_nid]), $verdict['text']);
+    }
+    $form[$target_nid]['sites'] = array(
+      '#type' => 'container',
+      '#weight' => $weight++,
+      '#states' => array(
+        'visible' => array(
+          ':input[name="parameters[target_platform]"]' => array('value' => (string) $target_nid),
+        ),
+      ),
+      'table' => array(
+        '#markup' => theme('table', array(
+          'header' => array(t('Site'), t('Onto @title', array('@title' => $target['title']))),
+          'rows' => $rows,
+        )),
+      ),
+    );
+  }
+  $platform = check_plain($node->title);
+  $form['what'] = array(
+    '#markup' => '<p>' . t('Sites are upgraded one at a time, each exactly like the Upgrade button on a site page. If one site does not upgrade, the sites after it are not started and stay as they are.') . '</p>'
+      . '<p>' . t('!platform is locked first, so no new sites are created on it; until it is unlocked, sites still on it cannot be moved or cloned from the panel.', array('!platform' => $platform)) . '</p>'
+      . '<p><strong>' . t('Do not queue a backup, copy or move of these sites while they are upgraded:') . '</strong> ' . t('a site with one waiting is not upgraded, and the sites after it are not started.') . '</p>',
+    '#weight' => 50,
+  );
+  return $form;
+}
+
+/**
+ * Orders the dialog's platforms: most ready sites first, then the newest.
+ */
+function _hosting_tasks_extra_drupal_upgrade_all_targets_order($a, $b) {
+  if ($a['ready'] != $b['ready']) {
+    return ($a['ready'] > $b['ready']) ? -1 : 1;
+  }
+  return -version_compare($a['release'], $b['release']);
+}
+
+/**
+ * Implements hosting_task_TASK_TYPE_form_validate().
+ */
+function hosting_task_drupal_upgrade_all_form_validate($form, &$form_state) {
+  $platform = node_load($form_state['values']['nid'], NULL, TRUE);
+  $target = isset($form_state['values']['parameters']['target_platform']) ? (int) $form_state['values']['parameters']['target_platform'] : 0;
+  if (!is_object($platform) || $target < 1) {
+    form_set_error('parameters][target_platform', t('Choose the platform to upgrade onto.'));
+    return;
+  }
+  $why = hosting_tasks_extra_drupal_upgrade_all_why($platform, $GLOBALS['user']);
+  if ($why === '') {
+    $why = hosting_tasks_extra_drupal_upgrade_all_refusal();
+  }
+  if ($why !== '') {
+    form_set_error('parameters][target_platform', t('Not started: @why.', array('@why' => $why)));
+  }
+}
+
+/**
+ * Submit handler of the Upgrade all sites dialog, in place of the panel's.
+ */
+function hosting_tasks_extra_drupal_upgrade_all_submit($form, &$form_state) {
+  $values = $form_state['values'];
+  $result = hosting_tasks_extra_drupal_upgrade_all_enqueue((int) $values['nid'], (int) $values['parameters']['target_platform'], $GLOBALS['user']);
+  if ($result['queued']) {
+    drupal_set_message(format_plural(count($result['queued']), 'One site is queued to be upgraded.', '@count sites are queued to be upgraded, one at a time.'));
+  }
+  else {
+    drupal_set_message(t('Nothing was queued: @why.', array('@why' => $result['why'])), 'error');
+  }
+  if ($result['queued'] && $result['refused']) {
+    $items = array();
+    foreach ($result['refused'] as $nid => $why) {
+      $items[] = check_plain(hosting_tasks_extra_node_title($nid) . ': ' . $why);
+    }
+    drupal_set_message(t('Left out:') . theme('item_list', array('items' => $items)), 'warning');
+  }
+  $form_state['redirect'] = 'node/' . (int) $values['nid'];
+  if (module_exists('overlay')) {
+    overlay_close_dialog();
+  }
+}
+
+/**
+ * Queues an Upgrade all sites run: the one way in, for the dialog and any
+ * other caller.
+ *
+ * In one transaction, under a lock of the platform: the platform is locked,
+ * then one Upgrade a ready site is queued, in node id order, then the run's
+ * last row on the platform. The queue sees none of them until all are
+ * written, and a refusal or a fatal error leaves nothing behind.
+ *
+ * @param int $platform_nid
+ *   The platform whose sites are upgraded.
+ * @param int $target_nid
+ *   The platform they go onto.
+ * @param object $account
+ *   The user the run is checked for: the current user, who the rows are
+ *   queued by.
+ *
+ * @return array
+ *   'queued' (site nid => task nid), 'rollup' (the last row's nid), 'refused'
+ *   (site nid => why it is left out) and 'why' (why nothing was queued, or
+ *   '').
+ */
+function hosting_tasks_extra_drupal_upgrade_all_enqueue($platform_nid, $target_nid, $account) {
+  $out = array('queued' => array(), 'rollup' => 0, 'refused' => array(), 'why' => '');
+  if (!is_object($account) || empty($account->uid) || (int) $account->uid !== (int) $GLOBALS['user']->uid) {
+    $out['why'] = 'a run is queued only by the user it is checked for';
+    return $out;
+  }
+  $why = hosting_tasks_extra_drupal_upgrade_all_refusal();
+  if ($why !== '') {
+    $out['why'] = $why;
+    return $out;
+  }
+  $name = 'hosting_tasks_extra_upgrade_all:' . (int) $platform_nid;
+  if (!lock_acquire($name, 120.0) && (lock_wait($name, 15) || !lock_acquire($name, 120.0))) {
+    $out['why'] = 'another Upgrade all sites of this platform is being queued; look again in a minute';
+    return $out;
+  }
+  $out = _hosting_tasks_extra_drupal_upgrade_all_enqueue((int) $platform_nid, (int) $target_nid, $account, $out);
+  lock_release($name);
+  return $out;
+}
+
+/**
+ * Works out hosting_tasks_extra_drupal_upgrade_all_enqueue() under its lock.
+ */
+function _hosting_tasks_extra_drupal_upgrade_all_enqueue($platform_nid, $target_nid, $account, $out) {
+  $platform = node_load($platform_nid, NULL, TRUE);
+  $why = hosting_tasks_extra_drupal_upgrade_all_why($platform, $account);
+  if ($why !== '') {
+    $out['why'] = $why;
+    return $out;
+  }
+  $judged = hosting_tasks_extra_drupal_upgrade_all_judge($platform, $account);
+  if ($judged['hidden']) {
+    $out['why'] = 'this platform holds sites this account cannot see';
+    return $out;
+  }
+  if (!isset($judged['targets'][$target_nid])) {
+    $out['why'] = 'that platform is no newer version for any site here';
+    return $out;
+  }
+  $ready = array();
+  $left = array();
+  foreach ($judged['targets'][$target_nid]['verdicts'] as $nid => $verdict) {
+    if ($verdict['ready']) {
+      $ready[] = (int) $nid;
+    }
+    else {
+      $out['refused'][$nid] = $verdict['why'];
+      $left[] = (int) $nid . "\t" . str_replace(array("\t", "\n", "\r"), ' ', $verdict['why']);
+    }
+  }
+  if (!$ready) {
+    $out['why'] = 'no site here is ready for that platform';
+    return $out;
+  }
+  $transaction = db_transaction();
+  try {
+    // Locked as the panel's Lock task locks it, and not by a queued Lock,
+    // which the queue could run after the first site.
+    $platform->platform_status = HOSTING_PLATFORM_LOCKED;
+    $platform->no_verify = TRUE;
+    node_save($platform);
+    $token = (int) $platform->nid . '-' . REQUEST_TIME . '-' . bin2hex(drupal_random_bytes(4));
+    foreach ($ready as $k => $nid) {
+      $row = hosting_add_task($nid, 'drupal_upgrade', array(
+        'target_platform' => $target_nid,
+        'batch' => $token,
+        'batch_order' => $k + 1,
+      ));
+      if (!is_object($row) || empty($row->nid)) {
+        throw new Exception('the panel did not queue the upgrade of ' . $judged['sites'][$nid]);
+      }
+      $out['queued'][$nid] = (int) $row->nid;
+    }
+    $row = hosting_add_task($platform->nid, 'drupal_upgrade_all', array(
+      'target_platform' => $target_nid,
+      'batch' => $token,
+      'sites' => count($ready),
+      'left_out' => implode("\n", $left),
+    ));
+    if (!is_object($row) || empty($row->nid)) {
+      throw new Exception('the panel did not queue the last step of the run');
+    }
+    $out['rollup'] = (int) $row->nid;
+  }
+  catch (Exception $e) {
+    return _hosting_tasks_extra_drupal_upgrade_all_undo($transaction, $platform, $out, $e->getMessage());
+  }
+  // An Error left uncaught would end the transaction's object, which
+  // commits what was written so far. PHP 5.6 has no such class and never
+  // matches it.
+  catch (Throwable $e) {
+    return _hosting_tasks_extra_drupal_upgrade_all_undo($transaction, $platform, $out, $e->getMessage());
+  }
+  unset($transaction);
+  return $out;
+}
+
+/**
+ * Rolls back a run that was being queued: no lock, no row.
+ */
+function _hosting_tasks_extra_drupal_upgrade_all_undo($transaction, $platform, $out, $why) {
+  $transaction->rollback();
+  entity_get_controller('node')->resetCache(array($platform->nid));
+  $out['queued'] = array();
+  $out['rollup'] = 0;
+  $out['why'] = $why;
+  return $out;
+}
+
+/**
+ * What a platform's page says about its newest Upgrade all sites run.
+ *
+ * @return string
+ *   Markup, '' for a platform without one.
+ */
+function hosting_tasks_extra_drupal_upgrade_all_line($platform) {
+  $facts = hosting_tasks_extra_drupal_upgrade_all_facts($platform->nid);
+  $parts = ($facts['run_token'] !== '') ? hosting_tasks_extra_drupal_upgrade_all_token($facts['run_token']) : FALSE;
+  if (!$facts['run'] || !$parts) {
+    return '';
+  }
+  $counts = array('upgraded' => 0, 'running' => 0, 'waiting' => 0, 'failed' => 0, 'not started' => 0);
+  $open = in_array($facts['run_status'], array(HOSTING_TASK_QUEUED, HOSTING_TASK_PROCESSING));
+  foreach (hosting_tasks_extra_drupal_upgrade_all_members($facts['run_token']) as $member) {
+    if ($member->task_status == HOSTING_TASK_PROCESSING) {
+      $counts['running']++;
+      $open = TRUE;
+    }
+    elseif ($member->task_status == HOSTING_TASK_QUEUED) {
+      $counts['waiting']++;
+      $open = TRUE;
+    }
+    elseif ($member->platform && (string) $member->platform === (string) $member->target) {
+      $counts['upgraded']++;
+    }
+    elseif ($member->task_status == HOSTING_TASK_WARNING || $member->not_started) {
+      $counts['not started']++;
+    }
+    else {
+      $counts['failed']++;
+    }
+  }
+  $said = array();
+  foreach ($counts as $what => $n) {
+    if ($n || $what === 'upgraded') {
+      $said[] = $n . ' ' . $what;
+    }
+  }
+  // t()'s output, escaped already.
+  if ($open) {
+    return t('Upgrading all sites (started @when): @counts.', array('@when' => format_date($parts['time'], 'custom', 'j M H:i'), '@counts' => implode(', ', $said)));
+  }
+  $text = t('The last Upgrade all sites (@when): @counts.', array('@when' => format_date($parts['time'], 'custom', 'j M'), '@counts' => implode(', ', $said)));
+  if ($platform->platform_status == HOSTING_PLATFORM_LOCKED) {
+    $text .= ' ' . t('This platform stays locked.');
+  }
+  return $text;
+}
+
+/**
  * Implements hook_node_view().
  *
- * The "Drupal updates" line of a site page, for those who may upgrade.
+ * The "Drupal updates" line of a site page, for those who may upgrade, and
+ * a platform page's line about its newest Upgrade all sites, for those who
+ * may start one.
  */
 function hosting_tasks_extra_node_view($node, $view_mode, $langcode) {
-  if ($node->type != 'site' || $view_mode == 'teaser' || !user_access('create drupal_upgrade task')) {
+  if ($view_mode == 'teaser') {
+    return;
+  }
+  if ($node->type == 'platform' && user_access('create drupal_upgrade_all task')) {
+    $line = hosting_tasks_extra_drupal_upgrade_all_line($node);
+    if ($line !== '') {
+      $node->content['info']['drupal_upgrade_all'] = array(
+        '#type' => 'item',
+        '#title' => t('Upgrade all sites'),
+        '#weight' => 21,
+        '#markup' => $line,
+      );
+    }
+    return;
+  }
+  if ($node->type != 'site' || !user_access('create drupal_upgrade task')) {
     return;
   }
   $line = hosting_tasks_extra_drupal_upgrade_line($node, $GLOBALS['user']);
