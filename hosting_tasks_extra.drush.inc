@@ -172,6 +172,11 @@ function hosting_tasks_extra_drupal_upgrade_start($task) {
   $task->options['upgrade_target_title'] = preg_replace('/[^A-Za-z0-9._ -]/', '', $target->title);
   $task->options['upgrade_copy_secs'] = hosting_tasks_extra_drupal_upgrade_copy_seconds($site->nid);
   $task->options['upgrade_ceiling'] = (int) variable_get('hosting_task_runner_lock_max_hold', 28800);
+  // Switched off until it is armed: a run removes the copy that an earlier
+  // run of this site left when it was cut off before its move.
+  if (variable_get('hosting_tasks_extra_upgrade_tidy', FALSE)) {
+    $task->options['upgrade_tidy'] = 1;
+  }
   if (isset($tasks['drupal_upgrade_return'])) {
     $task->options['upgrade_return'] = 1;
   }

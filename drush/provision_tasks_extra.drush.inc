@@ -1402,6 +1402,19 @@ function _provision_tasks_extra_upgrade_include_options($file) {
 }
 
 /**
+ * The Upgrade task whose way-back copy of a site a name is, or 0.
+ *
+ * Exactly back-<task nid>.temp.<site>: a copy of temp.<site> is not one.
+ */
+function _provision_tasks_extra_upgrade_copy_run($name, $uri) {
+  $m = array();
+  if (preg_match('/^back-([0-9]+)\.temp\.(.+)$/', $name, $m) && $m[2] === $uri && (int) $m[1] > 0) {
+    return (int) $m[1];
+  }
+  return 0;
+}
+
+/**
  * The names under a folder that are way-back copies of a site.
  */
 function _provision_tasks_extra_upgrade_copies($dir, $uri, $suffix = '') {
@@ -1410,13 +1423,139 @@ function _provision_tasks_extra_upgrade_copies($dir, $uri, $suffix = '') {
   if (!is_array($names)) {
     return $found;
   }
-  $tail = '.temp.' . $uri . $suffix;
   foreach ($names as $name) {
-    if (strncmp($name, 'back-', 5) === 0 && strlen($name) > strlen($tail) + 5 && substr($name, -strlen($tail)) === $tail) {
-      $found[] = substr($name, 0, strlen($name) - strlen($suffix));
+    if ($suffix !== '' && (strlen($name) <= strlen($suffix) || substr($name, -strlen($suffix)) !== $suffix)) {
+      continue;
+    }
+    $base = ($suffix === '') ? $name : substr($name, 0, strlen($name) - strlen($suffix));
+    if (_provision_tasks_extra_upgrade_copy_run($base, $uri)) {
+      $found[] = $base;
     }
   }
   return $found;
+}
+
+/**
+ * The folder of the Upgrade runs' marks, or ''.
+ *
+ * In the account's own folder, which its shell user cannot write: a mark is
+ * what lets a later run remove a copy.
+ */
+function _provision_tasks_extra_upgrade_marks_dir() {
+  $server = d('@server_master');
+  $root = (is_object($server) && !empty($server->aegir_root)) ? rtrim($server->aegir_root, '/') : '';
+  return ($root === '' || !is_dir($root . '/log')) ? '' : $root . '/log/upgrade-runs';
+}
+
+/**
+ * Writes this run's mark before a step: which step it is in.
+ *
+ * Rewritten before each step and removed when the run ends by its own code,
+ * so a mark that stays tells a later run that this one was cut off, and in
+ * which step.
+ *
+ * @return bool
+ *   FALSE when the mark could not be written.
+ */
+function _provision_tasks_extra_upgrade_mark($plan, $phase) {
+  $dir = _provision_tasks_extra_upgrade_marks_dir();
+  if ($dir === '' || (!is_dir($dir) && !@mkdir($dir, 0700)) || is_link($dir)) {
+    return FALSE;
+  }
+  $file = $dir . '/' . (int) $plan['task_nid'] . '.txt';
+  $text = 'site=' . $plan['uri'] . "\n" . 'copy=' . $plan['copy'] . "\n" . 'phase=' . $phase . "\n"
+    . 'pid=' . getmypid() . "\n" . 'source_root=' . $plan['source_root'] . "\n" . 'started=' . (int) $plan['started'] . "\n";
+  if (@file_put_contents($file . '.new', $text) !== strlen($text) || !@rename($file . '.new', $file)) {
+    @unlink($file . '.new');
+    return FALSE;
+  }
+  return TRUE;
+}
+
+/**
+ * Removes the mark of a run.
+ */
+function _provision_tasks_extra_upgrade_mark_clear($task_nid) {
+  $dir = _provision_tasks_extra_upgrade_marks_dir();
+  if ($dir !== '' && (int) $task_nid > 0) {
+    @unlink($dir . '/' . (int) $task_nid . '.txt');
+  }
+}
+
+/**
+ * The marks runs of a site left, by task nid.
+ *
+ * Only a mark that is a plain file, names this site, its own copy and a
+ * known step is taken; any other is no mark.
+ *
+ * @return array
+ *   task nid => array with 'phase', 'pid', 'started', 'source_root', 'path'.
+ */
+function _provision_tasks_extra_upgrade_marks($uri) {
+  $out = array();
+  $dir = _provision_tasks_extra_upgrade_marks_dir();
+  $names = ($dir === '' || is_link($dir)) ? FALSE : @scandir($dir);
+  if (!is_array($names)) {
+    return $out;
+  }
+  foreach ($names as $name) {
+    $m = array();
+    $path = $dir . '/' . $name;
+    if (!preg_match('/^([0-9]+)\.txt$/', $name, $m) || is_link($path) || !is_file($path) || @filesize($path) > 4096) {
+      continue;
+    }
+    $fields = array();
+    foreach (explode("\n", (string) @file_get_contents($path)) as $line) {
+      $pair = explode('=', $line, 2);
+      if (count($pair) === 2) {
+        $fields[$pair[0]] = $pair[1];
+      }
+    }
+    $nid = (int) $m[1];
+    if (!isset($fields['site'], $fields['copy'], $fields['phase'], $fields['pid'], $fields['started'], $fields['source_root'])
+      || $fields['site'] !== $uri || $fields['copy'] !== 'back-' . $nid . '.temp.' . $uri
+      || !in_array($fields['phase'], array('1', '1a', '1b', '2'), TRUE) || !ctype_digit($fields['pid']) || !ctype_digit($fields['started'])) {
+      continue;
+    }
+    $out[$nid] = array(
+      'phase' => $fields['phase'],
+      'pid' => (int) $fields['pid'],
+      'started' => (int) $fields['started'],
+      'source_root' => $fields['source_root'],
+      'path' => $path,
+    );
+  }
+  return $out;
+}
+
+/**
+ * Whether a process of an Upgrade run may still be alive.
+ *
+ * Each step of a run is a process of its own, and a step's own children
+ * can outlive a runner that was killed: every process a run starts carries
+ * BOA_UPGRADE_RUN=<its task nid>. TRUE also when this cannot be read.
+ */
+function _provision_tasks_extra_upgrade_run_alive($task_nid, $pid) {
+  if ($pid > 0 && $pid != getmypid() && @file_exists('/proc/' . (int) $pid)) {
+    return TRUE;
+  }
+  $self = @file_get_contents('/proc/self/environ');
+  $dirs = @glob('/proc/[0-9]*', GLOB_ONLYDIR);
+  if (!is_string($self) || $self === '' || !is_array($dirs) || !$dirs) {
+    return TRUE;
+  }
+  $uid = function_exists('posix_getuid') ? posix_getuid() : -1;
+  $needle = "\0BOA_UPGRADE_RUN=" . (int) $task_nid . "\0";
+  foreach ($dirs as $dir) {
+    if ($uid >= 0 && @fileowner($dir) !== $uid) {
+      continue;
+    }
+    $env = @file_get_contents($dir . '/environ');
+    if (is_string($env) && strpos("\0" . $env, $needle) !== FALSE) {
+      return TRUE;
+    }
+  }
+  return FALSE;
 }
 
 /**
@@ -1532,14 +1671,57 @@ function _provision_tasks_extra_upgrade_plan() {
   if (file_exists($stray) || is_link($stray)) {
     return 'a leftover of this site is in the way on ' . $target_title . ' (' . $stray . '). Delete it, then start again';
   }
-  $left = _provision_tasks_extra_upgrade_copies($source_root . '/sites', $uri);
-  if ($left) {
-    return 'an earlier upgrade left the copy ' . $left[0] . ' on ' . $source_title . '. Delete that site in the panel, or its folder ' . $source_root . '/sites/' . $left[0] . ' when the panel does not list it, then start again';
-  }
+  // A copy that a run cut off before its move provably made (its mark says
+  // so, nothing of it runs, its alias names this platform) is removed by this
+  // run when that is switched on; anything else that is left stays a refusal.
+  $marks = _provision_tasks_extra_upgrade_marks($uri);
+  $tidy_on = (bool) drush_get_option('upgrade_tidy', FALSE);
+  $tidy = array();
+  $in_dir = _provision_tasks_extra_upgrade_copies($source_root . '/sites', $uri);
+  $names = $in_dir;
   foreach (_provision_tasks_extra_upgrade_copies(drush_server_home() . '/.drush', $uri, '.alias.drushrc.php') as $name) {
     $root = _provision_tasks_extra_upgrade_alias_root($name);
-    if ($root === '' || ($root !== FALSE && _provision_tasks_extra_upgrade_same_root($root, $source_root))) {
-      return 'an earlier upgrade left the copy ' . $name . ' on ' . $source_title . '. Delete that site in the panel, then start again';
+    if (!in_array($name, $names, TRUE) && ($root === '' || ($root !== FALSE && _provision_tasks_extra_upgrade_same_root($root, $source_root)))) {
+      $names[] = $name;
+    }
+  }
+  foreach ($names as $name) {
+    $run = _provision_tasks_extra_upgrade_copy_run($name, $uri);
+    $mark = isset($marks[$run]) ? $marks[$run] : NULL;
+    $root = _provision_tasks_extra_upgrade_alias_root($name);
+    $dir = $source_root . '/sites/' . $name;
+    $when = is_array($mark) ? date('Y-m-d H:i', $mark['started']) : '';
+    if (is_array($mark) && $mark['phase'] === '2') {
+      return 'an earlier upgrade (task ' . $run . ') was cut off on ' . $when . ' during its move and left ' . $name . ' on ' . $source_title . '; what it left needs support (its mark is ' . $mark['path'] . ')';
+    }
+    if (is_array($mark) && _provision_tasks_extra_upgrade_run_alive($run, $mark['pid'])) {
+      return 'an earlier upgrade of this site (task ' . $run . ') is still running on this server; start again when it has ended';
+    }
+    $provable = is_array($mark)
+      && _provision_tasks_extra_upgrade_same_root($mark['source_root'], $source_root)
+      && $root !== FALSE && $root !== '' && _provision_tasks_extra_upgrade_same_root($root, $source_root)
+      && ((!file_exists($dir) && !is_link($dir)) || (is_dir($dir) && !is_link($dir)));
+    if ($provable && $tidy_on) {
+      $tidy[] = array('copy' => $name, 'run' => $run, 'when' => $when);
+      continue;
+    }
+    if ($provable) {
+      return 'an earlier upgrade (task ' . $run . ') was cut off on ' . $when . ' before it moved the site and left the copy ' . $name . ' on ' . $source_title . '. Delete that site in the panel, then start again';
+    }
+    if (in_array($name, $in_dir, TRUE)) {
+      return 'an earlier upgrade left the copy ' . $name . ' on ' . $source_title . '. Delete that site in the panel, or its folder ' . $dir . ' when the panel does not list it, then start again';
+    }
+    return 'an earlier upgrade left the copy ' . $name . ' on ' . $source_title . '. Delete that site in the panel, then start again';
+  }
+  // The marks of this site's runs whose copy is gone and that did not reach
+  // their move: nothing is left of them to look at.
+  $stale = array();
+  foreach ($marks as $run => $mark) {
+    $name = 'back-' . $run . '.temp.' . $uri;
+    if ($mark['phase'] !== '2' && !in_array($name, $names, TRUE) && _provision_tasks_extra_upgrade_alias_root($name) === FALSE
+      && !file_exists($source_root . '/sites/' . $name) && !is_link($source_root . '/sites/' . $name)
+      && !_provision_tasks_extra_upgrade_run_alive($run, $mark['pid'])) {
+      $stale[] = $run;
     }
   }
 
@@ -1638,6 +1820,9 @@ function _provision_tasks_extra_upgrade_plan() {
     'target_release' => $target_release,
     'stays' => $stays,
     'return' => (bool) drush_get_option('upgrade_return', FALSE),
+    'task_nid' => (int) $opt['upgrade_task_nid'],
+    'tidy' => $tidy,
+    'stale_marks' => $stale,
   );
 }
 
@@ -1889,7 +2074,13 @@ function _provision_tasks_extra_upgrade_undo($plan) {
     // A panel moving to its new version makes no task either: its own
     // hosting-task stops at bootstrap, with no error code of hosting's.
     $no_task = !$leg['ok'] && (in_array('HOSTING_TASK_LOAD_FAILED', $leg['codes'], TRUE) || in_array('PROVISION_UPGRADE_PANEL_MOVING', $leg['codes'], TRUE));
-    if ($no_task && !empty($plan['recorded'])) {
+    // A copy another run left: whether the panel holds it is not known, and
+    // only a panel that made no task for want of a record of it says no.
+    $recorded = isset($plan['recorded']) ? $plan['recorded'] : FALSE;
+    if ($recorded === 'unknown') {
+      $recorded = !in_array('HOSTING_TASK_LOAD_FAILED', $leg['codes'], TRUE);
+    }
+    if ($no_task && $recorded) {
       // The panel made its record of the copy when the Clone ended well,
       // and still made no task now (it is moving to its new version, say).
       // Removing the copy here would leave that record with nothing behind
@@ -2063,6 +2254,20 @@ function drush_provision_tasks_extra_provision_drupal_upgrade() {
   if (!is_array($plan)) {
     return _provision_tasks_extra_upgrade_refuse('its checks did not run');
   }
+  // Every process this run starts, each step's own included, says whose it
+  // is: a later run tells by it that nothing of this one is still at work.
+  putenv('BOA_UPGRADE_RUN=' . (int) $plan['task_nid']);
+  $result = _provision_tasks_extra_upgrade_run($plan);
+  // The run ended by its own code, whichever way: its mark goes. Only a run
+  // that never got here leaves one.
+  _provision_tasks_extra_upgrade_mark_clear($plan['task_nid']);
+  return $result;
+}
+
+/**
+ * The Upgrade itself, from the way back to the result.
+ */
+function _provision_tasks_extra_upgrade_run($plan) {
   $uri = $plan['uri'];
   $copy = $plan['copy'];
   $copy_dir = $plan['source_root'] . '/sites/' . $copy;
@@ -2076,6 +2281,34 @@ function drush_provision_tasks_extra_provision_drupal_upgrade() {
   }
   $started = time();
   $when = date('Y-m-d H:i');
+  $plan['started'] = $started;
+  if (!_provision_tasks_extra_upgrade_mark($plan, '1')) {
+    return _provision_tasks_extra_upgrade_refuse("this run's mark could not be written in the account's log folder");
+  }
+  foreach ($plan['stale_marks'] as $run) {
+    _provision_tasks_extra_upgrade_mark_clear($run);
+  }
+  // Leg 0: what a run cut off before its move left.
+  foreach ($plan['tidy'] as $item) {
+    $removed = _provision_tasks_extra_upgrade_undo(array(
+      'copy' => $item['copy'],
+      'source_root' => $plan['source_root'],
+      'marker' => $plan['marker'],
+      'recorded' => 'unknown',
+    ));
+    clearstatcache();
+    $dir = $plan['source_root'] . '/sites/' . $item['copy'];
+    if ($removed !== TRUE || _provision_tasks_extra_upgrade_alias_root($item['copy']) !== FALSE || file_exists($dir) || is_link($dir)) {
+      return drush_set_error('PROVISION_UPGRADE_NOT_STARTED', dt('UPGRADE/RESULT Not started: the copy @copy left by the upgrade task @run could not be removed (see above). @uri is on @source as before.', array(
+        '@copy' => $item['copy'],
+        '@run' => $item['run'],
+        '@uri' => $uri,
+        '@source' => $plan['source_title'],
+      )));
+    }
+    _provision_tasks_extra_upgrade_mark_clear($item['run']);
+    drush_log(dt('UPGRADE/0/TIDY removed @copy, left by the upgrade task @run that was cut off on @when before it moved the site.', array('@copy' => $item['copy'], '@run' => $item['run'], '@when' => $item['when'])), 'ok');
+  }
 
   // Leg 1: the way back.
   drush_log(dt('UPGRADE/1/COPY making the way back: a full copy of @uri as @copy on @platform.', array('@uri' => $uri, '@copy' => $copy, '@platform' => $plan['source_title'])), 'ok');
@@ -2091,11 +2324,17 @@ function drush_provision_tasks_extra_provision_drupal_upgrade() {
   if (!$leg['ok'] || _provision_tasks_extra_upgrade_alias_root($copy) === FALSE || !is_file($copy_dir . '/settings.php')) {
     return _provision_tasks_extra_upgrade_stop($plan, _provision_tasks_extra_upgrade_step_why($leg, 'the copy of the site could not be made (see above)'), FALSE);
   }
+  if (!_provision_tasks_extra_upgrade_mark($plan, '1a')) {
+    return _provision_tasks_extra_upgrade_stop($plan, "this run's mark could not be written", FALSE);
+  }
   // Leg 1a: the Import the Clone queued for the copy, run now. Left to the
   // queue it would run on the switched-off copy and mark it enabled.
   $leg = _provision_tasks_extra_upgrade_leg('@' . $copy, 'import');
   if (!$leg['ok']) {
     return _provision_tasks_extra_upgrade_stop($plan, _provision_tasks_extra_upgrade_step_why($leg, 'the copy of the site could not be recorded in the panel (see above)'), FALSE);
+  }
+  if (!_provision_tasks_extra_upgrade_mark($plan, '1b')) {
+    return _provision_tasks_extra_upgrade_stop($plan, "this run's mark could not be written", FALSE);
   }
   // Leg 1b.
   $leg = _provision_tasks_extra_upgrade_leg('@' . $copy, 'disable', array($plan['marker']));
@@ -2104,6 +2343,11 @@ function drush_provision_tasks_extra_provision_drupal_upgrade() {
   }
   drush_log(dt('UPGRADE/1/COPY done: @copy holds the site as it was at @when, switched off.', array('@copy' => $copy, '@when' => $when)), 'ok');
 
+  // No move begins before its mark says so: a later run must never take
+  // this copy for one a run made and left before its move.
+  if (!_provision_tasks_extra_upgrade_mark($plan, '2')) {
+    return _provision_tasks_extra_upgrade_stop($plan, "this run's mark could not be written", FALSE);
+  }
   // Leg 2: the move, three tasks deep.
   drush_log(dt('UPGRADE/2/MOVE moving @uri onto @platform; Drupal\'s database updates run there.', array('@uri' => $uri, '@platform' => $plan['target_title'])), 'ok');
   $leg = _provision_tasks_extra_upgrade_leg('@' . $uri, 'migrate', array(
