@@ -396,7 +396,7 @@ function hosting_tasks_extra_drupal_upgrade_all_end($task, $verified) {
   $platform = node_load($task->rid, NULL, TRUE);
   $title = is_object($platform) ? $platform->title : hosting_tasks_extra_node_title($task->rid);
   if (!$verified) {
-    drush_log(dt('UPGRADE-ALL/VERIFY the Verify of @platform did not finish (see above): its packages are recorded as they were.', array('@platform' => $title)), 'warning');
+    drush_log(dt('UPGRADE-ALL/VERIFY the Verify of !platform did not finish (see above): its packages are recorded as they were.', array('!platform' => _hosting_tasks_extra_plain($title))), 'warning');
   }
   // 'moved': sites this run's rows moved; 'there': sites of the run that
   // are on the target now, by whatever task.
@@ -418,7 +418,8 @@ function hosting_tasks_extra_drupal_upgrade_all_end($task, $verified) {
     $pair = explode("\t", $item, 2);
     if (count($pair) == 2 && ctype_digit($pair[0])) {
       $left++;
-      drush_log(dt('UPGRADE-ALL/SITE @site: left out at the start (@why).', array('@site' => hosting_tasks_extra_node_title($pair[0]), '@why' => $pair[1])), 'ok');
+      // Plain text for the task log: dt() would escape an apostrophe.
+      drush_log(dt('UPGRADE-ALL/SITE @site: left out at the start (!why).', array('@site' => hosting_tasks_extra_node_title($pair[0]), '!why' => _hosting_tasks_extra_plain($pair[1]))), 'ok');
     }
   }
 
@@ -430,7 +431,7 @@ function hosting_tasks_extra_drupal_upgrade_all_end($task, $verified) {
       $platform->platform_status = HOSTING_PLATFORM_ENABLED;
       $platform->no_verify = TRUE;
       node_save($platform);
-      drush_log(dt('UPGRADE-ALL/NEXT @platform is unlocked again: no site moved off it.', array('@platform' => $title)), 'ok');
+      drush_log(dt('UPGRADE-ALL/NEXT !platform is unlocked again: no site moved off it.', array('!platform' => _hosting_tasks_extra_plain($title))), 'ok');
     }
     else {
       $copies = 0;
@@ -447,8 +448,8 @@ function hosting_tasks_extra_drupal_upgrade_all_end($task, $verified) {
           $stay++;
         }
       }
-      drush_log(dt('UPGRADE-ALL/NEXT @platform stays locked: it holds @copies and @sites still on it, which cannot be moved or cloned from the panel until it is unlocked. When the upgraded sites are checked, delete their way-back copies; Delete the platform when no site is left on it.', array(
-        '@platform' => $title,
+      drush_log(dt('UPGRADE-ALL/NEXT !platform stays locked: it holds @copies and @sites still on it, which cannot be moved or cloned from the panel until it is unlocked. When the upgraded sites are checked, delete their way-back copies; Delete the platform when no site is left on it.', array(
+        '!platform' => _hosting_tasks_extra_plain($title),
         '@copies' => format_plural($copies, '1 way-back copy', '@count way-back copies'),
         '@sites' => format_plural($stay, '1 site', '@count sites'),
       )), 'ok');
@@ -467,7 +468,7 @@ function hosting_tasks_extra_drupal_upgrade_all_end($task, $verified) {
       $queued[] = $row->task_type . ' of ' . hosting_tasks_extra_node_title($row->rid);
     }
     if ($queued) {
-      drush_log(dt('UPGRADE-ALL/NEXT still queued after this run: @rows.', array('@rows' => implode(', ', $queued))), 'ok');
+      drush_log(dt('UPGRADE-ALL/NEXT still queued after this run: !rows.', array('!rows' => _hosting_tasks_extra_plain(implode(', ', $queued)))), 'ok');
     }
   }
 
@@ -495,6 +496,13 @@ function hosting_tasks_extra_drupal_upgrade_all_end($task, $verified) {
   else {
     drush_log(dt('UPGRADE-ALL/RESULT !text.', array('!text' => $text)), 'success');
   }
+}
+
+/**
+ * Text for a task log line, as plain text: no markup, nothing escaped.
+ */
+function _hosting_tasks_extra_plain($text) {
+  return str_replace(array('<', '>'), '', (string) $text);
 }
 
 /**
