@@ -227,6 +227,7 @@ function hosting_tasks_extra_drupal_upgrade_cancel_steps($task, $what) {
  */
 function hosting_tasks_extra_drupal_upgrade_end($task) {
   hosting_tasks_extra_drupal_upgrade_cancel_steps($task, 'Upgrade');
+  hosting_tasks_extra_drupal_upgrade_keep_size($task);
   $site = node_load($task->rid, NULL, TRUE);
   $target = isset($task->task_args['target_platform']) ? (int) $task->task_args['target_platform'] : 0;
   if (!is_object($site) || !$target || $site->platform != $target || empty($task->executed)) {
@@ -254,6 +255,44 @@ function hosting_tasks_extra_drupal_upgrade_end($task) {
       ->condition('site', $site->nid)
       ->condition('timestamp', (int) $task->executed, '>=')
       ->condition('description', $label[0], 'IN')
+      ->execute();
+  }
+}
+
+/**
+ * Keeps on the Upgrade's row what its way-back copy uses on disk.
+ *
+ * The backend says it in its log, which the panel purges after a time, and
+ * the copy is kept until the user deletes it: the two figures go into the
+ * row's arguments, as the platform it left does.
+ */
+function hosting_tasks_extra_drupal_upgrade_keep_size($task) {
+  if (empty($task->vid)) {
+    return;
+  }
+  $line = db_query_range("SELECT message FROM {hosting_task_log} WHERE vid = :vid AND message LIKE :size ORDER BY lid DESC", 0, 1, array(
+    ':vid' => $task->vid,
+    ':size' => db_like('UPGRADE/1/COPY size: ') . '%',
+  ))->fetchField();
+  if (!is_string($line)) {
+    return;
+  }
+  $keep = array();
+  $m = array();
+  if (preg_match('/\bfiles ([0-9]+) bytes\b/', $line, $m)) {
+    $keep['copy_files'] = $m[1];
+  }
+  if (preg_match('/\bdatabase ([0-9]+) bytes\b/', $line, $m)) {
+    $keep['copy_database'] = $m[1];
+  }
+  foreach ($keep as $name => $value) {
+    $task->task_args[$name] = $value;
+    db_delete('hosting_task_arguments')
+      ->condition('vid', $task->vid)
+      ->condition('name', $name)
+      ->execute();
+    db_insert('hosting_task_arguments')
+      ->fields(array('vid' => $task->vid, 'nid' => $task->nid, 'name' => $name, 'value' => $value))
       ->execute();
   }
 }

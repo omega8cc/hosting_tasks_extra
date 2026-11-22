@@ -1965,12 +1965,26 @@ function _provision_tasks_extra_upgrade_db_bytes($site_dir) {
   if (!is_string($body) || !preg_match('/\$options\s*\[\s*[\'"]db_name[\'"]\s*\]\s*=\s*[\'"]([A-Za-z0-9_]+)[\'"]/', $body, $m)) {
     return FALSE;
   }
+  // A server that cannot be reached sets the connection error: the figure
+  // is worth no failure of the run, so the error state is put back after.
+  $code = drush_get_context('DRUSH_ERROR_CODE', DRUSH_SUCCESS);
+  $errors = drush_get_context('DRUSH_ERROR_LOG', array());
+  $bytes = _provision_tasks_extra_upgrade_db_bytes_read($m[1]);
+  drush_set_context('DRUSH_ERROR_CODE', $code);
+  drush_set_context('DRUSH_ERROR_LOG', $errors);
+  return $bytes;
+}
+
+/**
+ * Reads a database's size through the database server of this site.
+ */
+function _provision_tasks_extra_upgrade_db_bytes_read($name) {
   try {
     $db = d()->service('db');
     if (!is_object($db) || !method_exists($db, 'query') || $db instanceof Provision_Service_null) {
       return FALSE;
     }
-    $result = $db->query("SELECT COALESCE(SUM(data_length + index_length), 0) FROM information_schema.tables WHERE table_schema = '%s'", $m[1]);
+    $result = $db->query("SELECT COALESCE(SUM(data_length + index_length), 0) FROM information_schema.tables WHERE table_schema = '%s'", $name);
     if (!is_object($result) || !method_exists($result, 'fetch')) {
       return FALSE;
     }
@@ -2089,12 +2103,6 @@ function drush_provision_tasks_extra_provision_drupal_upgrade() {
     return _provision_tasks_extra_upgrade_stop($plan, _provision_tasks_extra_upgrade_step_why($leg, 'the copy of the site could not be switched off (see above)'), FALSE);
   }
   drush_log(dt('UPGRADE/1/COPY done: @copy holds the site as it was at @when, switched off.', array('@copy' => $copy, '@when' => $when)), 'ok');
-  // What the way back costs, for the site page: measured once, as it does
-  // not change while it is switched off.
-  $size = _provision_tasks_extra_upgrade_copy_size($copy_dir);
-  if ($size !== '') {
-    drush_log(dt('UPGRADE/1/COPY size: @copy uses !size.', array('@copy' => $copy, '!size' => $size)), 'ok');
-  }
 
   // Leg 2: the move, three tasks deep.
   drush_log(dt('UPGRADE/2/MOVE moving @uri onto @platform; Drupal\'s database updates run there.', array('@uri' => $uri, '@platform' => $plan['target_title'])), 'ok');
@@ -2124,6 +2132,13 @@ function drush_provision_tasks_extra_provision_drupal_upgrade() {
   $kept = _provision_tasks_extra_upgrade_kept_dump($uri, $started);
   if ($kept !== '') {
     drush_log(dt('UPGRADE/KEPT the database as it was before the move is kept in @path, for support; the panel\'s Restore does not use it.', array('@path' => $kept)), 'ok');
+  }
+  // What the way back costs, for the site page: measured once the move has
+  // gone through, so that the walk does not lengthen the time in which the
+  // site's changes are lost on Go back; a switched-off copy does not change.
+  $size = _provision_tasks_extra_upgrade_copy_size($copy_dir);
+  if ($size !== '') {
+    drush_log(dt('UPGRADE/1/COPY size: @copy uses !size.', array('@copy' => $copy, '!size' => $size)), 'ok');
   }
   $base = $uri . ' runs Drupal ' . $plan['target_release'] . ' on ' . $plan['target_title'];
   $gone = !file_exists($plan['source_root'] . '/sites/' . $uri) && !is_link($plan['source_root'] . '/sites/' . $uri);

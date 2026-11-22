@@ -1276,7 +1276,16 @@ function hosting_tasks_extra_drupal_upgrade_left($site) {
   if ($out['copy'] !== '') {
     $copy = hosting_get_site_by_url($out['copy']);
     $out['made'] = is_object($copy) ? (int) $copy->created : 0;
-    $line = db_query_range("SELECT message FROM {hosting_task_log} WHERE vid = :vid AND message LIKE :size ORDER BY lid DESC", 0, 1, array(
+    // The row's arguments, which the end of the run wrote from its log;
+    // else that log line itself.
+    $args = db_query("SELECT name, value FROM {hosting_task_arguments} WHERE vid = :vid AND name IN ('copy_files', 'copy_database')", array(':vid' => $runs[0]['vid']))->fetchAllKeyed();
+    if (isset($args['copy_files']) && ctype_digit((string) $args['copy_files'])) {
+      $out['files'] = (float) $args['copy_files'];
+    }
+    if (isset($args['copy_database']) && ctype_digit((string) $args['copy_database'])) {
+      $out['database'] = (float) $args['copy_database'];
+    }
+    $line = ($out['files'] !== FALSE || $out['database'] !== FALSE) ? FALSE : db_query_range("SELECT message FROM {hosting_task_log} WHERE vid = :vid AND message LIKE :size ORDER BY lid DESC", 0, 1, array(
       ':vid' => $runs[0]['vid'],
       ':size' => db_like('UPGRADE/1/COPY size: ') . '%',
     ))->fetchField();
