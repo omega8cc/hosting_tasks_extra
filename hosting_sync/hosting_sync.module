@@ -54,8 +54,9 @@ function hosting_sync_permission() {
  */
 function hosting_sync_comparison($current, $target) {
 
-  $current_tbl = _hosting_package_temporary_table($current);
-  $target_tbl = _hosting_package_temporary_table($target);
+  // A site against a platform's profile instance, as the form links them.
+  $current_tbl = _hosting_package_temporary_table($current, 'site');
+  $target_tbl = _hosting_package_temporary_table($target, 'profile');
 
   $packages = array();
 

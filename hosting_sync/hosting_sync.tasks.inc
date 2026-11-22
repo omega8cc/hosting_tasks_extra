@@ -119,16 +119,16 @@ function _hosting_sync_get_sites($platform = NULL, $profile = NULL, $exclude_nid
  */
 function hosting_sync_get_compatible_platforms($node, $type = 'destination') {
   $profile_platform_instances = hosting_package_instances_load(
-    array('r.type' => 'platform', 'n.nid' => $node->profile, 'h.status' => HOSTING_PLATFORM_ENABLED));
+    array('r.type' => 'platform', 'n.nid' => $node->profile, 'h.status' => HOSTING_PLATFORM_ENABLED) + (function_exists('hosting_package_ref_ambiguous') ? array('platform_own' => TRUE) : array()));
 
   $result = array();
 
   foreach ($profile_platform_instances as $profile_instance) {
     if ($type === 'source') {
-      $status = hosting_package_comparison($node->nid, $profile_instance->iid);
+      $status = hosting_package_comparison($node->nid, $profile_instance->iid, 'site', 'profile');
     }
     else {
-      $status = hosting_package_comparison($profile_instance->iid, $node->nid);
+      $status = hosting_package_comparison($profile_instance->iid, $node->nid, 'profile', 'site');
     }
 
     // If there are no errors, this one is compatible!
