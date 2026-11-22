@@ -678,8 +678,8 @@ function hosting_tasks_extra_drupal_upgrade_modules($site_nid) {
  * What a site has switched on that a platform's profile does not carry.
  */
 function hosting_tasks_extra_drupal_upgrade_missing($site_nid, $profile_iid) {
-  $current = _hosting_package_temporary_table($site_nid);
-  $target = _hosting_package_temporary_table($profile_iid);
+  $current = _hosting_package_temporary_table($site_nid, 'site');
+  $target = _hosting_package_temporary_table($profile_iid, 'profile');
   return db_query("SELECT c.short_name FROM $current c LEFT JOIN $target t ON c.nid = t.nid WHERE t.nid IS NULL AND c.status = 1 ORDER BY c.short_name")->fetchCol();
 }
 
@@ -937,7 +937,12 @@ function _hosting_tasks_extra_drupal_upgrade_target($site, $platform, $source_ro
   }
   // Rule 8. The comparison's count of downgrades is not used: it reads a
   // module that left core for a project of its own as one.
-  $status = hosting_package_comparison($site->nid, $instance->iid);
+  $status = hosting_package_comparison($site->nid, $instance->iid, 'site', 'profile');
+  if (!empty($status['ambiguous'])) {
+    $entry['why'] = "the panel's package records of this site, or of the install profile on it, share their number and platform with another record, so they cannot be compared (the panel's log names both)";
+    $entry['rule'] = 'missing';
+    return $entry;
+  }
   if (!empty($status['missing'])) {
     $missing = hosting_tasks_extra_drupal_upgrade_missing($site->nid, $instance->iid);
     $entry['why'] = 'it lacks what this site has switched on: ' . _provision_tasks_extra_upgrade_names($missing ? $missing : array($status['missing'] . ' packages'));

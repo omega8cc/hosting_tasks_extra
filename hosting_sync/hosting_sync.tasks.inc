@@ -125,10 +125,10 @@ function hosting_sync_get_compatible_platforms($node, $type = 'destination') {
 
   foreach ($profile_platform_instances as $profile_instance) {
     if ($type === 'source') {
-      $status = hosting_package_comparison($node->nid, $profile_instance->iid);
+      $status = hosting_package_comparison($node->nid, $profile_instance->iid, 'site', 'profile');
     }
     else {
-      $status = hosting_package_comparison($profile_instance->iid, $node->nid);
+      $status = hosting_package_comparison($profile_instance->iid, $node->nid, 'profile', 'site');
     }
 
     // If there are no errors, this one is compatible!
