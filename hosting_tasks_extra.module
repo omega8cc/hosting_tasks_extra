@@ -1789,43 +1789,23 @@ function hosting_tasks_extra_drupal_upgrade_all_membership($task) {
 }
 
 /**
- * The first row of a run that ended in error, before a place in it, or FALSE.
+ * Why a site of a run may not start, from the run's other rows, or ''.
  *
- * @param string $token
- *   The run's token.
- * @param int $before
- *   Only rows before this place; 0 for any.
+ * Another site of the run that ended in error stops it. So does one still
+ * processing: the queue runs one task at a time, so its runner is gone (the
+ * queue's reaper marks it failed only later) or runs beside a holder past
+ * its time. A site that still waits does not, whatever its place: the queue
+ * promises no order (a queue that runs several tasks at a time, an older
+ * queued task of that site saved again), and each site is checked by its
+ * own Upgrade. So the run stops at its first failure in time, not in order.
  */
-function hosting_tasks_extra_drupal_upgrade_all_failed($token, $before = 0) {
+function hosting_tasks_extra_drupal_upgrade_all_blocked($token, $self_nid) {
   foreach (hosting_tasks_extra_drupal_upgrade_all_members($token) as $member) {
-    if (($before < 1 || $member->order < $before) && $member->task_status == HOSTING_TASK_ERROR) {
-      return $member;
+    if ((int) $member->nid === (int) $self_nid) {
+      continue;
     }
-  }
-  return FALSE;
-}
-
-/**
- * Why a site of a run may not start yet, from the rows before it, or ''.
- *
- * The queue runs one task at a time, so a row before this one that is still
- * processing has lost its runner (the queue's reaper marks it failed only
- * later) or runs beside a holder past its time; one still queued was passed
- * by the queue, which is no promise of order. Either way this site waits for
- * nothing: it is not started, so a site after one that does not upgrade is
- * never upgraded.
- */
-function hosting_tasks_extra_drupal_upgrade_all_blocked($token, $order) {
-  foreach (hosting_tasks_extra_drupal_upgrade_all_members($token) as $member) {
-    if ($member->order >= $order) {
-      break;
-    }
-    $name = hosting_tasks_extra_node_title($member->rid);
     if ($member->task_status == HOSTING_TASK_ERROR || $member->task_status == HOSTING_TASK_PROCESSING) {
-      return 'the upgrade of ' . $name . ', before this one in Upgrade all sites, did not finish';
-    }
-    if ($member->task_status == HOSTING_TASK_QUEUED) {
-      return 'the upgrade of ' . $name . ', before this one in Upgrade all sites, has not run yet';
+      return 'the upgrade of ' . hosting_tasks_extra_node_title($member->rid) . ' in the same Upgrade all sites did not finish';
     }
   }
   return '';
@@ -1842,10 +1822,11 @@ function hosting_tasks_extra_node_title($nid) {
 /**
  * Implements hook_hosting_task_update_status().
  *
- * Stops an Upgrade all sites run at a site that ends in error: the run's
- * later sites that still wait are cancelled. A runner that is killed writes
- * no status, and the queue's reaper marks its row failed without this hook:
- * the next site's own start refuses then
+ * Stops an Upgrade all sites run at a site that ends in error: every site of
+ * the run that still waits is cancelled, whatever its place in the run,
+ * since the queue may take them in another order. A runner that is killed
+ * writes no status, and the queue's reaper marks its row failed without this
+ * hook: the next site's own start refuses then
  * (hosting_tasks_extra_drupal_upgrade_start()).
  */
 function hosting_tasks_extra_hosting_task_update_status($task, $status) {
@@ -1856,17 +1837,19 @@ function hosting_tasks_extra_hosting_task_update_status($task, $status) {
   if (!$member['member'] || $member['why'] !== '') {
     return;
   }
-  $first = hosting_tasks_extra_drupal_upgrade_all_failed($member['token']);
-  $name = hosting_tasks_extra_node_title($first ? $first->rid : $task->rid);
+  $name = '';
   foreach (hosting_tasks_extra_drupal_upgrade_all_members($member['token']) as $other) {
-    if ($other->order <= $member['order'] || $other->task_status != HOSTING_TASK_QUEUED) {
+    if ((int) $other->nid === (int) $task->nid || $other->task_status != HOSTING_TASK_QUEUED) {
       continue;
     }
     $node = node_load($other->nid, NULL, TRUE);
     if (is_object($node) && $node->type == 'task' && $node->task_status == HOSTING_TASK_QUEUED) {
+      if ($name === '') {
+        $name = hosting_tasks_extra_node_title($task->rid);
+      }
       $node->task_status = HOSTING_TASK_WARNING;
       node_save($node);
-      hosting_task_log($node->vid, 'warning', t('Cancelled: the upgrade of @site, before this one in Upgrade all sites, did not finish.', array('@site' => $name)));
+      hosting_task_log($node->vid, 'warning', t('Cancelled: the upgrade of @site in the same Upgrade all sites did not finish.', array('@site' => $name)));
     }
   }
 }

@@ -107,8 +107,8 @@ function hosting_tasks_extra_drupal_upgrade_start($task) {
   $site = $task->ref;
   $target_nid = isset($task->task_args['target_platform']) ? (int) $task->task_args['target_platform'] : 0;
   // A site of an Upgrade all sites run: only one its run vouches for, still
-  // on the platform the run was for, and only after every site before it in
-  // the run has ended without error (a runner that was killed cancels
+  // on the platform the run was for, and only while no other site of the run
+  // ended in error or is still processing (a runner that was killed cancels
   // nothing, and the queue does not promise the run's order).
   $member = hosting_tasks_extra_drupal_upgrade_all_membership($task);
   if ($member['member']) {
@@ -118,7 +118,7 @@ function hosting_tasks_extra_drupal_upgrade_start($task) {
     if ((int) $site->platform !== $member['platform']) {
       return hosting_tasks_extra_drupal_upgrade_refuse('this site is no longer on the platform its Upgrade all sites was for');
     }
-    $blocked = hosting_tasks_extra_drupal_upgrade_all_blocked($member['token'], $member['order']);
+    $blocked = hosting_tasks_extra_drupal_upgrade_all_blocked($member['token'], $task->nid);
     if ($blocked !== '') {
       return hosting_tasks_extra_drupal_upgrade_refuse($blocked);
     }
@@ -392,7 +392,8 @@ function hosting_tasks_extra_drupal_upgrade_all_end($task, $verified) {
     return;
   }
   $target_nid = (int) $rollup->target;
-  $target = hosting_tasks_extra_node_title($target_nid);
+  // Free text: it goes into the run's log lines as plain text.
+  $target = _hosting_tasks_extra_plain(hosting_tasks_extra_node_title($target_nid));
   $platform = node_load($task->rid, NULL, TRUE);
   $title = is_object($platform) ? $platform->title : hosting_tasks_extra_node_title($task->rid);
   if (!$verified) {
@@ -425,7 +426,7 @@ function hosting_tasks_extra_drupal_upgrade_all_end($task, $verified) {
 
   // What now.
   if (is_object($platform) && $platform->platform_status == HOSTING_PLATFORM_LOCKED) {
-    if (!$count['there'] && !$count['open']) {
+    if (!$count['moved'] && !$count['there'] && !$count['open']) {
       // The run took the lock from an enabled platform, and no site of it
       // left the platform, by this run or another task.
       $platform->platform_status = HOSTING_PLATFORM_ENABLED;
@@ -597,7 +598,7 @@ function _hosting_tasks_extra_drupal_upgrade_all_unmoved($member, $found, &$coun
   }
   if ($member->task_status == HOSTING_TASK_WARNING) {
     $m = array();
-    if ($found['cancel'] !== '' && preg_match('/^Cancelled: the upgrade of (.+), before this one/', $found['cancel'], $m)) {
+    if ($found['cancel'] !== '' && preg_match('/^Cancelled: the upgrade of (.+?)(?:, before this one| in the same Upgrade all sites)/', $found['cancel'], $m)) {
       $count['cancelled']++;
       return 'cancelled after ' . $m[1] . ' did not upgrade';
     }
