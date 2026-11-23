@@ -1690,6 +1690,56 @@ function _provision_tasks_extra_upgrade_run_moved($failed, $copy_kept, $codes) {
 }
 
 /**
+ * What a way-back copy that is still on its site's platform says about a run.
+ *
+ * The backend refuses an Upgrade over such a copy, except one a run made and
+ * was cut off before its move, which the next run removes. It knows that by
+ * the marks; this says the same from the panel's rows, and only where they
+ * show it.
+ *
+ * @param string $last
+ *   How far the copy's own run got: 'PROVISION_UPGRADE_NOT_UPGRADED' or
+ *   'PROVISION_UPGRADE_UNFINISHED' (it ended so), 'upgraded' (it ended well),
+ *   'move' (its move began and nothing says how it ended), or '' (no move of
+ *   it is known).
+ * @param string $refusal
+ *   What the backend said last when it refused another run because of this
+ *   copy, or ''.
+ * @param bool $ran
+ *   The row of the copy's own run is there, and it ran.
+ * @param bool $tidy
+ *   A run removes the copy that a run cut off before its move left.
+ *
+ * @return string
+ *   'cut' (cut off during its move) and 'unfinished' (it ended midway), both
+ *   for support; 'left' (the copy alone is in the way); '' when a new run is
+ *   not known to be refused.
+ */
+function _provision_tasks_extra_upgrade_leftover($last, $refusal, $ran, $tidy) {
+  // The backend's own words come from the mark.
+  if (strpos($refusal, ' during its move and left ') !== FALSE) {
+    return 'cut';
+  }
+  if ($last === 'PROVISION_UPGRADE_UNFINISHED') {
+    return 'unfinished';
+  }
+  if ($last === 'PROVISION_UPGRADE_NOT_UPGRADED' || $last === 'upgraded') {
+    return 'left';
+  }
+  if ($last === 'move') {
+    return 'cut';
+  }
+  // Cut off before its move, as far as is known: the next run removes it.
+  if ($refusal === '') {
+    return ($ran && !$tidy) ? 'left' : '';
+  }
+  if (strpos($refusal, ' before it moved the site and left ') !== FALSE) {
+    return $tidy ? '' : 'left';
+  }
+  return 'left';
+}
+
+/**
  * What a Go back row says a later run on a site node has to do.
  *
  * Read from the mark the run's own end left on its row (return_end: 'back',
