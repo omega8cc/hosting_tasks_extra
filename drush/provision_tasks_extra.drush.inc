@@ -2104,7 +2104,11 @@ function _provision_tasks_extra_upgrade_undo($plan) {
     elseif ($no_task) {
       // A Clone that failed after its deploy keeps the copy and makes no
       // panel record of it: no task row can delete it, the backend can.
-      // The panel's refusal says no more than the line below.
+      // A panel without a record of the copy says no more than the line
+      // below; a panel that could not start the Delete says why.
+      if (!in_array('HOSTING_TASK_LOAD_FAILED', $leg['codes'], TRUE)) {
+        _provision_tasks_extra_upgrade_replay($leg, FALSE);
+      }
       drush_log(dt('UPGRADE/UNDO the panel holds no record of @copy, so it is removed by the backend alone.', array('@copy' => $copy)), 'ok');
       $before = count(drush_get_log());
       $result = provision_backend_invoke('@' . $copy, 'provision-delete');
