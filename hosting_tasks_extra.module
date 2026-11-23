@@ -1413,7 +1413,7 @@ function hosting_tasks_extra_drupal_upgrade_copies_left($site, $source_root) {
     $copy = '/\bback-([0-9]+)\.temp\.' . preg_quote($name, '/') . '(?![A-Za-z0-9-]|\.[A-Za-z0-9])/';
     $unsafe = array();
     $lines = db_query("SELECT vid, error, message FROM {hosting_task_log}
-      WHERE vid IN (:vids) AND message LIKE :copy AND (error = :code OR message LIKE :undo)
+      WHERE vid IN (:vids) AND (error = :code OR message LIKE :undo) AND message LIKE :copy
       ORDER BY lid", array(
         ':vids' => array_keys($runs),
         ':copy' => '%back-%.temp.' . db_like($name) . '%',
@@ -1480,9 +1480,10 @@ function hosting_tasks_extra_drupal_upgrade_leftover($site, $source_root) {
     }
     $ran = $row && !empty($row->executed);
     // How far the run got: the newest line of its log that says so. A log is
-    // purged after a time, and the row of its move is not.
+    // purged after a time, and a run can outlive the runner that writes it;
+    // the row of its move says so then.
     $last = '';
-    $line = db_query_range("SELECT error, message FROM {hosting_task_log}
+    $line = db_query_range("SELECT error, message, timestamp FROM {hosting_task_log}
       WHERE nid = :nid AND (error IN (:codes) OR message LIKE :copy OR message LIKE :move OR message LIKE :upgraded)
       ORDER BY lid DESC", 0, 1, array(
         ':nid' => $run,
@@ -1499,13 +1500,15 @@ function hosting_tasks_extra_drupal_upgrade_leftover($site, $source_root) {
       $start = substr($line->message, 0, 15);
       $last = isset($words[$start]) ? $words[$start] : '';
     }
-    elseif ($ran && db_query_range("SELECT 1 FROM {hosting_task} t
+    if ($last === '' && $ran && db_query_range("SELECT 1 FROM {hosting_task} t
+        INNER JOIN {node} n ON n.vid = t.vid
         INNER JOIN {hosting_task_arguments} a ON a.vid = t.vid AND a.name = :name AND a.value = :run
-      WHERE t.rid = :rid AND t.task_type = :type", 0, 1, array(
+      WHERE t.rid = :rid AND t.task_type = :type AND n.created >= :since", 0, 1, array(
         ':name' => 'upgrade_run',
         ':run' => (string) $run,
         ':rid' => $row->rid,
         ':type' => 'migrate',
+        ':since' => $line ? (int) $line->timestamp : 0,
       ))->fetchField()) {
       $last = ($row->task_status == HOSTING_TASK_ERROR) ? 'move' : 'upgraded';
     }
