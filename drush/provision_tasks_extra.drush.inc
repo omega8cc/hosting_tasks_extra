@@ -2080,7 +2080,10 @@ function _provision_tasks_extra_upgrade_undo($plan) {
   }
   // Only a copy on the site's own platform is this run's.
   if ($root !== FALSE && $root !== '' && _provision_tasks_extra_upgrade_same_root($root, $plan['source_root'])) {
-    $leg = _provision_tasks_extra_upgrade_leg('@' . $copy, 'delete', array($plan['marker']));
+    // Quiet: a panel with no record of the copy refuses the Delete with an
+    // error of its own, which must not end in Error a run that then removes
+    // the copy by the backend and goes on to upgrade the site.
+    $leg = _provision_tasks_extra_upgrade_leg('@' . $copy, 'delete', array($plan['marker']), TRUE);
     // A panel moving to its new version makes no task either: its own
     // hosting-task stops at bootstrap, with no error code of hosting's.
     $no_task = !$leg['ok'] && (in_array('HOSTING_TASK_LOAD_FAILED', $leg['codes'], TRUE) || in_array('PROVISION_UPGRADE_PANEL_MOVING', $leg['codes'], TRUE));
@@ -2095,11 +2098,17 @@ function _provision_tasks_extra_upgrade_undo($plan) {
       // and still made no task now (it is moving to its new version, say).
       // Removing the copy here would leave that record with nothing behind
       // it: the copy stays, for a Delete in the panel.
+      _provision_tasks_extra_upgrade_replay($leg, FALSE);
       drush_log(dt('UPGRADE/UNDO the panel could not start the Delete of @copy now: the copy is left as it is. Delete it in the panel.', array('@copy' => $copy)), 'warning');
     }
     elseif ($no_task) {
       // A Clone that failed after its deploy keeps the copy and makes no
       // panel record of it: no task row can delete it, the backend can.
+      // A panel without a record of the copy says no more than the line
+      // below; a panel that could not start the Delete says why.
+      if (!in_array('HOSTING_TASK_LOAD_FAILED', $leg['codes'], TRUE)) {
+        _provision_tasks_extra_upgrade_replay($leg, FALSE);
+      }
       drush_log(dt('UPGRADE/UNDO the panel holds no record of @copy, so it is removed by the backend alone.', array('@copy' => $copy)), 'ok');
       $before = count(drush_get_log());
       $result = provision_backend_invoke('@' . $copy, 'provision-delete');
@@ -2112,6 +2121,10 @@ function _provision_tasks_extra_upgrade_undo($plan) {
       if ($leg['ok']) {
         provision_backend_invoke('@none', 'provision-save', array('@' . $copy), array('delete' => TRUE));
       }
+    }
+    else {
+      // The panel's Delete ran: what it logged belongs in this run's log.
+      _provision_tasks_extra_upgrade_replay($leg, FALSE);
     }
     foreach ($leg['log'] as $entry) {
       if (is_array($entry) && isset($entry['type'], $entry['message']) && $entry['type'] === 'warning' && is_string($entry['message']) && stripos($entry['message'], 'database') !== FALSE) {
