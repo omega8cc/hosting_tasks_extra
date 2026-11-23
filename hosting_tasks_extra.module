@@ -2385,18 +2385,26 @@ function hosting_tasks_extra_drupal_upgrade_all_line($platform) {
  * The rule the last row reads its sites with: a row moved its site when the
  * site's own Upgrades say so (hosting_tasks_extra_drupal_upgrade_runs()), and
  * a row that ended in error counts only while its site is on the target. A
- * site another task moved onto the target is not the run's doing. A row that
- * ended well moved its site and needs no query, one that never ran did not.
+ * site another task moved onto the target is not the run's doing.
+ *
+ * It runs on every view of the platform's page, so only a row that ran and
+ * ended in error while its site is on the target costs a query: a row that
+ * ended well moved its site; one that never ran, or was refused at its
+ * start, did not; one that ran and ended with a warning passed its start,
+ * which writes the platform the site left, so the site's Upgrades list it.
  */
 function hosting_tasks_extra_drupal_upgrade_all_row_upgraded($member) {
   $status = (int) $member->task_status;
   if ($status === HOSTING_TASK_SUCCESS) {
     return TRUE;
   }
-  if (empty($member->executed) || ($status !== HOSTING_TASK_WARNING && $status !== HOSTING_TASK_ERROR)) {
+  if (empty($member->executed) || !empty($member->not_started)) {
     return FALSE;
   }
-  if ($status === HOSTING_TASK_ERROR && (!$member->platform || (string) $member->platform !== (string) $member->target)) {
+  if ($status === HOSTING_TASK_WARNING) {
+    return TRUE;
+  }
+  if ($status !== HOSTING_TASK_ERROR || !$member->platform || (string) $member->platform !== (string) $member->target) {
     return FALSE;
   }
   $site = node_load($member->rid);
