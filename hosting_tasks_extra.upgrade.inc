@@ -1716,13 +1716,17 @@ function _provision_tasks_extra_upgrade_run_moved($failed, $copy_kept, $codes) {
  *   not known to be refused.
  */
 function _provision_tasks_extra_upgrade_leftover($last, $refusal, $ran, $tidy) {
+  // The backend's own words come from the mark.
+  if (strpos($refusal, ' during its move and left ') !== FALSE) {
+    return 'cut';
+  }
   if ($last === 'PROVISION_UPGRADE_UNFINISHED') {
     return 'unfinished';
   }
   if ($last === 'PROVISION_UPGRADE_NOT_UPGRADED' || $last === 'upgraded') {
     return 'left';
   }
-  if ($last === 'move' || strpos($refusal, ' during its move and left ') !== FALSE) {
+  if ($last === 'move') {
     return 'cut';
   }
   // Cut off before its move, as far as is known: the next run removes it.

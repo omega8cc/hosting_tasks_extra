@@ -1372,15 +1372,14 @@ function hosting_tasks_extra_drupal_upgrade_left_platforms($site) {
  * The way-back copies of a site that still stand on the platform it is on.
  *
  * Those the panel lists there, whichever site node their run was of (a Go
- * back gives the name to another node); and those whose folder is there, of
- * the site's own Upgrades or named by the backend when it refused one. The
- * panel's web pages can look into a platform's sites folder by name and
- * cannot list it.
+ * back gives the name to another node); those of the site's own Upgrades;
+ * and those the backend named when it refused one. Each only while its folder
+ * is there: the panel's web pages can look into a platform's sites folder by
+ * name and cannot list it. Where they cannot even do that, those listed.
  *
  * @return array
- *   Upgrade task nid => array('copy' => its name, 'listed' => in the panel,
- *   'refusal' => what the backend said of it when it last refused another
- *   Upgrade of the site, or '').
+ *   Upgrade task nid => what the backend said of its copy when it last
+ *   refused another Upgrade of the site, or ''.
  */
 function hosting_tasks_extra_drupal_upgrade_copies_left($site, $source_root) {
   $name = hosting_site_clean_domain(hosting_tasks_extra_drupal_upgrade_site_name($site));
@@ -1395,41 +1394,58 @@ function hosting_tasks_extra_drupal_upgrade_copies_left($site, $source_root) {
     ))->fetchCol();
   foreach ($titles as $title) {
     $m = array();
-    $copy = hosting_site_clean_domain($title);
-    if (preg_match('/^back-([0-9]+)\.temp\.(.+)$/', $copy, $m) && $m[2] === $name && (int) $m[1] > 0) {
-      $found[(int) $m[1]] = array('copy' => $copy, 'listed' => TRUE, 'refusal' => '');
+    if (preg_match('/^back-([0-9]+)\.temp\.(.+)$/', hosting_site_clean_domain($title), $m) && $m[2] === $name && (int) $m[1] > 0) {
+      $found[(int) $m[1]] = '';
     }
   }
+  $sites = $source_root . '/sites';
+  $look = @is_dir($sites);
   $runs = db_query("SELECT t.vid, t.nid FROM {hosting_task} t INNER JOIN {node} n ON n.vid = t.vid WHERE t.rid = :rid AND t.task_type = :type AND t.executed > 0", array(
     ':rid' => $site->nid,
     ':type' => 'drupal_upgrade',
   ))->fetchAllKeyed();
-  $refusals = array();
+  if ($look) {
+    foreach ($runs as $run) {
+      $found += array((int) $run => '');
+    }
+  }
   if ($runs) {
-    $lines = db_query("SELECT vid, message FROM {hosting_task_log} WHERE vid IN (:vids) AND error = :code AND message LIKE :copy ORDER BY lid", array(
-      ':vids' => array_keys($runs),
-      ':code' => 'PROVISION_UPGRADE_NOT_STARTED',
-      ':copy' => '%back-%.temp.' . db_like($name) . '%',
-    ));
+    $copy = '/\bback-([0-9]+)\.temp\.' . preg_quote($name, '/') . '(?![A-Za-z0-9-]|\.[A-Za-z0-9])/';
+    $unsafe = array();
+    $lines = db_query("SELECT vid, error, message FROM {hosting_task_log}
+      WHERE vid IN (:vids) AND message LIKE :copy AND (error = :code OR message LIKE :undo)
+      ORDER BY lid", array(
+        ':vids' => array_keys($runs),
+        ':copy' => '%back-%.temp.' . db_like($name) . '%',
+        ':code' => 'PROVISION_UPGRADE_NOT_STARTED',
+        ':undo' => db_like('UPGRADE/UNDO back-') . '%' . db_like(' is left as it is: ') . '%',
+      ));
     foreach ($lines as $line) {
       $m = array();
       // A row says nothing of another run's copy by naming its own.
-      if (preg_match('/\bback-([0-9]+)\.temp\.' . preg_quote($name, '/') . '(?![A-Za-z0-9-]|\.[A-Za-z0-9])/', $line->message, $m) && (int) $m[1] !== (int) $runs[$line->vid]) {
-        $refusals[(int) $m[1]] = $line->message;
+      if (!preg_match($copy, $line->message, $m) || (int) $m[1] === (int) $runs[$line->vid] || (!$look && !isset($found[(int) $m[1]]))) {
+        continue;
+      }
+      if ($line->error !== 'PROVISION_UPGRADE_NOT_STARTED') {
+        $unsafe[$line->vid][(int) $m[1]] = TRUE;
+      }
+      elseif (strpos($line->message, ' could not be removed ') !== FALSE && empty($unsafe[$line->vid][(int) $m[1]])) {
+        // The run tried to remove it and did not get to: the next one tries
+        // again. Only a copy it must not touch is said to be in the way.
+        $found[(int) $m[1]] = '';
+      }
+      else {
+        $found[(int) $m[1]] = $line->message;
       }
     }
   }
-  $sites = $source_root . '/sites';
-  if (@is_dir($sites)) {
-    foreach (array_unique(array_merge(array_values($runs), array_keys($refusals))) as $run) {
-      $copy = 'back-' . (int) $run . '.temp.' . $name;
-      if (!isset($found[(int) $run]) && (@file_exists($sites . '/' . $copy) || @is_link($sites . '/' . $copy))) {
-        $found[(int) $run] = array('copy' => $copy, 'listed' => FALSE, 'refusal' => '');
+  if ($look) {
+    foreach (array_keys($found) as $run) {
+      $path = $sites . '/back-' . $run . '.temp.' . $name;
+      if (!@file_exists($path) && !@is_link($path)) {
+        unset($found[$run]);
       }
     }
-  }
-  foreach (array_intersect_key($refusals, $found) as $run => $message) {
-    $found[$run]['refusal'] = $message;
   }
   krsort($found);
   return $found;
@@ -1443,6 +1459,9 @@ function hosting_tasks_extra_drupal_upgrade_copies_left($site, $source_root) {
  * from the panel's own rows (_provision_tasks_extra_upgrade_leftover()).
  * Only what they show is said. A copy they show nothing of is left to the
  * run, and so is one a run removes by itself.
+ *
+ * It never says to delete a copy: one whose making was cut off can still
+ * name the site's own database, which its Delete would drop.
  */
 function hosting_tasks_extra_drupal_upgrade_leftover($site, $source_root) {
   // An older copy of the shared include, loaded while the panel moves to a
@@ -1451,7 +1470,7 @@ function hosting_tasks_extra_drupal_upgrade_leftover($site, $source_root) {
     return '';
   }
   $left = '';
-  foreach (hosting_tasks_extra_drupal_upgrade_copies_left($site, $source_root) as $run => $item) {
+  foreach (hosting_tasks_extra_drupal_upgrade_copies_left($site, $source_root) as $run => $refusal) {
     $row = db_query_range("SELECT t.rid, t.task_status, t.executed FROM {hosting_task} t
         INNER JOIN {node} n ON n.vid = t.vid
       WHERE t.nid = :nid AND t.task_type = :type", 0, 1, array(':nid' => $run, ':type' => 'drupal_upgrade'))->fetchObject();
@@ -1464,15 +1483,21 @@ function hosting_tasks_extra_drupal_upgrade_leftover($site, $source_root) {
     // purged after a time, and the row of its move is not.
     $last = '';
     $line = db_query_range("SELECT error, message FROM {hosting_task_log}
-      WHERE nid = :nid AND (error IN (:codes) OR message LIKE :move OR message LIKE :upgraded)
+      WHERE nid = :nid AND (error IN (:codes) OR message LIKE :copy OR message LIKE :move OR message LIKE :upgraded)
       ORDER BY lid DESC", 0, 1, array(
         ':nid' => $run,
         ':codes' => array('PROVISION_UPGRADE_NOT_UPGRADED', 'PROVISION_UPGRADE_UNFINISHED'),
+        ':copy' => db_like('UPGRADE/1/COPY making ') . '%',
         ':move' => db_like('UPGRADE/2/MOVE ') . '%',
         ':upgraded' => db_like('UPGRADE/RESULT Upgraded') . '%',
       ))->fetchObject();
-    if ($line) {
-      $last = ($line->error !== '') ? $line->error : (strpos($line->message, 'UPGRADE/2/MOVE ') === 0 ? 'move' : 'upgraded');
+    if ($line && $line->error !== '') {
+      $last = $line->error;
+    }
+    elseif ($line) {
+      $words = array('UPGRADE/2/MOVE ' => 'move', 'UPGRADE/RESULT ' => 'upgraded');
+      $start = substr($line->message, 0, 15);
+      $last = isset($words[$start]) ? $words[$start] : '';
     }
     elseif ($ran && db_query_range("SELECT 1 FROM {hosting_task} t
         INNER JOIN {hosting_task_arguments} a ON a.vid = t.vid AND a.name = :name AND a.value = :run
@@ -1482,9 +1507,9 @@ function hosting_tasks_extra_drupal_upgrade_leftover($site, $source_root) {
         ':rid' => $row->rid,
         ':type' => 'migrate',
       ))->fetchField()) {
-      $last = in_array($row->task_status, array(HOSTING_TASK_SUCCESS, HOSTING_TASK_WARNING)) ? 'upgraded' : 'move';
+      $last = ($row->task_status == HOSTING_TASK_ERROR) ? 'move' : 'upgraded';
     }
-    $what = _provision_tasks_extra_upgrade_leftover($last, $item['refusal'], $ran, (bool) variable_get('hosting_tasks_extra_upgrade_tidy', TRUE));
+    $what = _provision_tasks_extra_upgrade_leftover($last, $refusal, $ran, (bool) variable_get('hosting_tasks_extra_upgrade_tidy', TRUE));
     if ($what === 'cut' || $what === 'unfinished') {
       $when = $ran ? ' on ' . format_date($row->executed, 'custom', 'Y-m-d') : '';
       return 'an earlier upgrade of this site (task ' . $run . ') '
@@ -1492,8 +1517,8 @@ function hosting_tasks_extra_drupal_upgrade_leftover($site, $source_root) {
         . ', and what it left needs support';
     }
     if ($what === 'left' && $left === '') {
-      $left = 'an earlier upgrade of this site left the copy ' . $item['copy'] . ' on its platform'
-        . ($item['listed'] ? ': delete that site first' : ', which the panel does not list: ask support');
+      $left = 'an earlier upgrade left the copy back-' . $run . '.temp.' . hosting_tasks_extra_drupal_upgrade_site_name($site)
+        . ' on this site\'s platform, where a new one would be refused over it: ask support';
     }
   }
   return $left;
