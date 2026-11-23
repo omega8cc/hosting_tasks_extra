@@ -1694,16 +1694,16 @@ function hosting_tasks_extra_drupal_upgrade_all_rollup($token) {
  * site.
  *
  * @return array
- *   Objects with nid, vid, rid (the site), task_status, uid, queued_by,
- *   target, order, platform (the site's now) and not_started (its log says it
- *   was refused at its start).
+ *   Objects with nid, vid, rid (the site), task_status, executed, uid,
+ *   queued_by, target, order, platform (the site's now) and not_started (its
+ *   log says it was refused at its start).
  */
 function hosting_tasks_extra_drupal_upgrade_all_members($token) {
   $parts = hosting_tasks_extra_drupal_upgrade_all_token($token);
   if (!$parts) {
     return array();
   }
-  $rows = db_query("SELECT t.nid, t.vid, t.rid, t.task_status, n.uid, " . hosting_tasks_extra_queued_by_column('t') . " AS queued_by, g.value AS target, o.value AS batch_order, s.platform,
+  $rows = db_query("SELECT t.nid, t.vid, t.rid, t.task_status, t.executed, n.uid, " . hosting_tasks_extra_queued_by_column('t') . " AS queued_by, g.value AS target, o.value AS batch_order, s.platform,
         (SELECT 1 FROM {hosting_task_log} l WHERE l.vid = t.vid AND l.message LIKE :not_started LIMIT 1) AS not_started
       FROM {node} n
       INNER JOIN {hosting_task} t ON t.vid = n.vid
@@ -2352,7 +2352,7 @@ function hosting_tasks_extra_drupal_upgrade_all_line($platform) {
       $counts['waiting']++;
       $open = TRUE;
     }
-    elseif ($member->platform && (string) $member->platform === (string) $member->target) {
+    elseif (hosting_tasks_extra_drupal_upgrade_all_row_upgraded($member)) {
       $counts['upgraded']++;
     }
     elseif ($member->task_status == HOSTING_TASK_WARNING || $member->not_started) {
@@ -2377,6 +2377,38 @@ function hosting_tasks_extra_drupal_upgrade_all_line($platform) {
     $text .= ' ' . t('This platform stays locked.');
   }
   return $text;
+}
+
+/**
+ * Whether a run's row upgraded its site, wherever the site is now.
+ *
+ * The rule the last row reads its sites with: a row moved its site when the
+ * site's own Upgrades say so (hosting_tasks_extra_drupal_upgrade_runs()), and
+ * a row that ended in error counts only while its site is on the target. A
+ * site another task moved onto the target is not the run's doing. A row that
+ * ended well moved its site and needs no query, one that never ran did not.
+ */
+function hosting_tasks_extra_drupal_upgrade_all_row_upgraded($member) {
+  $status = (int) $member->task_status;
+  if ($status === HOSTING_TASK_SUCCESS) {
+    return TRUE;
+  }
+  if (empty($member->executed) || ($status !== HOSTING_TASK_WARNING && $status !== HOSTING_TASK_ERROR)) {
+    return FALSE;
+  }
+  if ($status === HOSTING_TASK_ERROR && (!$member->platform || (string) $member->platform !== (string) $member->target)) {
+    return FALSE;
+  }
+  $site = node_load($member->rid);
+  if (!is_object($site) || $site->type != 'site') {
+    return FALSE;
+  }
+  foreach (hosting_tasks_extra_drupal_upgrade_runs($site) as $run) {
+    if ((int) $run['task'] === (int) $member->nid) {
+      return TRUE;
+    }
+  }
+  return FALSE;
 }
 
 /**
