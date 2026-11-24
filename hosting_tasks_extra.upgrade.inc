@@ -1505,11 +1505,11 @@ function _provision_tasks_extra_codebase_text($detail) {
  * The order in which newer platforms that are not ready are shown.
  *
  * One a leftover of an earlier run alone keeps from being ready comes first;
- * Drupal 12 and a platform the site was moved away from come last; between
- * them the newest, then the one that lacks least. For uasort().
+ * Drupal 12, a pre-release and a platform the site was moved away from come
+ * last; between them the newest, then the one that lacks least. For uasort().
  */
 function _provision_tasks_extra_upgrade_not_ready_order($a, $b) {
-  $rank = array('leftover' => 0, 'left' => 2, 'major' => 2);
+  $rank = array('leftover' => 0, 'left' => 2, 'major' => 2, 'prerelease' => 2);
   $ra = isset($rank[$a['rule']]) ? $rank[$a['rule']] : 1;
   $rb = isset($rank[$b['rule']]) ? $rank[$b['rule']] : 1;
   if ($ra !== $rb) {
@@ -1537,11 +1537,20 @@ function _provision_tasks_extra_release_numbers($release) {
 }
 
 /**
+ * Whether a release is a finished one: no alpha, beta, rc or dev.
+ */
+function _provision_tasks_extra_release_is_stable($release) {
+  return preg_match('/^[0-9]+(\.[0-9]+)+$/', (string) $release) === 1;
+}
+
+/**
  * Why a codebase is no newer version for a site to move onto, or ''.
  *
  * A newer core release, or the same release with a lock that raises or adds
  * a package or changes a patch; a site below 10.3.0 does not go to 11;
- * nothing goes to 12 yet, so a move is one major up at most.
+ * nothing goes to 12 yet, so a move is one major up at most. A site on a
+ * finished release is moved onto finished releases only; one on a
+ * pre-release may go on to a newer pre-release.
  *
  * @param string $source
  *   The release the site runs.
@@ -1551,7 +1560,8 @@ function _provision_tasks_extra_release_numbers($release) {
  *   _provision_tasks_extra_lock_classify() of the move.
  *
  * @return array
- *   'why' ('' when it is newer) and 'rule': release, major, floor, same or
+ *   'why' ('' when it is newer) and 'rule': release, major, floor,
+ *   prerelease, same or
  *   older.
  */
 function _provision_tasks_extra_upgrade_newer($source, $target, $diff) {
@@ -1573,6 +1583,9 @@ function _provision_tasks_extra_upgrade_newer($source, $target, $diff) {
   // nothing else needs saying until 12 is let in.
   if ($t[0] === 11 && $s[0] === 10 && version_compare($source, '10.3.0', '<')) {
     return array('rule' => 'floor', 'why' => 'this site runs Drupal ' . $source . '; Drupal 11 takes a site from 10.3 or later. Move it to a Drupal 10.3 or later platform first (10.6 is the tested route), then upgrade');
+  }
+  if (_provision_tasks_extra_release_is_stable($source) && !_provision_tasks_extra_release_is_stable($target)) {
+    return array('rule' => 'prerelease', 'why' => 'it carries Drupal ' . $target . ', a pre-release, and this site runs the finished ' . $source);
   }
   if (version_compare($target, $source, '>')) {
     return array('rule' => '', 'why' => '');
