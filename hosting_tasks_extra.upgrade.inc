@@ -1450,11 +1450,11 @@ function _provision_tasks_extra_codebase_kept($count, $gone) {
  *
  * Two codebases that share nothing but core carry the same install profiles
  * of core's, so the profile a site runs does not tell them apart. Their locks
- * do: another codebase lacks much of what this one adds to core, or shares
- * none of it, or adds much to it. One project asked for (by the root
- * composer.json) can bring in many, so it is mostly what is asked for that
- * counts, and all that comes along only where it is a lot or brings a
- * distribution's install profile with it.
+ * do: another codebase brings a distribution's install profile, or lacks much
+ * of what this one adds to core, or shares none of it, or adds much to it.
+ * The profile tells alone: a distribution may fetch its modules only when a
+ * site is installed. One project asked for (by the root composer.json) can
+ * bring in many, so it is mostly what is asked for that counts.
  *
  * @param array $source
  *   _provision_tasks_extra_lock_load() of the site's codebase, or its slim form.
@@ -1477,7 +1477,7 @@ function _provision_tasks_extra_codebase_other($source, $target, $beside) {
   $count = count($mine);
   $new = array_diff_key($theirs, _provision_tasks_extra_codebase_projects($source, TRUE));
   $profile = array_search('drupal-profile', $new, TRUE);
-  if ($profile !== FALSE && count($new) > max(5, $count)) {
+  if ($profile !== FALSE) {
     return _provision_tasks_extra_codebase_text('it is built on ' . $profile);
   }
   if (($count <= 2 && $beside > 5) || (!$theirs && $beside > 0)) {
