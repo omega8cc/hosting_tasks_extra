@@ -571,7 +571,7 @@ function hosting_tasks_extra_drupal_upgrade_lock($root) {
       $stat = @lstat($app . '/' . $file);
       $signature .= '|' . $file . ':' . ($stat === FALSE ? '-' : $stat['size'] . ':' . $stat['mtime'] . ':' . $stat['ino']);
     }
-    $cid = 'hosting_tasks_extra:upgrade_lock:' . hash('sha256', $signature);
+    $cid = 'hosting_tasks_extra:upgrade_lock:2:' . hash('sha256', $signature);
     $cached = cache_get($cid, 'cache');
     if ($cached && is_array($cached->data) && $cached->expire > REQUEST_TIME) {
       $loaded[$root] = $cached->data;
@@ -963,7 +963,8 @@ function _hosting_tasks_extra_drupal_upgrade_target($site, $platform, $source_ro
     // What refused it: catalogue, changed, older, codebase, a rule of the
     // judge, floor, missing, left or leftover (set by the caller).
     'rule' => '',
-    // How many of the site's switched-on packages it does not carry.
+    // How many of the site's switched-on packages it does not carry, where
+    // rule 8 was reached.
     'lacks' => 0,
     'kind' => '',
     'pending' => FALSE,
@@ -1004,7 +1005,8 @@ function _hosting_tasks_extra_drupal_upgrade_target($site, $platform, $source_ro
     return $entry;
   }
   // Where the locks cannot tell, the site's own modules do: the ones its
-  // platform adds to core and this one lacks (no package rows, no verdict).
+  // platform adds to core and this one lacks (records that cannot be
+  // compared give no verdict).
   if ($other === NULL) {
     $mine = _provision_tasks_extra_modules_beside_core($modules, $source_root);
     $status = $mine ? hosting_package_comparison($site->nid, $instance->iid, 'site', 'profile') : array();

@@ -1391,14 +1391,16 @@ function _provision_tasks_extra_upgrade_is_catalogue($root) {
  * The Drupal projects a codebase adds to core: name => lock type.
  *
  * Core, its companions and plain libraries say nothing about whose codebase
- * it is, and neither do development tools, which a build may leave out.
+ * it is.
  *
  * @param array $lock
  *   _provision_tasks_extra_lock_load(), or its slim form.
+ * @param bool $with_dev
+ *   FALSE leaves out development tools, which a build may be made without.
  */
-function _provision_tasks_extra_codebase_projects($lock) {
+function _provision_tasks_extra_codebase_projects($lock, $with_dev) {
   $projects = array();
-  $dev = isset($lock['dev_only']) && is_array($lock['dev_only']) ? $lock['dev_only'] : array();
+  $dev = (!$with_dev && isset($lock['dev_only']) && is_array($lock['dev_only'])) ? $lock['dev_only'] : array();
   foreach ($lock['packages'] as $name => $package) {
     $type = isset($package['type']) && is_string($package['type']) ? $package['type'] : '';
     if (in_array($type, array('drupal-module', 'drupal-theme', 'drupal-profile'), TRUE) && !isset($dev[$name]) && !_provision_tasks_extra_lock_is_core_name($name)) {
@@ -1440,7 +1442,7 @@ function _provision_tasks_extra_modules_beside_core($modules, $source_root) {
  * A third may go between two versions, and two always may.
  */
 function _provision_tasks_extra_codebase_kept($count, $gone) {
-  return $gone <= max(2, (int) floor($count / 3));
+  return $gone <= max(2, (int) ceil($count / 3));
 }
 
 /**
@@ -1448,10 +1450,11 @@ function _provision_tasks_extra_codebase_kept($count, $gone) {
  *
  * Two codebases that share nothing but core carry the same install profiles
  * of core's, so the profile a site runs does not tell them apart. Their locks
- * do: another codebase is built on a distribution this one is not, lacks much
- * of what this one adds to core, or shares none of it, or asks for many
- * projects this one has none of. What is asked for is what the root
- * composer.json requires: one project can bring in many.
+ * do: another codebase lacks much of what this one adds to core, or shares
+ * none of it, or adds much to it. One project asked for (by the root
+ * composer.json) can bring in many, so it is mostly what is asked for that
+ * counts, and all that comes along only where it is a lot or brings a
+ * distribution's install profile with it.
  *
  * @param array $source
  *   _provision_tasks_extra_lock_load() of the site's codebase, or its slim form.
@@ -1462,33 +1465,30 @@ function _provision_tasks_extra_codebase_kept($count, $gone) {
  *
  * @return string|null
  *   '' for the same codebase, the reason for another one, NULL when the locks
- *   cannot tell: one is missing, or one lists no project while the site runs
- *   some, which are then in the tree by other means.
+ *   cannot tell: one is missing, or one lists next to none of the modules the
+ *   site runs, which are then in the tree by other means.
  */
 function _provision_tasks_extra_codebase_other($source, $target, $beside) {
   if (empty($source['ok']) || empty($target['ok'])) {
     return NULL;
   }
-  $mine = _provision_tasks_extra_codebase_projects($source);
-  $theirs = _provision_tasks_extra_codebase_projects($target);
+  $mine = _provision_tasks_extra_codebase_projects($source, FALSE);
+  $theirs = _provision_tasks_extra_codebase_projects($target, FALSE);
   $count = count($mine);
-  foreach (array_diff_key($theirs, $mine) as $name => $type) {
-    if ($type === 'drupal-profile') {
-      return _provision_tasks_extra_codebase_text('it is built on ' . $name);
-    }
+  $new = array_diff_key($theirs, _provision_tasks_extra_codebase_projects($source, TRUE));
+  $profile = array_search('drupal-profile', $new, TRUE);
+  if ($profile !== FALSE && count($new) > max(5, $count)) {
+    return _provision_tasks_extra_codebase_text('it is built on ' . $profile);
   }
-  if ($beside > 0 && (!$mine || !$theirs)) {
+  if (($count <= 2 && $beside > 5) || (!$theirs && $beside > 0)) {
     return NULL;
   }
-  $gone = count(array_diff_key($mine, $theirs));
+  $gone = count(array_diff_key($mine, _provision_tasks_extra_codebase_projects($target, TRUE)));
   if (!_provision_tasks_extra_codebase_kept($count, $gone) || ($count > 0 && $gone === $count && $theirs)) {
     return _provision_tasks_extra_codebase_text('it lacks ' . $gone . ' of the ' . $count . " modules and themes added to core on this site's platform");
   }
-  $new = array_diff_key($theirs, $mine);
-  if (isset($target['requires']) && is_array($target['requires'])) {
-    $new = array_intersect_key($new, $target['requires']);
-  }
-  if (count($new) > max(5, $count)) {
+  $asked = (isset($target['requires']) && is_array($target['requires'])) ? array_intersect_key($new, $target['requires']) : $new;
+  if (count($asked) > max(5, $count) || count($new) > max(20, 2 * $count)) {
     return _provision_tasks_extra_codebase_text('it adds ' . count($new) . " modules and themes this site's platform does not have");
   }
   return '';
@@ -1504,8 +1504,8 @@ function _provision_tasks_extra_codebase_text($detail) {
 /**
  * The order in which newer platforms that are not ready are shown.
  *
- * One a leftover of an earlier run alone keeps from being ready comes first,
- * one no Upgrade can take the site onto as things are comes last; between
+ * One a leftover of an earlier run alone keeps from being ready comes first;
+ * Drupal 12 and a platform the site was moved away from come last; between
  * them the newest, then the one that lacks least. For uasort().
  */
 function _provision_tasks_extra_upgrade_not_ready_order($a, $b) {
