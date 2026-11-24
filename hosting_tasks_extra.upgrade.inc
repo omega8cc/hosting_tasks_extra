@@ -76,10 +76,10 @@ function _provision_tasks_extra_app_root($root) {
  * packages.
  *
  * @return array
- *   'ok' TRUE with 'packages' (name => lock entry), 'patches' (one entry per
- *   place a patch definition can live) and 'requires' (the names the root
- *   composer.json asks for, NULL when that file cannot be read); or 'ok'
- *   FALSE with 'why'.
+ *   'ok' TRUE with 'packages' (name => lock entry), 'dev_only' (name => TRUE,
+ *   those only packages-dev lists), 'patches' (one entry per place a patch
+ *   definition can live) and 'requires' (the names the root composer.json
+ *   asks for, NULL when that file cannot be read); or 'ok' FALSE with 'why'.
  */
 function _provision_tasks_extra_lock_load($root) {
   $app = _provision_tasks_extra_app_root($root);
@@ -129,12 +129,17 @@ function _provision_tasks_extra_lock_load($root) {
  */
 function _provision_tasks_extra_lock_shape($lock, $dev, $json, $files = array()) {
   $packages = array();
+  $dev_only = array();
   $groups = $dev ? array('packages', 'packages-dev') : array('packages');
   foreach ($groups as $group) {
     if (isset($lock[$group]) && is_array($lock[$group])) {
       foreach ($lock[$group] as $p) {
         if (is_array($p) && isset($p['name'], $p['version']) && is_string($p['name']) && is_string($p['version'])) {
-          $packages[strtolower($p['name'])] = $p;
+          $name = strtolower($p['name']);
+          if ($group === 'packages-dev' && !isset($packages[$name])) {
+            $dev_only[$name] = TRUE;
+          }
+          $packages[$name] = $p;
         }
       }
     }
@@ -169,7 +174,7 @@ function _provision_tasks_extra_lock_shape($lock, $dev, $json, $files = array())
       }
     }
   }
-  return array('ok' => TRUE, 'packages' => $packages, 'patches' => $patches, 'requires' => $requires);
+  return array('ok' => TRUE, 'packages' => $packages, 'dev_only' => $dev_only, 'patches' => $patches, 'requires' => $requires);
 }
 
 /**
@@ -1383,20 +1388,21 @@ function _provision_tasks_extra_upgrade_is_catalogue($root) {
 }
 
 /**
- * The Drupal projects a codebase adds to core: name => TRUE.
+ * The Drupal projects a codebase adds to core: name => lock type.
  *
  * Core, its companions and plain libraries say nothing about whose codebase
- * it is.
+ * it is, and neither do development tools, which a build may leave out.
  *
- * @param array $packages
- *   name => lock entry.
+ * @param array $lock
+ *   _provision_tasks_extra_lock_load(), or its slim form.
  */
-function _provision_tasks_extra_codebase_projects($packages) {
+function _provision_tasks_extra_codebase_projects($lock) {
   $projects = array();
-  foreach ($packages as $name => $package) {
+  $dev = isset($lock['dev_only']) && is_array($lock['dev_only']) ? $lock['dev_only'] : array();
+  foreach ($lock['packages'] as $name => $package) {
     $type = isset($package['type']) && is_string($package['type']) ? $package['type'] : '';
-    if (in_array($type, array('drupal-module', 'drupal-theme', 'drupal-profile'), TRUE) && !_provision_tasks_extra_lock_is_core_name($name)) {
-      $projects[$name] = TRUE;
+    if (in_array($type, array('drupal-module', 'drupal-theme', 'drupal-profile'), TRUE) && !isset($dev[$name]) && !_provision_tasks_extra_lock_is_core_name($name)) {
+      $projects[$name] = $type;
     }
   }
   return $projects;
@@ -1431,19 +1437,21 @@ function _provision_tasks_extra_modules_beside_core($modules, $source_root) {
 /**
  * Whether so few of a codebase's parts are gone that it is still the same one.
  *
- * A quarter may go between two versions, and two always may.
+ * A third may go between two versions, and two always may.
  */
 function _provision_tasks_extra_codebase_kept($count, $gone) {
-  return $gone <= max(2, (int) floor($count / 4));
+  return $gone <= max(2, (int) floor($count / 3));
 }
 
 /**
  * Why a codebase is another one than the site's, not a newer version of it.
  *
- * Told from the two locks: a newer version keeps most of the projects and
- * adds no more than there were (five always may come). Two codebases that
- * share nothing but core carry the same install profiles of core's, so the
- * profile a site runs does not tell them apart.
+ * Two codebases that share nothing but core carry the same install profiles
+ * of core's, so the profile a site runs does not tell them apart. Their locks
+ * do: another codebase is built on a distribution this one is not, lacks much
+ * of what this one adds to core, or shares none of it, or asks for many
+ * projects this one has none of. What is asked for is what the root
+ * composer.json requires: one project can bring in many.
  *
  * @param array $source
  *   _provision_tasks_extra_lock_load() of the site's codebase, or its slim form.
@@ -1454,25 +1462,34 @@ function _provision_tasks_extra_codebase_kept($count, $gone) {
  *
  * @return string|null
  *   '' for the same codebase, the reason for another one, NULL when the locks
- *   cannot tell: one is missing, or the site's modules are not in its lock.
+ *   cannot tell: one is missing, or one lists no project while the site runs
+ *   some, which are then in the tree by other means.
  */
 function _provision_tasks_extra_codebase_other($source, $target, $beside) {
   if (empty($source['ok']) || empty($target['ok'])) {
     return NULL;
   }
-  $mine = _provision_tasks_extra_codebase_projects($source['packages']);
-  $theirs = _provision_tasks_extra_codebase_projects($target['packages']);
+  $mine = _provision_tasks_extra_codebase_projects($source);
+  $theirs = _provision_tasks_extra_codebase_projects($target);
   $count = count($mine);
-  if ($count === 0 && $beside > 0) {
+  foreach (array_diff_key($theirs, $mine) as $name => $type) {
+    if ($type === 'drupal-profile') {
+      return _provision_tasks_extra_codebase_text('it is built on ' . $name);
+    }
+  }
+  if ($beside > 0 && (!$mine || !$theirs)) {
     return NULL;
   }
   $gone = count(array_diff_key($mine, $theirs));
-  if (!_provision_tasks_extra_codebase_kept($count, $gone)) {
+  if (!_provision_tasks_extra_codebase_kept($count, $gone) || ($count > 0 && $gone === $count && $theirs)) {
     return _provision_tasks_extra_codebase_text('it lacks ' . $gone . ' of the ' . $count . " modules and themes added to core on this site's platform");
   }
-  $new = count(array_diff_key($theirs, $mine));
-  if ($new > max(5, $count)) {
-    return _provision_tasks_extra_codebase_text('it adds ' . $new . " modules and themes this site's platform does not have");
+  $new = array_diff_key($theirs, $mine);
+  if (isset($target['requires']) && is_array($target['requires'])) {
+    $new = array_intersect_key($new, $target['requires']);
+  }
+  if (count($new) > max(5, $count)) {
+    return _provision_tasks_extra_codebase_text('it adds ' . count($new) . " modules and themes this site's platform does not have");
   }
   return '';
 }
@@ -1485,25 +1502,25 @@ function _provision_tasks_extra_codebase_text($detail) {
 }
 
 /**
- * The order in which platforms that are not ready are shown: closest first.
+ * The order in which newer platforms that are not ready are shown.
  *
- * A leftover of an earlier run alone in the way comes first, a release the
- * Upgrade takes no site to yet comes last; between them the one that lacks
- * least, then the newest. For uasort().
+ * One a leftover of an earlier run alone keeps from being ready comes first,
+ * one no Upgrade can take the site onto as things are comes last; between
+ * them the newest, then the one that lacks least. For uasort().
  */
-function _provision_tasks_extra_upgrade_closest($a, $b) {
-  foreach (array('leftover' => -1, 'major' => 1) as $rule => $side) {
-    $first = ($a['rule'] === $rule);
-    if ($first !== ($b['rule'] === $rule)) {
-      return $first ? $side : -$side;
-    }
-  }
-  if ($a['lacks'] !== $b['lacks']) {
-    return ($a['lacks'] < $b['lacks']) ? -1 : 1;
+function _provision_tasks_extra_upgrade_not_ready_order($a, $b) {
+  $rank = array('leftover' => 0, 'left' => 2, 'major' => 2);
+  $ra = isset($rank[$a['rule']]) ? $rank[$a['rule']] : 1;
+  $rb = isset($rank[$b['rule']]) ? $rank[$b['rule']] : 1;
+  if ($ra !== $rb) {
+    return ($ra < $rb) ? -1 : 1;
   }
   $release = version_compare($b['release'], $a['release']);
   if ($release !== 0) {
     return $release;
+  }
+  if ($a['lacks'] !== $b['lacks']) {
+    return ($a['lacks'] < $b['lacks']) ? -1 : 1;
   }
   return ($a['nid'] < $b['nid']) ? -1 : (($a['nid'] > $b['nid']) ? 1 : 0);
 }
