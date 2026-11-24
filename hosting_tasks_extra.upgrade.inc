@@ -76,10 +76,10 @@ function _provision_tasks_extra_app_root($root) {
  * packages.
  *
  * @return array
- *   'ok' TRUE with 'packages' (name => lock entry), 'patches' (one entry per
- *   place a patch definition can live) and 'requires' (the names the root
- *   composer.json asks for, NULL when that file cannot be read); or 'ok'
- *   FALSE with 'why'.
+ *   'ok' TRUE with 'packages' (name => lock entry), 'dev_only' (name => TRUE,
+ *   those only packages-dev lists), 'patches' (one entry per place a patch
+ *   definition can live) and 'requires' (the names the root composer.json
+ *   asks for, NULL when that file cannot be read); or 'ok' FALSE with 'why'.
  */
 function _provision_tasks_extra_lock_load($root) {
   $app = _provision_tasks_extra_app_root($root);
@@ -129,12 +129,17 @@ function _provision_tasks_extra_lock_load($root) {
  */
 function _provision_tasks_extra_lock_shape($lock, $dev, $json, $files = array()) {
   $packages = array();
+  $dev_only = array();
   $groups = $dev ? array('packages', 'packages-dev') : array('packages');
   foreach ($groups as $group) {
     if (isset($lock[$group]) && is_array($lock[$group])) {
       foreach ($lock[$group] as $p) {
         if (is_array($p) && isset($p['name'], $p['version']) && is_string($p['name']) && is_string($p['version'])) {
-          $packages[strtolower($p['name'])] = $p;
+          $name = strtolower($p['name']);
+          if ($group === 'packages-dev' && !isset($packages[$name])) {
+            $dev_only[$name] = TRUE;
+          }
+          $packages[$name] = $p;
         }
       }
     }
@@ -169,7 +174,7 @@ function _provision_tasks_extra_lock_shape($lock, $dev, $json, $files = array())
       }
     }
   }
-  return array('ok' => TRUE, 'packages' => $packages, 'patches' => $patches, 'requires' => $requires);
+  return array('ok' => TRUE, 'packages' => $packages, 'dev_only' => $dev_only, 'patches' => $patches, 'requires' => $requires);
 }
 
 /**
@@ -1380,6 +1385,144 @@ function _provision_tasks_extra_upgrade_is_catalogue($root) {
   // A platform recorded at a link into such a tree is one too.
   $real = ($root === '') ? FALSE : @realpath($root);
   return is_string($real) && strpos($real . '/', '/distro/') !== FALSE;
+}
+
+/**
+ * The Drupal projects a codebase adds to core: name => lock type.
+ *
+ * Core, its companions and plain libraries say nothing about whose codebase
+ * it is.
+ *
+ * @param array $lock
+ *   _provision_tasks_extra_lock_load(), or its slim form.
+ * @param bool $with_dev
+ *   FALSE leaves out development tools, which a build may be made without.
+ */
+function _provision_tasks_extra_codebase_projects($lock, $with_dev) {
+  $projects = array();
+  $dev = (!$with_dev && isset($lock['dev_only']) && is_array($lock['dev_only'])) ? $lock['dev_only'] : array();
+  foreach ($lock['packages'] as $name => $package) {
+    $type = isset($package['type']) && is_string($package['type']) ? $package['type'] : '';
+    if (in_array($type, array('drupal-module', 'drupal-theme', 'drupal-profile'), TRUE) && !isset($dev[$name]) && !_provision_tasks_extra_lock_is_core_name($name)) {
+      $projects[$name] = $type;
+    }
+  }
+  return $projects;
+}
+
+/**
+ * The switched-on modules of a site that its platform adds to core.
+ *
+ * Not the ones in the site's own folder: they move with the site.
+ *
+ * @param array $modules
+ *   hosting_tasks_extra_drupal_upgrade_modules().
+ */
+function _provision_tasks_extra_modules_beside_core($modules, $source_root) {
+  $roots = array(rtrim($source_root, '/'));
+  $real = @realpath($source_root);
+  if (is_string($real) && $real !== '') {
+    $roots[] = rtrim($real, '/');
+  }
+  foreach ($modules as $name => $module) {
+    $file = isset($module['filename']) && is_string($module['filename']) ? $module['filename'] : '';
+    foreach ($roots as $root) {
+      if (strpos($file, $root . '/core/') === 0 || (strpos($file, $root . '/sites/') === 0 && strpos($file, $root . '/sites/all/') !== 0)) {
+        unset($modules[$name]);
+        break;
+      }
+    }
+  }
+  return $modules;
+}
+
+/**
+ * Whether so few of a codebase's parts are gone that it is still the same one.
+ *
+ * A third may go between two versions, and two always may.
+ */
+function _provision_tasks_extra_codebase_kept($count, $gone) {
+  return $gone <= max(2, (int) ceil($count / 3));
+}
+
+/**
+ * Why a codebase is another one than the site's, not a newer version of it.
+ *
+ * Two codebases that share nothing but core carry the same install profiles
+ * of core's, so the profile a site runs does not tell them apart. Their locks
+ * do: another codebase brings a distribution's install profile, or lacks much
+ * of what this one adds to core, or shares none of it, or adds much to it.
+ * The profile tells alone: a distribution may fetch its modules only when a
+ * site is installed. One project asked for (by the root composer.json) can
+ * bring in many, so it is mostly what is asked for that counts.
+ *
+ * @param array $source
+ *   _provision_tasks_extra_lock_load() of the site's codebase, or its slim form.
+ * @param array $target
+ *   The same for the other one.
+ * @param int $beside
+ *   How many modules added to core the site has switched on.
+ *
+ * @return string|null
+ *   '' for the same codebase, the reason for another one, NULL when the locks
+ *   cannot tell: one is missing, or one lists next to none of the modules the
+ *   site runs, which are then in the tree by other means.
+ */
+function _provision_tasks_extra_codebase_other($source, $target, $beside) {
+  if (empty($source['ok']) || empty($target['ok'])) {
+    return NULL;
+  }
+  $mine = _provision_tasks_extra_codebase_projects($source, FALSE);
+  $theirs = _provision_tasks_extra_codebase_projects($target, FALSE);
+  $count = count($mine);
+  $new = array_diff_key($theirs, _provision_tasks_extra_codebase_projects($source, TRUE));
+  $profile = array_search('drupal-profile', $new, TRUE);
+  if ($profile !== FALSE) {
+    return _provision_tasks_extra_codebase_text('it is built on ' . $profile);
+  }
+  if (($count <= 2 && $beside > 5) || (!$theirs && $beside > 0)) {
+    return NULL;
+  }
+  $gone = count(array_diff_key($mine, _provision_tasks_extra_codebase_projects($target, TRUE)));
+  if (!_provision_tasks_extra_codebase_kept($count, $gone) || ($count > 0 && $gone === $count && $theirs)) {
+    return _provision_tasks_extra_codebase_text('it lacks ' . $gone . ' of the ' . $count . " modules and themes added to core on this site's platform");
+  }
+  $asked = (isset($target['requires']) && is_array($target['requires'])) ? array_intersect_key($new, $target['requires']) : $new;
+  if (count($asked) > max(5, $count) || count($new) > max(20, 2 * $count)) {
+    return _provision_tasks_extra_codebase_text('it adds ' . count($new) . " modules and themes this site's platform does not have");
+  }
+  return '';
+}
+
+/**
+ * The reason a platform is another codebase, as one clause.
+ */
+function _provision_tasks_extra_codebase_text($detail) {
+  return "it is another codebase, not a newer version of this site's platform (" . $detail . ')';
+}
+
+/**
+ * The order in which newer platforms that are not ready are shown.
+ *
+ * One a leftover of an earlier run alone keeps from being ready comes first;
+ * Drupal 12 and a platform the site was moved away from come last; between
+ * them the newest, then the one that lacks least. For uasort().
+ */
+function _provision_tasks_extra_upgrade_not_ready_order($a, $b) {
+  $rank = array('leftover' => 0, 'left' => 2, 'major' => 2);
+  $ra = isset($rank[$a['rule']]) ? $rank[$a['rule']] : 1;
+  $rb = isset($rank[$b['rule']]) ? $rank[$b['rule']] : 1;
+  if ($ra !== $rb) {
+    return ($ra < $rb) ? -1 : 1;
+  }
+  $release = version_compare($b['release'], $a['release']);
+  if ($release !== 0) {
+    return $release;
+  }
+  if ($a['lacks'] !== $b['lacks']) {
+    return ($a['lacks'] < $b['lacks']) ? -1 : 1;
+  }
+  return ($a['nid'] < $b['nid']) ? -1 : (($a['nid'] > $b['nid']) ? 1 : 0);
 }
 
 /**

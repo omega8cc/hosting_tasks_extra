@@ -520,7 +520,7 @@ function hosting_tasks_extra_upgrade_include() {
   if (!function_exists('_provision_tasks_extra_lock_diff')) {
     module_load_include('inc', 'hosting_tasks_extra', 'hosting_tasks_extra.upgrade');
   }
-  return function_exists('_provision_tasks_extra_upgrade_judge') && function_exists('_provision_tasks_extra_lock_slim');
+  return function_exists('_provision_tasks_extra_upgrade_judge') && function_exists('_provision_tasks_extra_lock_slim') && function_exists('_provision_tasks_extra_codebase_other');
 }
 
 /**
@@ -571,7 +571,7 @@ function hosting_tasks_extra_drupal_upgrade_lock($root) {
       $stat = @lstat($app . '/' . $file);
       $signature .= '|' . $file . ':' . ($stat === FALSE ? '-' : $stat['size'] . ':' . $stat['mtime'] . ':' . $stat['ino']);
     }
-    $cid = 'hosting_tasks_extra:upgrade_lock:' . hash('sha256', $signature);
+    $cid = 'hosting_tasks_extra:upgrade_lock:2:' . hash('sha256', $signature);
     $cached = cache_get($cid, 'cache');
     if ($cached && is_array($cached->data) && $cached->expire > REQUEST_TIME) {
       $loaded[$root] = $cached->data;
@@ -728,6 +728,26 @@ function hosting_tasks_extra_drupal_upgrade_missing($site_nid, $profile_iid) {
 }
 
 /**
+ * Why a platform is another codebase than the site's: '', a reason or NULL.
+ *
+ * A site on a distribution's own profile is compared with the platforms that
+ * carry that profile too, which is taken as enough.
+ *
+ * @return string|null
+ *   _provision_tasks_extra_codebase_other().
+ */
+function hosting_tasks_extra_drupal_upgrade_other($core_profile, $modules, $source_root, $target_root) {
+  if (!$core_profile) {
+    return '';
+  }
+  return _provision_tasks_extra_codebase_other(
+    hosting_tasks_extra_drupal_upgrade_lock($source_root),
+    hosting_tasks_extra_drupal_upgrade_lock($target_root),
+    count(_provision_tasks_extra_modules_beside_core($modules, $source_root))
+  );
+}
+
+/**
  * The platforms a site can be upgraded onto, each ready or with its reason.
  *
  * One function for the button, the dialog, the form's check, the check when
@@ -746,8 +766,9 @@ function hosting_tasks_extra_drupal_upgrade_missing($site_nid, $profile_iid) {
  *   of them ready), refused (the site itself cannot be upgraded), off or
  *   unreadable (a list stops every upgrade), denied. 'why' for all but ready
  *   and none. 'release' and 'platform' of the site now. 'targets': nid =>
- *   array with nid, title, release, ready, listed, why, rule, kind, pending,
- *   security and audited. 'ready': the nids that are, newest release first.
+ *   array with nid, title, release, ready, listed, why, rule, lacks, kind,
+ *   pending, security and audited. 'ready': the nids that are, newest release
+ *   first. 'not_ready': the listed ones that are not, as they are shown.
  */
 function hosting_tasks_extra_drupal_upgrade_targets($site, $account, $reset = FALSE) {
   $found = &drupal_static(__FUNCTION__, array());
@@ -767,7 +788,7 @@ function hosting_tasks_extra_drupal_upgrade_targets($site, $account, $reset = FA
  * Works out hosting_tasks_extra_drupal_upgrade_targets().
  */
 function _hosting_tasks_extra_drupal_upgrade_targets($site, $account) {
-  $out = array('state' => 'refused', 'why' => '', 'release' => '', 'platform' => '', 'targets' => array(), 'ready' => array());
+  $out = array('state' => 'refused', 'why' => '', 'release' => '', 'platform' => '', 'targets' => array(), 'ready' => array(), 'not_ready' => array());
   if (!user_access('create drupal_upgrade task', $account) || !node_access('view', $site, $account)) {
     $out['state'] = 'denied';
     $out['why'] = 'this account may not upgrade this site';
@@ -836,6 +857,8 @@ function _hosting_tasks_extra_drupal_upgrade_targets($site, $account) {
   // Rules 2 and 3: the platforms this account may use that carry the site's
   // install profile, as the Migrate form finds them.
   $profile = node_load($site->profile);
+  // Every codebase carries core's own profiles, so they tell no two apart.
+  $core_profile = !is_object($profile) || empty($profile->short_name) || in_array($profile->short_name, array('standard', 'minimal', 'testing', 'demo_umami'), TRUE);
   $own = hosting_tasks_extra_platform_own();
   $instances = hosting_package_instances_load(array('r.type' => 'platform', 'n.nid' => $site->profile, 'h.status' => HOSTING_PLATFORM_ENABLED) + $own);
   if (is_object($profile) && !empty($profile->short_name)) {
@@ -864,7 +887,7 @@ function _hosting_tasks_extra_drupal_upgrade_targets($site, $account) {
       || (function_exists('hosting_txp_platform_is_txp') && hosting_txp_platform_is_txp($nid))) {
       continue;
     }
-    $entry = _hosting_tasks_extra_drupal_upgrade_target($site, $platform, $source_root, $release, $modules, $platform_modes, $site_modes, $target, $instance);
+    $entry = _hosting_tasks_extra_drupal_upgrade_target($site, $platform, $source_root, $release, $modules, $platform_modes, $site_modes, $target, $instance, $core_profile);
     // Only one that would be offered as a newer version is said to be left:
     // an older one is not shown at all.
     if ($entry['listed'] && in_array($nid, $left)) {
@@ -897,28 +920,26 @@ function _hosting_tasks_extra_drupal_upgrade_targets($site, $account) {
 
   // The newest release first.
   $ready = array();
-  $listed = FALSE;
+  $not_ready = array();
   foreach ($out['targets'] as $nid => $entry) {
-    $listed = $listed || $entry['listed'];
     if ($entry['ready']) {
       $ready[$nid] = $entry['release'];
     }
+    elseif ($entry['listed']) {
+      $not_ready[$nid] = $entry;
+    }
   }
   uasort($ready, 'version_compare');
+  uasort($not_ready, '_provision_tasks_extra_upgrade_not_ready_order');
+  $out['not_ready'] = array_keys($not_ready);
   $out['ready'] = array_reverse(array_keys($ready));
   if ($out['ready']) {
     $out['state'] = 'ready';
   }
-  elseif ($listed) {
+  elseif ($not_ready) {
     $out['state'] = 'not_ready';
-    // The platform a leftover alone keeps from being ready says more than one
-    // that is refused for itself.
-    $first = NULL;
-    foreach ($out['targets'] as $entry) {
-      if ($entry['listed'] && ($first === NULL || ($entry['rule'] === 'leftover' && $first['rule'] !== 'leftover'))) {
-        $first = $entry;
-      }
-    }
+    // The one shown first says most (its order is the dialog's).
+    $first = reset($not_ready);
     $out['why'] = ($first['rule'] === 'leftover' && $leftover !== '') ? $first['why'] : $first['title'] . ': ' . $first['why'];
   }
   else {
@@ -930,7 +951,7 @@ function _hosting_tasks_extra_drupal_upgrade_targets($site, $account) {
 /**
  * Judges one platform as a target for a site: rules 4 to 10.
  */
-function _hosting_tasks_extra_drupal_upgrade_target($site, $platform, $source_root, $release, $modules, $platform_modes, $site_modes, $target, $instance) {
+function _hosting_tasks_extra_drupal_upgrade_target($site, $platform, $source_root, $release, $modules, $platform_modes, $site_modes, $target, $instance, $core_profile) {
   $entry = array(
     'nid' => (int) $target->nid,
     'title' => $target->title,
@@ -939,9 +960,12 @@ function _hosting_tasks_extra_drupal_upgrade_target($site, $platform, $source_ro
     // A platform that is no newer version is not shown at all.
     'listed' => FALSE,
     'why' => '',
-    // What refused it: catalogue, changed, older, a rule of the judge, floor,
-    // missing, left or leftover (set by the caller).
+    // What refused it: catalogue, changed, older, codebase, a rule of the
+    // judge, floor, missing, left or leftover (set by the caller).
     'rule' => '',
+    // How many of the site's switched-on packages it does not carry, where
+    // rule 8 was reached.
+    'lacks' => 0,
     'kind' => '',
     'pending' => FALSE,
     // TRUE, FALSE, or NULL while no advisory report of both platforms is at hand.
@@ -963,7 +987,7 @@ function _hosting_tasks_extra_drupal_upgrade_target($site, $platform, $source_ro
   if ($changed !== '') {
     $entry['why'] = 'its code changed since its last Verify (' . $changed . '): run Verify on this platform first';
     $entry['rule'] = 'changed';
-    $entry['listed'] = version_compare($disk, $release, '>');
+    $entry['listed'] = version_compare($disk, $release, '>') && (string) hosting_tasks_extra_drupal_upgrade_other($core_profile, $modules, $source_root, $target_root) === '';
     return $entry;
   }
   // Rules 5 and 6 and the release half of 7. An older release needs no lock.
@@ -971,6 +995,29 @@ function _hosting_tasks_extra_drupal_upgrade_target($site, $platform, $source_ro
     $entry['why'] = 'it carries Drupal ' . $entry['release'] . ', older than the ' . $release . ' this site runs';
     $entry['rule'] = 'older';
     return $entry;
+  }
+  // Another codebase is no newer version of this one, whatever release it
+  // carries and whatever it adds: not shown at all.
+  $other = hosting_tasks_extra_drupal_upgrade_other($core_profile, $modules, $source_root, $target_root);
+  if (is_string($other) && $other !== '') {
+    $entry['why'] = $other;
+    $entry['rule'] = 'codebase';
+    return $entry;
+  }
+  // Where the locks cannot tell, the site's own modules do: the ones its
+  // platform adds to core and this one lacks (records that cannot be
+  // compared give no verdict).
+  if ($other === NULL) {
+    $mine = _provision_tasks_extra_modules_beside_core($modules, $source_root);
+    $status = $mine ? hosting_package_comparison($site->nid, $instance->iid, 'site', 'profile') : array();
+    if (!empty($status['missing']) && empty($status['ambiguous'])) {
+      $gone = count(array_intersect_key($mine, array_flip(hosting_tasks_extra_drupal_upgrade_missing($site->nid, $instance->iid))));
+      if (!_provision_tasks_extra_codebase_kept(count($mine), $gone)) {
+        $entry['why'] = _provision_tasks_extra_codebase_text('it lacks ' . $gone . ' of the ' . count($mine) . ' modules added to core that this site has switched on');
+        $entry['rule'] = 'codebase';
+        return $entry;
+      }
+    }
   }
   $diff = hosting_tasks_extra_drupal_upgrade_diff($platform->nid, $source_root, $target->nid, $target_root);
   $newer = _provision_tasks_extra_upgrade_newer($release, $entry['release'], $diff);
@@ -1013,6 +1060,7 @@ function _hosting_tasks_extra_drupal_upgrade_target($site, $platform, $source_ro
   }
   if (!empty($status['missing'])) {
     $missing = hosting_tasks_extra_drupal_upgrade_missing($site->nid, $instance->iid);
+    $entry['lacks'] = (int) $status['missing'];
     $entry['why'] = 'it lacks what this site has switched on: ' . _provision_tasks_extra_upgrade_names($missing ? $missing : array($status['missing'] . ' packages'));
     $entry['rule'] = 'missing';
     return $entry;
@@ -1048,7 +1096,7 @@ function hosting_tasks_extra_drupal_upgrade_target($site, $account, $target_nid,
   if (in_array($found['state'], array('ready', 'none', 'not_ready'), TRUE)) {
     $why = ($target_nid == $site->platform) ? 'this site already runs on that platform' : 'that platform is not one this site can be upgraded onto from this account';
   }
-  return array('nid' => (int) $target_nid, 'title' => '', 'release' => '', 'ready' => FALSE, 'listed' => FALSE, 'why' => $why, 'rule' => 'site', 'kind' => '', 'pending' => FALSE, 'security' => NULL, 'audited' => FALSE, 'site_why' => $why);
+  return array('nid' => (int) $target_nid, 'title' => '', 'release' => '', 'ready' => FALSE, 'listed' => FALSE, 'why' => $why, 'rule' => 'site', 'lacks' => 0, 'kind' => '', 'pending' => FALSE, 'security' => NULL, 'audited' => FALSE, 'site_why' => $why);
 }
 
 /**
@@ -1097,12 +1145,7 @@ function hosting_task_drupal_upgrade_form($node) {
   );
   // The ready platforms first, the newest release on top and chosen; then
   // the ones that are newer and not ready, each with its reason.
-  $order = $found['ready'];
-  foreach ($found['targets'] as $nid => $entry) {
-    if ($entry['listed'] && !$entry['ready']) {
-      $order[] = $nid;
-    }
-  }
+  $order = array_merge($found['ready'], $found['not_ready']);
   $weight = -90;
   foreach ($order as $nid) {
     $entry = $found['targets'][$nid];
@@ -2260,7 +2303,7 @@ function hosting_task_drupal_upgrade_all_form($node) {
     $why = 'this platform holds sites this account cannot see';
   }
   if ($why === '' && !$judged['targets']) {
-    $why = 'no newer platform is there for these sites';
+    $why = 'no newer platform these sites could be upgraded onto is in this account';
   }
   if ($why !== '') {
     $form['none'] = array(
@@ -2665,7 +2708,9 @@ function hosting_tasks_extra_drupal_upgrade_line($site, $account) {
       break;
 
     case 'none':
-      $lines[] = t('Up to date: no newer platform is there for this site.');
+      // Not "up to date": the panel knows this account's platforms, not what
+      // has been released since they were built.
+      $lines[] = t('No newer platform this site could be upgraded onto is in this account.');
       break;
 
     case 'not_ready':
