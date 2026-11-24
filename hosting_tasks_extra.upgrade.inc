@@ -1383,6 +1383,132 @@ function _provision_tasks_extra_upgrade_is_catalogue($root) {
 }
 
 /**
+ * The Drupal projects a codebase adds to core: name => TRUE.
+ *
+ * Core, its companions and plain libraries say nothing about whose codebase
+ * it is.
+ *
+ * @param array $packages
+ *   name => lock entry.
+ */
+function _provision_tasks_extra_codebase_projects($packages) {
+  $projects = array();
+  foreach ($packages as $name => $package) {
+    $type = isset($package['type']) && is_string($package['type']) ? $package['type'] : '';
+    if (in_array($type, array('drupal-module', 'drupal-theme', 'drupal-profile'), TRUE) && !_provision_tasks_extra_lock_is_core_name($name)) {
+      $projects[$name] = TRUE;
+    }
+  }
+  return $projects;
+}
+
+/**
+ * The switched-on modules of a site that its platform adds to core.
+ *
+ * Not the ones in the site's own folder: they move with the site.
+ *
+ * @param array $modules
+ *   hosting_tasks_extra_drupal_upgrade_modules().
+ */
+function _provision_tasks_extra_modules_beside_core($modules, $source_root) {
+  $roots = array(rtrim($source_root, '/'));
+  $real = @realpath($source_root);
+  if (is_string($real) && $real !== '') {
+    $roots[] = rtrim($real, '/');
+  }
+  foreach ($modules as $name => $module) {
+    $file = isset($module['filename']) && is_string($module['filename']) ? $module['filename'] : '';
+    foreach ($roots as $root) {
+      if (strpos($file, $root . '/core/') === 0 || (strpos($file, $root . '/sites/') === 0 && strpos($file, $root . '/sites/all/') !== 0)) {
+        unset($modules[$name]);
+        break;
+      }
+    }
+  }
+  return $modules;
+}
+
+/**
+ * Whether so few of a codebase's parts are gone that it is still the same one.
+ *
+ * A quarter may go between two versions, and two always may.
+ */
+function _provision_tasks_extra_codebase_kept($count, $gone) {
+  return $gone <= max(2, (int) floor($count / 4));
+}
+
+/**
+ * Why a codebase is another one than the site's, not a newer version of it.
+ *
+ * Told from the two locks: a newer version keeps most of the projects and
+ * adds no more than there were (five always may come). Two codebases that
+ * share nothing but core carry the same install profiles of core's, so the
+ * profile a site runs does not tell them apart.
+ *
+ * @param array $source
+ *   _provision_tasks_extra_lock_load() of the site's codebase, or its slim form.
+ * @param array $target
+ *   The same for the other one.
+ * @param int $beside
+ *   How many modules added to core the site has switched on.
+ *
+ * @return string|null
+ *   '' for the same codebase, the reason for another one, NULL when the locks
+ *   cannot tell: one is missing, or the site's modules are not in its lock.
+ */
+function _provision_tasks_extra_codebase_other($source, $target, $beside) {
+  if (empty($source['ok']) || empty($target['ok'])) {
+    return NULL;
+  }
+  $mine = _provision_tasks_extra_codebase_projects($source['packages']);
+  $theirs = _provision_tasks_extra_codebase_projects($target['packages']);
+  $count = count($mine);
+  if ($count === 0 && $beside > 0) {
+    return NULL;
+  }
+  $gone = count(array_diff_key($mine, $theirs));
+  if (!_provision_tasks_extra_codebase_kept($count, $gone)) {
+    return _provision_tasks_extra_codebase_text('it lacks ' . $gone . ' of the ' . $count . " modules and themes added to core on this site's platform");
+  }
+  $new = count(array_diff_key($theirs, $mine));
+  if ($new > max(5, $count)) {
+    return _provision_tasks_extra_codebase_text('it adds ' . $new . " modules and themes this site's platform does not have");
+  }
+  return '';
+}
+
+/**
+ * The reason a platform is another codebase, as one clause.
+ */
+function _provision_tasks_extra_codebase_text($detail) {
+  return "it is another codebase, not a newer version of this site's platform (" . $detail . ')';
+}
+
+/**
+ * The order in which platforms that are not ready are shown: closest first.
+ *
+ * A leftover of an earlier run alone in the way comes first, a release the
+ * Upgrade takes no site to yet comes last; between them the one that lacks
+ * least, then the newest. For uasort().
+ */
+function _provision_tasks_extra_upgrade_closest($a, $b) {
+  foreach (array('leftover' => -1, 'major' => 1) as $rule => $side) {
+    $first = ($a['rule'] === $rule);
+    if ($first !== ($b['rule'] === $rule)) {
+      return $first ? $side : -$side;
+    }
+  }
+  if ($a['lacks'] !== $b['lacks']) {
+    return ($a['lacks'] < $b['lacks']) ? -1 : 1;
+  }
+  $release = version_compare($b['release'], $a['release']);
+  if ($release !== 0) {
+    return $release;
+  }
+  return ($a['nid'] < $b['nid']) ? -1 : (($a['nid'] > $b['nid']) ? 1 : 0);
+}
+
+/**
  * The major and the minor of a release, or FALSE.
  */
 function _provision_tasks_extra_release_numbers($release) {
