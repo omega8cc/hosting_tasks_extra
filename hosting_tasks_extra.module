@@ -1024,7 +1024,7 @@ function _hosting_tasks_extra_drupal_upgrade_target($site, $platform, $source_ro
   if ($newer['why'] !== '') {
     $entry['why'] = $newer['why'];
     $entry['rule'] = $newer['rule'];
-    $entry['listed'] = ($newer['rule'] === 'major' || $newer['rule'] === 'floor');
+    $entry['listed'] = in_array($newer['rule'], array('major', 'floor', 'prerelease'), TRUE);
     return $entry;
   }
   $entry['listed'] = TRUE;
