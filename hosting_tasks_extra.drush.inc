@@ -39,6 +39,37 @@ function drush_hosting_tasks_extra_pre_hosting_task() {
 }
 
 /**
+ * Implements hook_drush_command().
+ */
+function hosting_tasks_extra_drush_command() {
+  $items = array();
+  $items['hosting-drupal-upgrade-report'] = array(
+    'description' => "Print one tab-separated line per enabled Drupal 10 or later site: its release, whether that release still gets security fixes, and the Upgrade ready for it, judged as the panel's first user; then a closing line with the number of site lines.",
+    'callback' => 'hosting_tasks_extra_upgrade_due_command',
+    'bootstrap' => DRUSH_BOOTSTRAP_DRUPAL_FULL,
+  );
+  return $items;
+}
+
+/**
+ * Prints the upgrade report, or fails with no closing line.
+ *
+ * Only a report that ends with its closing line, naming as many site lines
+ * as came before it, is whole.
+ */
+function hosting_tasks_extra_upgrade_due_command() {
+  $why = hosting_tasks_extra_upgrade_due_refusal();
+  if ($why !== '') {
+    return drush_set_error('UPGRADE_REPORT_NOT_MADE', dt('No upgrade report: @why.', array('@why' => $why)));
+  }
+  $lines = hosting_tasks_extra_upgrade_due_lines();
+  foreach ($lines as $line) {
+    drush_print($line);
+  }
+  drush_print('UPGRADE-REPORT-END ' . count($lines));
+}
+
+/**
  * Refuses a Migrate that would move an upgraded site back, however queued.
  *
  * The site's own Migrate form leaves out a platform an Upgrade moved the
