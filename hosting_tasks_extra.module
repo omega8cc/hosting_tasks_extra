@@ -1055,7 +1055,7 @@ function _hosting_tasks_extra_drupal_upgrade_target($site, $platform, $source_ro
   $entry['security'] = $diff['security'];
   $entry['audited'] = $diff['audited'];
   $entry['kind'] = _provision_tasks_extra_upgrade_kind_text($diff);
-  if (($diff['security'] === TRUE || !empty($diff['added'])) && is_array($diff['audited'])) {
+  if (($diff['security'] === TRUE || !empty($diff['brought'])) && is_array($diff['audited'])) {
     $entry['kind'] .= ' (advisories as read on ' . format_date($diff['audited'][0], 'custom', 'Y-m-d') . ' and ' . format_date($diff['audited'][1], 'custom', 'Y-m-d') . ')';
   }
   // What the run would refuse for a fact these same files show.
