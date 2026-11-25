@@ -559,7 +559,8 @@ function _provision_tasks_extra_audit_compare($source, $target) {
  *   packages on one side only). 'named' (what set the level). 'with' (core's
  *   own libraries that crossed a major inside a core move). 'fixed', 'of',
  *   'open', 'added', 'uncovered' (the security half); 'brought', the added
- *   pairs on a package the move changes, the ones a text names. 'core_move'. 'locks'
+ *   pairs on a package whose locked version the move changes, the ones a
+ *   text names. 'core_move'. 'locks'
  *   FALSE when either side has no lock to read. 'patch_change' when a patch
  *   definition is known to differ (read on both sides, not the same).
  */
@@ -723,18 +724,24 @@ function _provision_tasks_extra_lock_classify($source, $target, $source_audit = 
     $out['fixed'] = count($compare['cleared']);
     $out['open'] = $compare['after'];
     $out['added'] = $compare['added'];
-    // A pair on a package both locks hold unchanged is not one the move
-    // brings: the panel's two reports may be read days apart.
+    // Composer matches an advisory on a package's name and locked version, so
+    // a package both locks hold at one version has the same advisories on
+    // both sides: a pair added there is no advisory the move brings, only two
+    // reports read on different days (the panel's).
     foreach ($compare['added'] as $pair) {
       $cols = explode("\t", $pair);
       $name = isset($cols[1]) ? $cols[1] : '';
-      if (!isset($S[$name]) || !isset($T[$name]) || isset($changed[$name])) {
+      if (!isset($S[$name]['version'], $T[$name]['version']) || $S[$name]['version'] !== $T[$name]['version']) {
         $out['brought'][] = $pair;
       }
     }
-    if ($compare['added']) {
+    if ($out['brought']) {
       $out['security'] = FALSE;
       $out['security_why'] = 'the new platform adds a security advisory';
+    }
+    elseif ($compare['added']) {
+      $out['security'] = NULL;
+      $out['security_why'] = 'the two advisory reports differ on a package this move does not change, so they were read on different days';
     }
     elseif (!$compare['cleared']) {
       $out['security'] = FALSE;
