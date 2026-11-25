@@ -2837,20 +2837,120 @@ function hosting_tasks_extra_drupal_upgrade_copy_text($left) {
  * From the one line the system keeps of the supported release lines; with
  * no such file nothing is claimed.
  */
-function hosting_tasks_extra_drupal_upgrade_supported($release) {
+function hosting_tasks_extra_drupal_upgrade_supported($release, $file = '/data/conf/drupal-supported.txt') {
+  $state = hosting_tasks_extra_drupal_upgrade_supported_state($release, $file);
+  if ($state === 'unknown') {
+    return '';
+  }
   $numbers = _provision_tasks_extra_release_numbers($release);
-  $text = _provision_tasks_extra_read_plain('/data/conf/drupal-supported.txt', 4096);
-  if ($numbers === FALSE || $text === FALSE) {
-    return '';
-  }
-  $line = trim(strtok($text, "\n"));
-  if (!preg_match('/^[0-9]+\.[0-9]+( [0-9]+\.[0-9]+)*$/', $line)) {
-    return '';
-  }
   $minor = $numbers[0] . '.' . $numbers[1];
-  return in_array($minor, explode(' ', $line), TRUE)
+  return ($state === 'yes')
     ? t('Drupal @minor still gets security fixes.', array('@minor' => $minor))
     : t('Drupal @minor no longer gets security fixes.', array('@minor' => $minor));
+}
+
+/**
+ * Whether a release line still gets security fixes: yes, no or unknown.
+ *
+ * Unknown when the release or the system's list cannot be read.
+ *
+ * @param string $release
+ *   A Drupal release, X.Y or longer.
+ * @param string $file
+ *   The list: its first line holds the supported X.Y lines, one blank apart.
+ */
+function hosting_tasks_extra_drupal_upgrade_supported_state($release, $file = '/data/conf/drupal-supported.txt') {
+  $numbers = _provision_tasks_extra_release_numbers($release);
+  $text = _provision_tasks_extra_read_plain($file, 4096);
+  if ($numbers === FALSE || $text === FALSE) {
+    return 'unknown';
+  }
+  $line = trim((string) strtok($text, "\n"));
+  if (!preg_match('/^[0-9]+\.[0-9]+( [0-9]+\.[0-9]+)*$/', $line)) {
+    return 'unknown';
+  }
+  return in_array($numbers[0] . '.' . $numbers[1], explode(' ', $line), TRUE) ? 'yes' : 'no';
+}
+
+/**
+ * Why no whole upgrade report can be made now, or ''.
+ */
+function hosting_tasks_extra_upgrade_due_refusal() {
+  if (function_exists('hosting_panel_is_moving') && hosting_panel_is_moving()) {
+    return 'the control panel is moving to its new version';
+  }
+  if (!hosting_tasks_extra_upgrade_include()) {
+    return 'the control panel is being updated';
+  }
+  return '';
+}
+
+/**
+ * One line of the upgrade report: its fields, tab-separated.
+ *
+ * A field holds no tab, line break or other control character, and an
+ * empty one is written as '-'.
+ */
+function hosting_tasks_extra_upgrade_due_line($fields) {
+  $out = array();
+  foreach ($fields as $field) {
+    $field = trim(preg_replace('/[\x00-\x1f\x7f]+/', ' ', (string) $field));
+    $out[] = ($field === '') ? '-' : $field;
+  }
+  return implode("\t", $out);
+}
+
+/**
+ * The upgrade report: one line per enabled Drupal 10 or later site.
+ *
+ * UPGRADE-REPORT, the site, its release, whether that release still gets
+ * security fixes (yes, no or unknown), and the platform its Upgrade would
+ * take now with the kind of move, or '-'. Each site is judged as the
+ * panel's first user, who may use every platform, as its own Upgrade
+ * judges it; what a customer's login is offered can be less.
+ *
+ * @param string $file
+ *   The system's list of supported release lines.
+ *
+ * @return array
+ *   The lines, sites by name.
+ */
+function hosting_tasks_extra_upgrade_due_lines($file = '/data/conf/drupal-supported.txt') {
+  $account = user_load(1);
+  $nids = db_query("SELECT n.nid FROM {hosting_site} s INNER JOIN {node} n ON n.vid = s.vid
+    WHERE s.status = :enabled AND n.type = :type AND n.nid <> :panel
+    ORDER BY n.title ASC, n.nid ASC", array(
+      ':enabled' => HOSTING_SITE_ENABLED,
+      ':type' => 'site',
+      ':panel' => (int) hosting_get_hostmaster_site_nid(),
+    ))->fetchCol();
+  // Read once for all the sites, fresh.
+  drupal_static_reset('hosting_tasks_extra_drupal_upgrade_targets');
+  drupal_static_reset('hosting_tasks_extra_drupal_upgrade_lock');
+  drupal_static_reset('hosting_tasks_extra_drupal_upgrade_report');
+  $lines = array();
+  foreach ($nids as $nid) {
+    $site = node_load($nid);
+    if (!is_object($site) || hosting_tasks_extra_site_is_foreign_cms($site)
+      || (function_exists('hosting_backdrop_platform_is_backdrop') && hosting_backdrop_platform_is_backdrop($site->platform))) {
+      continue;
+    }
+    $platform = node_load($site->platform);
+    $release = (is_object($platform) && isset($platform->release) && is_object($platform->release) && isset($platform->release->version)) ? (string) $platform->release->version : '';
+    if ($release === '' || version_compare($release, '10', '<')) {
+      continue;
+    }
+    $found = hosting_tasks_extra_drupal_upgrade_targets($site, $account);
+    $title = '';
+    $kind = '';
+    if (!empty($found['ready'])) {
+      $target = $found['targets'][reset($found['ready'])];
+      $title = $target['title'];
+      $kind = $target['kind'];
+    }
+    $lines[] = hosting_tasks_extra_upgrade_due_line(array('UPGRADE-REPORT', $site->title, $release, hosting_tasks_extra_drupal_upgrade_supported_state($release, $file), $title, $kind));
+  }
+  return $lines;
 }
 
 /**
