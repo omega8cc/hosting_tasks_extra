@@ -2863,6 +2863,7 @@ function hosting_tasks_extra_successor_include() {
   return hosting_tasks_extra_upgrade_include()
     && function_exists('_provision_tasks_extra_successor_newer')
     && function_exists('_provision_tasks_extra_successor_constraint')
+    && function_exists('_provision_tasks_extra_constraint_major')
     && function_exists('_provision_tasks_extra_build_marker');
 }
 
@@ -2911,14 +2912,15 @@ function hosting_tasks_extra_platform_successor_source($platform) {
   if (!is_object($platform) || $platform->type != 'platform') {
     return 'this is not a platform';
   }
-  // The build fields are kept untranslated, under the node's language.
-  if (isset($platform->language) && $platform->language !== LANGUAGE_NONE) {
-    return 'its build fields are kept in another language';
-  }
   $strategy = _hosting_tasks_extra_field($platform, 'field_deployment_strategy');
   $all = hosting_tasks_extra_platform_successor_fields();
   if (!isset($all[$strategy])) {
     return 'it was not built with Composer by the panel (from Packagist or from a Git repository)';
+  }
+  // The build reads its fields under the node's language, and they are
+  // kept untranslated.
+  if (isset($platform->language) && $platform->language !== LANGUAGE_NONE) {
+    return 'its build fields are kept in another language';
   }
   $fields = $all[$strategy];
   $source = _hosting_tasks_extra_field($platform, $fields['source']);
@@ -3033,11 +3035,12 @@ function hosting_tasks_extra_platform_successor_runs($nid, $statuses, $built = 0
 /**
  * A platform an earlier Build newer version of this one made and left, or
  * FALSE: a run that ended in Error (the queue's reaper ends one that was cut
- * off so) whose platform is not deleted.
+ * off so) whose platform is still Locked, as the run made it. One that was
+ * kept, or unlocked by hand since, is no leftover.
  */
 function hosting_tasks_extra_platform_successor_leftover($platform_nid) {
   foreach (hosting_tasks_extra_platform_successor_runs($platform_nid, array(HOSTING_TASK_ERROR)) as $row) {
-    if ($row->made && (int) $row->made->status !== HOSTING_PLATFORM_DELETED) {
+    if ($row->made && (int) $row->made->status === HOSTING_PLATFORM_LOCKED) {
       return $row->made;
     }
   }
@@ -3171,6 +3174,11 @@ function hosting_tasks_extra_platform_successor_plan($platform, $args) {
     return $out;
   }
   $constraint = $made['constraint'];
+  // A constraint typed for core's templates still names the major it asks
+  // for, which says the PHP the build needs.
+  if ($source['template'] && $mode === 'version') {
+    $made['major'] = _provision_tasks_extra_constraint_major($constraint);
+  }
   if (strlen($constraint) > 255 || $constraint[0] === '-' || preg_match('/[\x00-\x1f\x7f]/', $constraint)) {
     $out['why'] = 'the version must be at most 255 characters, start with no dash and hold no control characters';
     return $out;

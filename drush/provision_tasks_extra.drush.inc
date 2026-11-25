@@ -3346,6 +3346,25 @@ function drush_provision_tasks_extra_provision_drupal_upgrade_return() {
 }
 
 /**
+ * A path as the panel writes one: no repeated or dot segments, no end slash.
+ */
+function _provision_tasks_extra_successor_path($path) {
+  $path = preg_replace('#/(\./)+#', '/', preg_replace('#/+#', '/', trim((string) $path)));
+  return rtrim(preg_replace('#/\.$#', '', $path), '/');
+}
+
+/**
+ * Whether the build's Verify found its folder already there and used it.
+ *
+ * A folder put there after the run's own check is no build of this run:
+ * it is never kept and never removed.
+ */
+function _provision_tasks_extra_successor_found($plan, $build) {
+  clearstatcache();
+  return is_link($plan['path']) || _provision_tasks_extra_upgrade_logged($build, 'path already exists: nothing is built');
+}
+
+/**
  * The new platform's name, for the log.
  */
 function _provision_tasks_extra_successor_title() {
@@ -3411,14 +3430,14 @@ function _provision_tasks_extra_successor_plan() {
   if (!preg_match('/^@platform_[A-Za-z0-9_.-]+$/', $opt['successor_context'])) {
     return 'the new platform\'s name is not one the panel makes';
   }
-  $path = rtrim($opt['successor_path'], '/');
-  $from = rtrim($opt['successor_source_path'], '/');
-  $root = rtrim($opt['successor_root'], '/');
+  $path = _provision_tasks_extra_successor_path($opt['successor_path']);
+  $from = _provision_tasks_extra_successor_path($opt['successor_source_path']);
+  $root = _provision_tasks_extra_successor_path($opt['successor_root']);
   $source_root = _provision_tasks_extra_docroot($source->root);
   $built = '';
   foreach (array('composer_project_path', 'composer_git_path') as $property) {
     if (isset($source->{$property}) && is_string($source->{$property}) && $source->{$property} !== '') {
-      $built = rtrim($source->{$property}, '/');
+      $built = _provision_tasks_extra_successor_path($source->{$property});
     }
   }
   if ($built !== '' && $built !== $from) {
@@ -3499,16 +3518,22 @@ function drush_provision_tasks_extra_provision_platform_successor() {
   // This process holds the platform it builds from: nothing of it is saved
   // when the command ends.
   drush_set_option('provision_save_config', FALSE);
-  drush_log(dt('SUCCESSOR/CHECK building @title in @path from @source (Drupal @release).', array(
-    '@title' => $plan['title'],
-    '@path' => $plan['path'],
-    '@source' => $plan['source_title'],
-    '@release' => $plan['source_release'],
+  drush_log(dt('SUCCESSOR/CHECK building !title in !path from !source (Drupal !release).', array(
+    '!title' => _provision_tasks_extra_no_markup($plan['title']),
+    '!path' => _provision_tasks_extra_no_markup($plan['path']),
+    '!source' => _provision_tasks_extra_no_markup($plan['source_title']),
+    '!release' => _provision_tasks_extra_no_markup($plan['source_release']),
   )), 'ok');
   $build = _provision_tasks_extra_upgrade_leg($plan['context'], 'verify', array($plan['marker']), TRUE);
-  // A build that failed ends this run by its own result: its errors are
-  // kept, as warnings.
-  _provision_tasks_extra_upgrade_replay($build, !$build['ok']);
+  // This run sets its own result: an error of its build is kept as a
+  // warning, whether the build ended well or not.
+  _provision_tasks_extra_upgrade_replay($build, TRUE);
+  if (_provision_tasks_extra_successor_found($plan, $build)) {
+    return drush_set_error('PROVISION_SUCCESSOR_NOT_KEPT', dt('SUCCESSOR/RESULT Not kept: a folder appeared at !path before the build, so nothing was built and nothing there was deleted. !title is left, Locked, naming that folder, and its Delete would remove the folder too: move the folder away first if it is wanted, then the account\'s main login can delete !title.', array(
+      '!path' => _provision_tasks_extra_no_markup($plan['path']),
+      '!title' => _provision_tasks_extra_no_markup($plan['title']),
+    )));
+  }
   if (!$build['ok']) {
     return _provision_tasks_extra_successor_not_kept($plan, _provision_tasks_extra_successor_build_why($plan, $build), $build);
   }
@@ -3519,9 +3544,9 @@ function drush_provision_tasks_extra_provision_platform_successor() {
   $unlock = _provision_tasks_extra_upgrade_leg($plan['context'], 'unlock', array($plan['marker']), TRUE);
   if (!$unlock['ok']) {
     _provision_tasks_extra_upgrade_replay($unlock, TRUE);
-    drush_log(dt('SUCCESSOR/RESULT Built !title at !path: !kind. It stays Locked, since its Unlock did not work (!why): Unlock it on its page, and the Upgrade then offers it to the sites of !source.', array(
+    drush_log(dt('SUCCESSOR/RESULT Built !title at !path: !kind. It stays Locked, since its Unlock did not work (!why): the account\'s main login can Unlock it on its page, and the Upgrade then offers it to the sites of !source.', array(
       '!title' => _provision_tasks_extra_no_markup($plan['title']),
-      '!path' => _provision_tasks_extra_no_markup($plan['root']),
+      '!path' => _provision_tasks_extra_no_markup($plan['built_root']),
       '!kind' => _provision_tasks_extra_no_markup($plan['kind']),
       '!why' => _provision_tasks_extra_no_markup(_provision_tasks_extra_upgrade_step_why($unlock, $unlock['errors'] ? (string) reset($unlock['errors']) : 'it ended with no result')),
       '!source' => _provision_tasks_extra_no_markup($plan['source_title']),
@@ -3530,7 +3555,7 @@ function drush_provision_tasks_extra_provision_platform_successor() {
   }
   drush_log(dt('SUCCESSOR/RESULT Built !title at !path: !kind.', array(
     '!title' => _provision_tasks_extra_no_markup($plan['title']),
-    '!path' => _provision_tasks_extra_no_markup($plan['root']),
+    '!path' => _provision_tasks_extra_no_markup($plan['built_root']),
     '!kind' => _provision_tasks_extra_no_markup($plan['kind']),
   )), 'success');
 }
@@ -3585,9 +3610,12 @@ function _provision_tasks_extra_successor_gate(&$plan) {
   if (!is_string($root) || $root === '') {
     return 'the new platform\'s record names no folder';
   }
-  if (!_provision_tasks_extra_upgrade_same_root($root, $plan['root'])) {
+  // Both as provision resolves a root: a platform recorded at its project
+  // folder is served from the docroot below it.
+  if (!_provision_tasks_extra_upgrade_same_root($root, _provision_tasks_extra_docroot($plan['root']))) {
     return 'the new platform\'s record names ' . $root . ', not ' . $plan['root'];
   }
+  $plan['built_root'] = $root;
   $release = _provision_tasks_extra_core_release($root);
   if ($release === '') {
     return 'the Drupal release of the build cannot be read';
@@ -3662,6 +3690,9 @@ function _provision_tasks_extra_successor_not_kept($plan, $why, $build) {
   if ($marker['state'] === 'unknown') {
     return drush_set_error('PROVISION_SUCCESSOR_NOT_KEPT', dt('SUCCESSOR/RESULT Not kept: !why. Whether a build process still writes into !path cannot be read, so nothing was deleted; the account\'s main login can delete !title.', $args));
   }
+  if (is_array($build) && _provision_tasks_extra_successor_found($plan, $build)) {
+    return drush_set_error('PROVISION_SUCCESSOR_NOT_KEPT', dt('SUCCESSOR/RESULT Not kept: !why. A folder appeared at !path before the build, so nothing there was deleted; !title is left, Locked, naming it: move the folder away first if it is wanted, then the account\'s main login can delete !title.', $args));
+  }
   // websh refuses a Verify and a Delete of a codebase that needs a newer PHP
   // than the one named for it: it stays until one is.
   if (in_array('PLATFORM_BUILD_PHP_TOO_OLD', $codes, TRUE)) {
@@ -3669,7 +3700,7 @@ function _provision_tasks_extra_successor_not_kept($plan, $why, $build) {
     $need = (preg_match('/needs PHP ([0-9]+\.[0-9]+) or newer/', implode("\n", $build['errors']), $m)) ? $m[1] : 'X.Y';
     $args['!line'] = _provision_tasks_extra_no_markup(_provision_tasks_extra_successor_folder_key($plan['path']) . ' ' . $need);
     $args['!need'] = $need;
-    return drush_set_error('PROVISION_SUCCESSOR_NOT_KEPT', dt('SUCCESSOR/RESULT Not kept: the build at !path needs PHP !need or newer and none is named for it. Add `!line` to ~/static/control/cli-per-platform.info, then delete !title.', $args));
+    return drush_set_error('PROVISION_SUCCESSOR_NOT_KEPT', dt('SUCCESSOR/RESULT Not kept: the build at !path needs PHP !need or newer and none is named for it. Add `!line` to ~/static/control/cli-per-platform.info, then the account\'s main login can delete !title.', $args));
   }
   $leg = _provision_tasks_extra_upgrade_leg($plan['context'], 'delete', array($plan['marker']), TRUE);
   _provision_tasks_extra_upgrade_replay($leg, TRUE);
@@ -3679,17 +3710,17 @@ function _provision_tasks_extra_successor_not_kept($plan, $why, $build) {
   if ($leg['ok'] && !file_exists($plan['path']) && !is_link($plan['path']) && $alias === FALSE && $after['state'] === 'none') {
     return drush_set_error('PROVISION_SUCCESSOR_NOT_KEPT', dt('SUCCESSOR/RESULT Not kept: !why. The build was deleted.', $args));
   }
+  if ($leg['ok'] && $alias === FALSE) {
+    return drush_set_error('PROVISION_SUCCESSOR_NOT_KEPT', dt('SUCCESSOR/RESULT Not kept: !why. Its record was deleted, and !path is still there (see the warnings above): remove it with the account\'s own login over SSH or SFTP before that name is used again.', $args));
+  }
   if (!$leg['ok']) {
     $left = _provision_tasks_extra_upgrade_step_why($leg, $leg['errors'] ? trim(preg_replace('/\s+/', ' ', (string) reset($leg['errors']))) : 'its Delete ended with no result');
   }
   elseif (file_exists($plan['path']) || is_link($plan['path'])) {
     $left = 'its folder is still there';
   }
-  elseif ($alias !== FALSE) {
-    $left = 'its alias is still there';
-  }
   else {
-    $left = 'the mark of an unfinished build is still beside its folder';
+    $left = 'its alias is still there';
   }
   $args['!left'] = _provision_tasks_extra_no_markup($left);
   return drush_set_error('PROVISION_SUCCESSOR_NOT_KEPT', dt('SUCCESSOR/RESULT Not kept: !why. !title at !path could not be deleted (!left); the account\'s main login can delete it.', $args));

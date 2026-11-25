@@ -1169,11 +1169,36 @@ function hosting_tasks_extra_platform_successor_end($task, $ok) {
     ':vid' => (int) $task->vid,
     ':result' => '%SUCCESSOR/RESULT%',
   ))->fetchField();
-  if (!$said) {
-    drush_log(dt('SUCCESSOR/RESULT Not kept: the run ended before it said what happened. @title at @path is left, @state; the account\'s main login can delete it.', array(
-      '@title' => _hosting_tasks_extra_plain($made->title),
-      '@path' => _hosting_tasks_extra_plain($made->publish_path),
-      '@state' => ($state === 'enabled') ? 'enabled' : 'Locked',
-    )), 'error');
+  // A runner in backend mode keeps an error it was sent as an error alone,
+  // with no line of the log yet.
+  foreach (drush_get_context('DRUSH_ERROR_LOG', array()) as $messages) {
+    foreach ((array) $messages as $message) {
+      if (strpos((string) $message, 'SUCCESSOR/RESULT') !== FALSE) {
+        $said = TRUE;
+      }
+    }
   }
+  if ($said) {
+    return;
+  }
+  // The backend never reached its plan (an overloaded server ends it at its
+  // start, say): the platform it was to build was never verified and holds
+  // nothing on disk, so its record goes as a Delete of its own.
+  $folder = isset($task->task_args['successor_path']) ? (string) $task->task_args['successor_path'] : '';
+  $marker = ($folder === '') ? '' : dirname($folder) . '/.' . basename($folder) . '.unfinished-build';
+  $alias = drush_server_home() . '/.drush/' . $made->hosting_name . '.alias.drushrc.php';
+  if ($state === 'locked' && empty($made->verified) && $folder !== '' && !file_exists($folder) && !is_link($folder)
+    && !file_exists($marker) && !is_link($marker) && !file_exists($alias)) {
+    $delete = hosting_add_task($made->nid, 'delete', array('upgrade_run' => (int) $task->nid));
+    drush_log(dt('SUCCESSOR/RESULT Not started: the run ended before its checks. The platform record made for it, @title, was never built and holds nothing on disk: @next', array(
+      '@title' => _hosting_tasks_extra_plain($made->title),
+      '@next' => is_object($delete) ? 'its Delete is queued.' : 'the account\'s main login can delete it.',
+    )), 'error');
+    return;
+  }
+  drush_log(dt('SUCCESSOR/RESULT Not kept: the run ended before it said what happened. @title at @path is left, @state; the account\'s main login can delete it.', array(
+    '@title' => _hosting_tasks_extra_plain($made->title),
+    '@path' => _hosting_tasks_extra_plain($made->publish_path),
+    '@state' => ($state === 'enabled') ? 'enabled' : 'Locked',
+  )), 'error');
 }

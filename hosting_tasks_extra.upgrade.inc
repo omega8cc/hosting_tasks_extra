@@ -1814,6 +1814,22 @@ function _provision_tasks_extra_successor_constraint($mode, $release, $version) 
 }
 
 /**
+ * The lowest Drupal major a typed constraint of core's templates allows, or 0.
+ *
+ * Read from its leading term (^11.2, ~11.2.3, >=11.2 <12, 11.2.5, 11.x); a
+ * constraint with alternatives (||) or that starts with an upper bound says
+ * no single major, and gives 0.
+ */
+function _provision_tasks_extra_constraint_major($constraint) {
+  $m = array();
+  $constraint = trim((string) $constraint);
+  if (strpos($constraint, '|') !== FALSE || !preg_match('/^(?:\^|~|>=|=)?\s*v?([0-9]+)(?:\.|$)/', $constraint, $m)) {
+    return 0;
+  }
+  return (int) $m[1];
+}
+
+/**
  * The lowest PHP a Drupal major runs on, as x.y, or ''.
  *
  * Read from core's own requirement in a lock that carries that major's core,
