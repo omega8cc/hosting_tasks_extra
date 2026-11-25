@@ -542,17 +542,23 @@ function _provision_tasks_extra_audit_compare($source, $target) {
  * Whether a package's advisories can differ between two locks.
  *
  * Composer matches an advisory on a package's name and locked version, a dev
- * version on its branch alias, which can move with it: so only a package on
- * one side alone, at another version, or a dev version that changed.
+ * version on its branch alias, which moves only with its commit: so only a
+ * package on one side alone, at another version, or a dev version at another
+ * commit (or one whose commit cannot be read). A patch changes neither.
  */
-function _provision_tasks_extra_lock_moved($source, $target, $changed, $name) {
+function _provision_tasks_extra_lock_moved($source, $target, $name) {
   if (!isset($source[$name]['version'], $target[$name]['version'])) {
     return TRUE;
   }
   if ($source[$name]['version'] !== $target[$name]['version']) {
     return TRUE;
   }
-  return _provision_tasks_extra_lock_is_dev($target[$name]['version']) && isset($changed[$name]);
+  if (!_provision_tasks_extra_lock_is_dev($target[$name]['version'])) {
+    return FALSE;
+  }
+  $ra = _provision_tasks_extra_lock_reference($source[$name]);
+  $rb = _provision_tasks_extra_lock_reference($target[$name]);
+  return $ra === '' || $rb === '' || $ra !== $rb;
 }
 
 /**
@@ -746,7 +752,7 @@ function _provision_tasks_extra_lock_classify($source, $target, $source_audit = 
     $skew = FALSE;
     foreach ($compare['added'] as $pair) {
       $cols = explode("\t", $pair);
-      if (_provision_tasks_extra_lock_moved($S, $T, $changed, isset($cols[1]) ? $cols[1] : '')) {
+      if (_provision_tasks_extra_lock_moved($S, $T, isset($cols[1]) ? $cols[1] : '')) {
         $out['brought'][] = $pair;
       }
       else {
@@ -755,7 +761,7 @@ function _provision_tasks_extra_lock_classify($source, $target, $source_audit = 
     }
     foreach ($compare['cleared'] as $pair) {
       $cols = explode("\t", $pair);
-      if (_provision_tasks_extra_lock_moved($S, $T, $changed, isset($cols[1]) ? $cols[1] : '')) {
+      if (_provision_tasks_extra_lock_moved($S, $T, isset($cols[1]) ? $cols[1] : '')) {
         $out['fixed']++;
       }
       else {
