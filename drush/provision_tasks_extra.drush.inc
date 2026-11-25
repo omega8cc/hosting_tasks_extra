@@ -1789,7 +1789,9 @@ function _provision_tasks_extra_upgrade_plan() {
   }
   $diff = _provision_tasks_extra_upgrade_release_step($source_release, $target_release, _provision_tasks_extra_lock_diff($source_root, $target_root, $source_audit, $target_audit));
   $added = '';
-  if ($diff['brought']) {
+  // An older copy of the rules, loaded while the panel moves to a new tree,
+  // names nothing.
+  if (!empty($diff['brought']) && function_exists('_provision_tasks_extra_audit_pair_names')) {
     $names = _provision_tasks_extra_audit_pair_names($diff['brought']);
     $added = 'security ' . (count($names) === 1 ? 'advisory ' : 'advisories ') . _provision_tasks_extra_upgrade_names($names);
   }

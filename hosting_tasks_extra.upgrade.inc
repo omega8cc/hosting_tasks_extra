@@ -539,6 +539,23 @@ function _provision_tasks_extra_audit_compare($source, $target) {
 }
 
 /**
+ * Whether a package's advisories can differ between two locks.
+ *
+ * Composer matches an advisory on a package's name and locked version, a dev
+ * version on its branch alias, which can move with it: so only a package on
+ * one side alone, at another version, or a dev version that changed.
+ */
+function _provision_tasks_extra_lock_moved($source, $target, $changed, $name) {
+  if (!isset($source[$name]['version'], $target[$name]['version'])) {
+    return TRUE;
+  }
+  if ($source[$name]['version'] !== $target[$name]['version']) {
+    return TRUE;
+  }
+  return _provision_tasks_extra_lock_is_dev($target[$name]['version']) && isset($changed[$name]);
+}
+
+/**
  * What kind of move it is from one loaded lock to another.
  *
  * @param array $source
@@ -721,27 +738,37 @@ function _provision_tasks_extra_lock_classify($source, $target, $source_audit = 
   }
   else {
     $out['of'] = count($compare['before']);
-    $out['fixed'] = count($compare['cleared']);
     $out['open'] = $compare['after'];
     $out['added'] = $compare['added'];
-    // Composer matches an advisory on a package's name and locked version, so
-    // a package both locks hold at one version has the same advisories on
-    // both sides: a pair added there is no advisory the move brings, only two
-    // reports read on different days (the panel's).
+    // A pair added or cleared on a package whose advisories cannot differ
+    // between the two locks comes from two reports read on different days
+    // (the panel's), never from the move.
+    $skew = FALSE;
     foreach ($compare['added'] as $pair) {
       $cols = explode("\t", $pair);
-      $name = isset($cols[1]) ? $cols[1] : '';
-      if (!isset($S[$name]['version'], $T[$name]['version']) || $S[$name]['version'] !== $T[$name]['version']) {
+      if (_provision_tasks_extra_lock_moved($S, $T, $changed, isset($cols[1]) ? $cols[1] : '')) {
         $out['brought'][] = $pair;
+      }
+      else {
+        $skew = TRUE;
+      }
+    }
+    foreach ($compare['cleared'] as $pair) {
+      $cols = explode("\t", $pair);
+      if (_provision_tasks_extra_lock_moved($S, $T, $changed, isset($cols[1]) ? $cols[1] : '')) {
+        $out['fixed']++;
+      }
+      else {
+        $skew = TRUE;
       }
     }
     if ($out['brought']) {
       $out['security'] = FALSE;
       $out['security_why'] = 'the new platform adds a security advisory';
     }
-    elseif ($compare['added']) {
+    elseif ($skew) {
       $out['security'] = NULL;
-      $out['security_why'] = 'the two advisory reports differ on a package this move does not change, so they were read on different days';
+      $out['security_why'] = 'the two advisory reports differ on a package both locks hold at one version, so they were read on different days';
     }
     elseif (!$compare['cleared']) {
       $out['security'] = FALSE;
