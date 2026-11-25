@@ -114,10 +114,10 @@ function hosting_tasks_extra_hosting_tasks() {
 
   // A Composer platform built again at a newer version, into a new folder,
   // as the new platform's own first Verify: kept only when it is a newer
-  // version of the same codebase that adds no security advisory.
+  // version of the same codebase.
   $tasks['platform']['platform_successor'] = array(
     'title' => t('Build newer version'),
-    'description' => t('Build this platform again at a newer version, into a new folder, and keep the result only when it is newer and adds no security advisory.'),
+    'description' => t('Build this platform again at a newer version, into a new folder, and keep the result only when it is a newer version of the same codebase.'),
     'command' => 'provision-platform-successor',
     'provision_save' => TRUE,
     'access callback' => 'hosting_tasks_extra_platform_successor_task_access',
@@ -346,7 +346,7 @@ function hosting_tasks_extra_permission() {
     ),
     'create platform_successor task' => array(
       'title' => t('create platform_successor task'),
-      'description' => t('Build a Composer platform again at a newer version, kept only when it is newer and adds no security advisory. Needs create platform too.'),
+      'description' => t('Build a Composer platform again at a newer version, kept only when it is a newer version of the same codebase. Needs create platform too.'),
     ),
   );
 }
@@ -1055,7 +1055,7 @@ function _hosting_tasks_extra_drupal_upgrade_target($site, $platform, $source_ro
   $entry['security'] = $diff['security'];
   $entry['audited'] = $diff['audited'];
   $entry['kind'] = _provision_tasks_extra_upgrade_kind_text($diff);
-  if ($diff['security'] === TRUE && is_array($diff['audited'])) {
+  if (($diff['security'] === TRUE || !empty($diff['added'])) && is_array($diff['audited'])) {
     $entry['kind'] .= ' (advisories as read on ' . format_date($diff['audited'][0], 'custom', 'Y-m-d') . ' and ' . format_date($diff['audited'][1], 'custom', 'Y-m-d') . ')';
   }
   // What the run would refuse for a fact these same files show.
@@ -3346,7 +3346,7 @@ function hosting_task_platform_successor_form($node) {
     '#description' => t('Its folder is made from the name: @folder for this one.', array('@folder' => dirname($source['path']) . '/' . _hosting_platform_context_name($name))),
   );
   $form['kept'] = array(
-    '#markup' => '<p>' . t('The build is kept, and offered to the sites of this platform by their Upgrade, only when it is a newer version of the same codebase that adds no security advisory; otherwise it is deleted. While it runs, the other tasks of this account wait.') . '</p>',
+    '#markup' => '<p>' . t('The build is kept, and offered to the sites of this platform by their Upgrade, only when it is a newer version of the same codebase; otherwise it is deleted. A security advisory the build has and this platform does not is named in the result. While it runs, the other tasks of this account wait.') . '</p>',
     '#weight' => 4,
   );
   return $form;

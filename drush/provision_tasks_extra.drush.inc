@@ -93,7 +93,7 @@ function provision_tasks_extra_drush_command() {
     ),
   );
   $items['provision-platform-successor'] = array(
-    'description' => dt('Builds a Composer platform again at a newer version into a new folder, as the new platform\'s own first Verify, and keeps it only when it is a newer version of the same codebase that adds no security advisory; otherwise deletes it.'),
+    'description' => dt('Builds a Composer platform again at a newer version into a new folder, as the new platform\'s own first Verify, and keeps it only when it is a newer version of the same codebase; otherwise deletes it. A security advisory the build adds is named in its result.'),
     'bootstrap' => DRUSH_BOOTSTRAP_DRUSH,
     'options' => array(
       'successor_context' => 'The context name of the new platform.',
@@ -1776,7 +1776,9 @@ function _provision_tasks_extra_upgrade_plan() {
     }
   }
 
-  // V10: no advisory the site does not have now.
+  // V10: both audits. An advisory the site does not have now is named in the
+  // plan and the result, never refused; a list that asks for security fixes
+  // still refuses such a move, which is no security fix.
   $source_audit = _provision_tasks_extra_lock_advisories($source_root);
   $target_audit = _provision_tasks_extra_lock_advisories($target_root);
   $sides = array('current' => $source_audit, 'new' => $target_audit);
@@ -1786,13 +1788,10 @@ function _provision_tasks_extra_upgrade_plan() {
     }
   }
   $diff = _provision_tasks_extra_upgrade_release_step($source_release, $target_release, _provision_tasks_extra_lock_diff($source_root, $target_root, $source_audit, $target_audit));
+  $added = '';
   if ($diff['added']) {
-    $added = array();
-    foreach ($diff['added'] as $pair) {
-      $cols = explode("\t", $pair);
-      $added[] = $cols[0] . ' on ' . (isset($cols[1]) ? $cols[1] : '?');
-    }
-    return $target_title . ' has security advisories the current platform does not have (' . _provision_tasks_extra_upgrade_names($added) . '). Build it again from current releases';
+    $names = _provision_tasks_extra_audit_pair_names($diff['added']);
+    $added = 'security ' . (count($names) === 1 ? 'advisory ' : 'advisories ') . _provision_tasks_extra_upgrade_names($names);
   }
   // V13: both lists, each on its own, with what the audits said.
   $kind = _provision_tasks_extra_upgrade_kind_text($diff);
@@ -1820,7 +1819,7 @@ function _provision_tasks_extra_upgrade_plan() {
     '@copy' => $copy,
     '!stays' => _provision_tasks_extra_no_markup($stays),
   )), 'ok');
-  drush_log(dt('UPGRADE/CHECK passed: the two releases, the site\'s database, the new platform\'s Drush and PHP, leftovers, the queue, free space, security advisories and both lists.'), 'ok');
+  drush_log(dt('UPGRADE/CHECK passed: the two releases, the site\'s database, the new platform\'s Drush and PHP, leftovers, the queue, free space and both lists.'), 'ok');
 
   return array(
     'uri' => $uri,
@@ -1835,6 +1834,7 @@ function _provision_tasks_extra_upgrade_plan() {
     'target_title' => $target_title,
     'source_release' => $source_release,
     'target_release' => $target_release,
+    'added' => $added,
     'stays' => $stays,
     'return' => (bool) drush_get_option('upgrade_return', FALSE),
     'task_nid' => (int) $opt['upgrade_task_nid'],
@@ -2461,6 +2461,9 @@ function _provision_tasks_extra_upgrade_run($plan) {
     drush_log(dt('UPGRADE/1/COPY size: @copy uses !size.', array('@copy' => $copy, '!size' => $size)), 'ok');
   }
   $base = $uri . ' runs Drupal ' . $plan['target_release'] . ' on ' . $plan['target_title'];
+  if (!empty($plan['added'])) {
+    $base .= ', with ' . $plan['added'] . ', which it did not have on ' . $plan['source_title'];
+  }
   $gone = !file_exists($plan['source_root'] . '/sites/' . $uri) && !is_link($plan['source_root'] . '/sites/' . $uri);
   $there = is_dir($plan['target_root'] . '/sites/' . $uri);
   // A move that failed while it retired the old copy is finished forward
@@ -3620,9 +3623,9 @@ function _provision_tasks_extra_successor_folder_key($path) {
 /**
  * Judges a build that ended well: '' to keep it, or why not.
  *
- * Its release and lock, its own Drush, the same codebase, newer by the
- * platform's rule, and no security advisory it adds. Sets 'kind' and
- * 'release' in $plan.
+ * Its release and lock, its own Drush, the same codebase and newer by the
+ * platform's rule. Sets 'kind' and 'release' in $plan; the kind names a
+ * security advisory the build adds.
  */
 function _provision_tasks_extra_successor_gate(&$plan) {
   $root = _provision_tasks_extra_upgrade_alias_root(ltrim($plan['context'], '@'));
@@ -3677,15 +3680,8 @@ function _provision_tasks_extra_successor_gate(&$plan) {
       )), 'ok');
     }
   }
+  // An advisory the build adds is named by the kind, never refused.
   $diff = _provision_tasks_extra_lock_diff($plan['source_root'], $root, $audits['source'], $audits['build']);
-  if ($diff['added']) {
-    $added = array();
-    foreach ($diff['added'] as $pair) {
-      $cols = explode("\t", $pair);
-      $added[] = $cols[0] . (isset($cols[1]) ? ' for ' . $cols[1] : '');
-    }
-    return 'it adds security advisor' . (count($added) > 1 ? 'ies ' : 'y ') . implode(', ', $added);
-  }
   $plan['release'] = $release;
   $plan['kind'] = _provision_tasks_extra_upgrade_kind_text(_provision_tasks_extra_upgrade_release_step($plan['source_release'], $release, $diff));
   return '';

@@ -974,15 +974,29 @@ function _provision_tasks_extra_upgrade_kind_text($diff) {
       $line .= '; fixes ' . $diff['fixed'] . ' security ' . ($diff['fixed'] === 1 ? 'advisory' : 'advisories');
     }
     else {
-      $open = array();
-      foreach ($diff['open'] as $pair) {
-        $cols = explode("\t", $pair);
-        $open[] = $cols[0] . ' on ' . $cols[1];
-      }
-      $line .= '; fixes ' . $diff['fixed'] . ' of ' . $diff['of'] . ' security advisories; still open: ' . _provision_tasks_extra_upgrade_names($open);
+      $line .= '; fixes ' . $diff['fixed'] . ' of ' . $diff['of'] . ' security advisories; still open: ' . _provision_tasks_extra_upgrade_names(_provision_tasks_extra_audit_pair_names($diff['open']));
     }
   }
+  elseif (!empty($diff['added'])) {
+    // A move that brings an advisory the source lacks is not refused: it is
+    // named wherever the move is.
+    $added = _provision_tasks_extra_audit_pair_names($diff['added']);
+    $fixed = ($diff['fixed'] > 0) ? 'fixes ' . $diff['fixed'] . ' security ' . ($diff['fixed'] === 1 ? 'advisory' : 'advisories') . ' and ' : '';
+    $line .= '; ' . $fixed . 'adds security ' . (count($added) === 1 ? 'advisory ' : 'advisories ') . _provision_tasks_extra_upgrade_names($added);
+  }
   return $line;
+}
+
+/**
+ * Advisory pairs ("<id>\t<package>") as "<id> on <package>", each once.
+ */
+function _provision_tasks_extra_audit_pair_names($pairs) {
+  $names = array();
+  foreach ($pairs as $pair) {
+    $cols = explode("\t", $pair);
+    $names[] = $cols[0] . ' on ' . (isset($cols[1]) ? $cols[1] : '?');
+  }
+  return array_values(array_unique($names));
 }
 
 /**
