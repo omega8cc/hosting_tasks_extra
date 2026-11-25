@@ -3576,10 +3576,13 @@ function _provision_tasks_extra_successor_build_why($plan, $build) {
   if ($plan['major'] > 0) {
     $said = _provision_tasks_extra_cli_php_said($messages, $plan['context']);
     $floor = _provision_tasks_extra_php_minimum($plan['major'], ($plan['major'] === $plan['source_major']) ? $plan['source_lock'] : NULL);
+    // A cli-per-platform.info line counts only for a folder that is there,
+    // and the build makes its folder: only the account's own PHP can change
+    // what a new build runs on.
     if ($said['php'] !== '' && $floor !== '' && version_compare($said['php'], $floor, '<')) {
       return 'the build ran on PHP ' . $said['php'] . ' (' . $said['from'] . ') and Drupal ' . $plan['major'] . ' needs ' . $floor
-        . ' or newer. Name ' . $floor . ' or newer for ' . _provision_tasks_extra_successor_folder_key($plan['path'])
-        . ' in ~/static/control/cli-per-platform.info, or raise the account\'s PHP, then build again';
+        . ' or newer. Raise the account\'s command-line PHP to ' . $floor . ' or newer in ~/static/control/cli.info'
+        . ' (a line in cli-per-platform.info counts only for a folder that is already there), then build again';
     }
   }
   $first = $build['errors'] ? trim(preg_replace('/\s+/', ' ', (string) reset($build['errors']))) : '';
