@@ -1078,6 +1078,7 @@ function hosting_tasks_extra_platform_successor_make($platform, $plan) {
   $mine = $fields[$source['strategy']];
   $new->{$mine['version']} = array(LANGUAGE_NONE => array(array('value' => $plan['constraint'])));
   $new->{$mine['path']} = array(LANGUAGE_NONE => array(array('value' => $plan['folder'])));
+  $new->{$mine['docroot']} = ($source['docroot'] === '') ? array() : array(LANGUAGE_NONE => array(array('value' => $source['docroot'])));
   // Every other build's fields empty, with no default either: the backend
   // runs every build whose fields reach it.
   $others = array('field_git_repository_url', 'field_git_repository_path', 'field_git_reference', 'field_git_docroot');

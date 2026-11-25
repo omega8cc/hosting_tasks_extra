@@ -2934,6 +2934,15 @@ function hosting_tasks_extra_platform_successor_source($platform) {
   }
   if ($publish === $path) {
     $docroot = '';
+    // Recorded at its project folder, it is served from the docroot found
+    // below it: the new platform is recorded at that docroot, since Lock
+    // and Unlock load a recorded root as it is.
+    if (function_exists('_provision_tasks_extra_docroot')) {
+      $found = rtrim((string) _provision_tasks_extra_docroot($publish), '/');
+      if ($found !== $publish && dirname($found) === $publish) {
+        $docroot = basename($found);
+      }
+    }
   }
   elseif (strpos($publish, $path . '/') === 0 && strpos(substr($publish, strlen($path) + 1), '/') === FALSE) {
     $docroot = substr($publish, strlen($path) + 1);
