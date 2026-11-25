@@ -974,15 +974,29 @@ function _provision_tasks_extra_upgrade_kind_text($diff) {
       $line .= '; fixes ' . $diff['fixed'] . ' security ' . ($diff['fixed'] === 1 ? 'advisory' : 'advisories');
     }
     else {
-      $open = array();
-      foreach ($diff['open'] as $pair) {
-        $cols = explode("\t", $pair);
-        $open[] = $cols[0] . ' on ' . $cols[1];
-      }
-      $line .= '; fixes ' . $diff['fixed'] . ' of ' . $diff['of'] . ' security advisories; still open: ' . _provision_tasks_extra_upgrade_names($open);
+      $line .= '; fixes ' . $diff['fixed'] . ' of ' . $diff['of'] . ' security advisories; still open: ' . _provision_tasks_extra_upgrade_names(_provision_tasks_extra_audit_pair_names($diff['open']));
     }
   }
+  elseif (!empty($diff['added'])) {
+    // A move that brings an advisory the source lacks is not refused: it is
+    // named wherever the move is.
+    $added = _provision_tasks_extra_audit_pair_names($diff['added']);
+    $fixed = ($diff['fixed'] > 0) ? 'fixes ' . $diff['fixed'] . ' security ' . ($diff['fixed'] === 1 ? 'advisory' : 'advisories') . ' and ' : '';
+    $line .= '; ' . $fixed . 'adds security ' . (count($added) === 1 ? 'advisory ' : 'advisories ') . _provision_tasks_extra_upgrade_names($added);
+  }
   return $line;
+}
+
+/**
+ * Advisory pairs ("<id>\t<package>") as "<id> on <package>", each once.
+ */
+function _provision_tasks_extra_audit_pair_names($pairs) {
+  $names = array();
+  foreach ($pairs as $pair) {
+    $cols = explode("\t", $pair);
+    $names[] = $cols[0] . ' on ' . (isset($cols[1]) ? $cols[1] : '?');
+  }
+  return array_values(array_unique($names));
 }
 
 /**
@@ -1462,13 +1476,15 @@ function _provision_tasks_extra_codebase_kept($count, $gone) {
  *   The same for the other one.
  * @param int $beside
  *   How many modules added to core the site has switched on.
+ * @param string $whose
+ *   The words for the codebase of $source in the reason.
  *
  * @return string|null
  *   '' for the same codebase, the reason for another one, NULL when the locks
  *   cannot tell: one is missing, or one lists next to none of the modules the
  *   site runs, which are then in the tree by other means.
  */
-function _provision_tasks_extra_codebase_other($source, $target, $beside) {
+function _provision_tasks_extra_codebase_other($source, $target, $beside, $whose = "this site's platform") {
   if (empty($source['ok']) || empty($target['ok'])) {
     return NULL;
   }
@@ -1478,18 +1494,18 @@ function _provision_tasks_extra_codebase_other($source, $target, $beside) {
   $new = array_diff_key($theirs, _provision_tasks_extra_codebase_projects($source, TRUE));
   $profile = array_search('drupal-profile', $new, TRUE);
   if ($profile !== FALSE) {
-    return _provision_tasks_extra_codebase_text('it is built on ' . $profile);
+    return _provision_tasks_extra_codebase_text('it is built on ' . $profile, $whose);
   }
   if (($count <= 2 && $beside > 5) || (!$theirs && $beside > 0)) {
     return NULL;
   }
   $gone = count(array_diff_key($mine, _provision_tasks_extra_codebase_projects($target, TRUE)));
   if (!_provision_tasks_extra_codebase_kept($count, $gone) || ($count > 0 && $gone === $count && $theirs)) {
-    return _provision_tasks_extra_codebase_text('it lacks ' . $gone . ' of the ' . $count . " modules and themes added to core on this site's platform");
+    return _provision_tasks_extra_codebase_text('it lacks ' . $gone . ' of the ' . $count . ' modules and themes added to core on ' . $whose, $whose);
   }
   $asked = (isset($target['requires']) && is_array($target['requires'])) ? array_intersect_key($new, $target['requires']) : $new;
   if (count($asked) > max(5, $count) || count($new) > max(20, 2 * $count)) {
-    return _provision_tasks_extra_codebase_text('it adds ' . count($new) . " modules and themes this site's platform does not have");
+    return _provision_tasks_extra_codebase_text('it adds ' . count($new) . ' modules and themes ' . $whose . ' does not have', $whose);
   }
   return '';
 }
@@ -1497,8 +1513,8 @@ function _provision_tasks_extra_codebase_other($source, $target, $beside) {
 /**
  * The reason a platform is another codebase, as one clause.
  */
-function _provision_tasks_extra_codebase_text($detail) {
-  return "it is another codebase, not a newer version of this site's platform (" . $detail . ')';
+function _provision_tasks_extra_codebase_text($detail, $whose = "this site's platform") {
+  return 'it is another codebase, not a newer version of ' . $whose . ' (' . $detail . ')';
 }
 
 /**
@@ -1573,7 +1589,7 @@ function _provision_tasks_extra_upgrade_newer($source, $target, $diff) {
   if ($s[0] < 10 || $t[0] < 10) {
     return array('rule' => 'release', 'why' => 'the Upgrade is for Drupal 10 and later, and this is Drupal ' . ($s[0] < 10 ? $source : $target));
   }
-  if ($t[0] >= 12) {
+  if (_provision_tasks_extra_major_refused($t)) {
     return array('rule' => 'major', 'why' => 'the Upgrade does not take a site to Drupal 12 yet');
   }
   if (version_compare($target, $source, '<')) {
@@ -1590,6 +1606,42 @@ function _provision_tasks_extra_upgrade_newer($source, $target, $diff) {
   if (version_compare($target, $source, '>')) {
     return array('rule' => '', 'why' => '');
   }
+  return _provision_tasks_extra_codebase_newer($target, $diff);
+}
+
+/**
+ * Whether a target major is one no site is upgraded to yet.
+ *
+ * The one test the Upgrade and Build newer version both make, so letting
+ * a major in moves both.
+ *
+ * @param array $t
+ *   _provision_tasks_extra_release_numbers() of the target.
+ */
+function _provision_tasks_extra_major_refused($t) {
+  if ($t[0] >= 12) {
+    return TRUE;
+  }
+  return FALSE;
+}
+
+/**
+ * Rule B for one release: whether the locks show a newer codebase.
+ *
+ * Newer is a lock that raises or adds a package, or changes a patch. A
+ * patch change is one flag for the whole lock, which $skip never leaves out.
+ *
+ * @param string $target
+ *   The release both sides carry.
+ * @param array $diff
+ *   _provision_tasks_extra_lock_classify() of the two locks.
+ * @param array $skip
+ *   name => TRUE: packages whose change does not count.
+ *
+ * @return array
+ *   'rule' ('' when newer, else 'same') and 'why', worded for a site.
+ */
+function _provision_tasks_extra_codebase_newer($target, $diff, $skip = array()) {
   // The same release: only the locks can show a newer codebase.
   if (empty($diff['locks'])) {
     return array('rule' => 'same', 'why' => 'it carries the same Drupal ' . $target . ', and nothing shows it is newer: ' . $diff['why']);
@@ -1600,12 +1652,297 @@ function _provision_tasks_extra_upgrade_newer($source, $target, $diff) {
   if (!empty($diff['patch_change'])) {
     return array('rule' => '', 'why' => '');
   }
-  foreach ($diff['changed'] as $c) {
+  foreach ($diff['changed'] as $name => $c) {
+    if (isset($skip[$name])) {
+      continue;
+    }
     if ($c['side'] === 'target' || ($c['side'] === 'both' && !$c['lower'])) {
       return array('rule' => '', 'why' => '');
     }
   }
   return array('rule' => 'same', 'why' => 'it carries the same Drupal ' . $target . ' and no package in it is newer');
+}
+
+/**
+ * The packages of a codebase that are its tooling, not its code.
+ *
+ * Drush, the task runner provision asks for beside it on an older Symfony
+ * Console (consolidation/robo), and Composer's plugins, with what only they
+ * need. A platform's first Verify adds the newest Drush to a codebase that
+ * brings none, and a plugin such as composer/installers moves with every
+ * resolve: a rebuild that changes only these is no newer version. What any
+ * other root requirement reaches stays counted.
+ *
+ * @param array $lock
+ *   _provision_tasks_extra_lock_load() of a codebase, or its slim form.
+ *
+ * @return array
+ *   name => TRUE.
+ */
+function _provision_tasks_extra_tooling_set($lock) {
+  if (empty($lock['ok']) || empty($lock['packages']) || !is_array($lock['packages'])) {
+    return array();
+  }
+  $packages = $lock['packages'];
+  $tools = array();
+  foreach (array('drush/drush', 'consolidation/robo') as $name) {
+    if (isset($packages[$name])) {
+      $tools[$name] = TRUE;
+    }
+  }
+  foreach ($packages as $name => $entry) {
+    if (is_array($entry) && isset($entry['type']) && $entry['type'] === 'composer-plugin') {
+      $tools[$name] = TRUE;
+    }
+  }
+  // Without the root composer.json nothing tells what else asks for their
+  // own packages: only the tools themselves are left out.
+  if (!isset($lock['requires']) || !is_array($lock['requires'])) {
+    return $tools;
+  }
+  $others = array();
+  foreach (array_keys($lock['requires']) as $name) {
+    if (!isset($tools[$name]) && isset($packages[$name])) {
+      $others[] = $name;
+    }
+  }
+  $index = _provision_tasks_extra_lock_providers($packages);
+  $reach = _provision_tasks_extra_lock_reach($packages, array_keys($tools), array(), $index);
+  return array_diff_key($reach, _provision_tasks_extra_lock_reach($packages, $others, $tools, $index));
+}
+
+/**
+ * The packages whose change no codebase of the two counts as newer.
+ *
+ * A package is left out only when it is tooling on each side that has it.
+ */
+function _provision_tasks_extra_tooling_skip($source, $target) {
+  $mine = _provision_tasks_extra_tooling_set($source);
+  $theirs = _provision_tasks_extra_tooling_set($target);
+  $skip = array();
+  foreach (array_keys($mine + $theirs) as $name) {
+    $in_source = !empty($source['packages']) && isset($source['packages'][$name]);
+    $in_target = !empty($target['packages']) && isset($target['packages'][$name]);
+    if ((!$in_source || isset($mine[$name])) && (!$in_target || isset($theirs[$name]))) {
+      $skip[$name] = TRUE;
+    }
+  }
+  return $skip;
+}
+
+/**
+ * Why a build is no newer version of the platform it was built from, or ''.
+ *
+ * A newer core release; or the same release whose lock raises or adds a
+ * package of its code, or changes a patch, its tooling left out
+ * (_provision_tasks_extra_tooling_skip()). A pre-release is no newer
+ * version of a finished release, and a major no site is upgraded to yet is
+ * not kept. No 10.3 floor: a build moves no site.
+ *
+ * @param string $source_release
+ *   The release of the platform it was built from.
+ * @param string $target_release
+ *   The release of the build.
+ * @param array $diff
+ *   _provision_tasks_extra_lock_classify() of the two locks.
+ * @param array $skip
+ *   name => TRUE: packages whose change does not count.
+ *
+ * @return array
+ *   'rule' (release, major, older, prerelease, same, or '' when newer) and
+ *   'why'.
+ */
+function _provision_tasks_extra_successor_newer($source_release, $target_release, $diff, $skip = array()) {
+  $from = _provision_tasks_extra_release_numbers($source_release);
+  $to = _provision_tasks_extra_release_numbers($target_release);
+  if ($from === FALSE || $to === FALSE) {
+    return array('rule' => 'release', 'why' => 'the Drupal release of ' . ($from === FALSE ? 'the platform it was built from' : 'the build') . ' cannot be read');
+  }
+  if ($from[0] < 10 || $to[0] < 10) {
+    return array('rule' => 'release', 'why' => 'Build newer version is for Drupal 10 and later, and this is Drupal ' . ($from[0] < 10 ? $source_release : $target_release));
+  }
+  if (_provision_tasks_extra_major_refused($to)) {
+    return array('rule' => 'major', 'why' => 'it carries Drupal ' . $target_release . ', and no site is upgraded to Drupal ' . $to[0] . ' yet');
+  }
+  if (version_compare($target_release, $source_release, '<')) {
+    return array('rule' => 'older', 'why' => 'it carries Drupal ' . $target_release . ', older than the ' . $source_release . ' of the platform it was built from');
+  }
+  if (_provision_tasks_extra_release_is_stable($source_release) && !_provision_tasks_extra_release_is_stable($target_release)) {
+    return array('rule' => 'prerelease', 'why' => 'it carries Drupal ' . $target_release . ', a pre-release, and the platform it was built from carries the finished ' . $source_release);
+  }
+  if (version_compare($target_release, $source_release, '>')) {
+    return array('rule' => '', 'why' => '');
+  }
+  $same = _provision_tasks_extra_codebase_newer($target_release, $diff, $skip);
+  if ($same['rule'] === '') {
+    return $same;
+  }
+  if (empty($diff['locks'])) {
+    return array('rule' => 'same', 'why' => 'nothing newer: it carries the same Drupal ' . $target_release . ', and nothing shows it is newer: ' . $diff['why']);
+  }
+  return array('rule' => 'same', 'why' => 'nothing newer: it carries the same Drupal ' . $target_release . ' as the platform it was built from, and no package of its code is newer (a newer Drush or Composer plugin alone does not count)');
+}
+
+/**
+ * The Composer constraint a Mode of Build newer version asks for.
+ *
+ * @param string $mode
+ *   patch, minor, major (built from $release), or version ($version as given).
+ * @param string $release
+ *   The Drupal release of the platform it is built from.
+ * @param string $version
+ *   The constraint or Branch/tag typed in, for the version Mode.
+ *
+ * @return array
+ *   'constraint' ('' when none can be made), 'major' (the Drupal major the
+ *   Mode asks for, 0 when it does not say) and 'why' ('' or the reason).
+ */
+function _provision_tasks_extra_successor_constraint($mode, $release, $version) {
+  $n = _provision_tasks_extra_release_numbers($release);
+  $m = array();
+  $patch = preg_match('/^[0-9]+\.[0-9]+\.([0-9]+)/', (string) $release, $m) ? (int) $m[1] : 0;
+  if ($mode === 'version') {
+    $version = trim((string) $version);
+    if ($version === '') {
+      return array('constraint' => '', 'major' => 0, 'why' => 'no version was given');
+    }
+    return array('constraint' => $version, 'major' => 0, 'why' => '');
+  }
+  if ($n === FALSE) {
+    return array('constraint' => '', 'major' => 0, 'why' => 'the Drupal release of the platform cannot be read');
+  }
+  if ($mode === 'patch') {
+    return array('constraint' => '~' . $n[0] . '.' . $n[1] . '.' . $patch, 'major' => $n[0], 'why' => '');
+  }
+  if ($mode === 'minor') {
+    return array('constraint' => '^' . $n[0] . '.' . $n[1] . '.' . $patch, 'major' => $n[0], 'why' => '');
+  }
+  if ($mode === 'major') {
+    $next = array($n[0] + 1, 0);
+    if (_provision_tasks_extra_major_refused($next)) {
+      return array('constraint' => '', 'major' => $next[0], 'why' => 'no site is upgraded to Drupal ' . $next[0] . ' yet');
+    }
+    return array('constraint' => '^' . $next[0] . '.0', 'major' => $next[0], 'why' => '');
+  }
+  return array('constraint' => '', 'major' => 0, 'why' => 'that way of choosing the version is not known');
+}
+
+/**
+ * The lowest Drupal major a typed constraint of core's templates allows, or 0.
+ *
+ * Read from its leading term (^11.2, ~11.2.3, >=11.2 <12, 11.2.5, 11.x); a
+ * constraint with alternatives (||) or that starts with an upper bound says
+ * no single major, and gives 0.
+ */
+function _provision_tasks_extra_constraint_major($constraint) {
+  $m = array();
+  $constraint = trim((string) $constraint);
+  if (strpos($constraint, '|') !== FALSE || !preg_match('/^(?:\^|~|>=|=)?\s*v?([0-9]+)(?:\.|$)/', $constraint, $m)) {
+    return 0;
+  }
+  return (int) $m[1];
+}
+
+/**
+ * The lowest PHP a Drupal major runs on, as x.y, or ''.
+ *
+ * Read from core's own requirement in a lock that carries that major's core,
+ * else known: Drupal 10 needs 8.1, Drupal 11 needs 8.3.
+ *
+ * @param int $major
+ *   The Drupal major.
+ * @param array $lock
+ *   _provision_tasks_extra_lock_load() of a codebase, or NULL.
+ */
+function _provision_tasks_extra_php_minimum($major, $lock = NULL) {
+  $m = array();
+  if (is_array($lock) && !empty($lock['ok']) && isset($lock['packages']['drupal/core']['version'], $lock['packages']['drupal/core']['require']['php'])) {
+    $core = _provision_tasks_extra_release_numbers(ltrim((string) $lock['packages']['drupal/core']['version'], 'v'));
+    if ($core !== FALSE && $core[0] === (int) $major && preg_match('/^\s*>=\s*([0-9]+)\.([0-9]+)/', (string) $lock['packages']['drupal/core']['require']['php'], $m)) {
+      return (int) $m[1] . '.' . (int) $m[2];
+    }
+  }
+  $known = array(10 => '8.1', 11 => '8.3');
+  return isset($known[(int) $major]) ? $known[(int) $major] : '';
+}
+
+/**
+ * The command-line PHP a provision run named for a context, from its log.
+ *
+ * provision logs "Command-line PHP <version> for <@name>[ (<where>)]: <from>"
+ * once in each run.
+ *
+ * @param array $messages
+ *   Log message texts.
+ * @param string $name
+ *   The context, with its @.
+ *
+ * @return array
+ *   'php' (x.y, '' when not found) and 'from' (where it came from).
+ */
+function _provision_tasks_extra_cli_php_said($messages, $name) {
+  $m = array();
+  foreach ($messages as $text) {
+    if (is_string($text) && preg_match('/^Command-line PHP ([0-9]+)\.([0-9]+)\S* for ' . preg_quote($name, '/') . '(?: \([^)]*\))?: (.*)$/s', trim($text), $m)) {
+      return array('php' => (int) $m[1] . '.' . (int) $m[2], 'from' => trim($m[3]));
+    }
+  }
+  return array('php' => '', 'from' => '');
+}
+
+/**
+ * What the unfinished-build marker beside a build folder says.
+ *
+ * The marker is hosting_deploy's, read its way: the group pgid= names is the
+ * build's only on the same boot (boot=), with the same leader start (start=)
+ * when the leader still runs, and only while this user may signal it.
+ *
+ * @param string $path
+ *   The build folder (the Composer project, not its docroot).
+ *
+ * @return array
+ *   'state': none (known not to be there), unfinished (read) or unknown
+ *   (there, or maybe there, but not readable as a plain file); 'alive': the
+ *   build's group has a member; 'pgid'.
+ */
+function _provision_tasks_extra_build_marker($path) {
+  $path = rtrim((string) $path, '/');
+  $out = array('state' => 'unknown', 'alive' => FALSE, 'pgid' => 0);
+  if ($path === '' || $path[0] !== '/') {
+    return $out;
+  }
+  $marker = dirname($path) . '/.' . basename($path) . '.unfinished-build';
+  clearstatcache(TRUE, $marker);
+  if (@lstat($marker) === FALSE) {
+    $out['state'] = _provision_tasks_extra_known_missing($marker) ? 'none' : 'unknown';
+    return $out;
+  }
+  $text = _provision_tasks_extra_read_plain($marker, 4096);
+  if ($text === FALSE) {
+    return $out;
+  }
+  $out['state'] = 'unfinished';
+  $m = array();
+  if (!preg_match('/^pgid=([0-9]+)$/m', $text, $m) || (int) $m[1] < 2 || !function_exists('posix_kill')) {
+    return $out;
+  }
+  $out['pgid'] = (int) $m[1];
+  $boot = @file_get_contents('/proc/sys/kernel/random/boot_id', FALSE, NULL, 0, 64);
+  $boot = (is_string($boot) && preg_match('/^[0-9a-f-]{36}$/', trim($boot))) ? trim($boot) : '';
+  if (preg_match('/^boot=(\S+)$/m', $text, $m) && $boot !== '' && $m[1] !== $boot) {
+    return $out;
+  }
+  if (preg_match('/^start=([0-9]+)$/m', $text, $m)) {
+    $stat = @file_get_contents('/proc/' . $out['pgid'] . '/stat', FALSE, NULL, 0, 4096);
+    $end = is_string($stat) ? strrpos($stat, ')') : FALSE;
+    $rest = ($end === FALSE) ? array() : explode(' ', trim(substr($stat, $end + 2)));
+    $now = (isset($rest[19]) && ctype_digit($rest[19])) ? $rest[19] : '';
+    if ($now !== '' && $now !== $m[1]) {
+      return $out;
+    }
+  }
+  $out['alive'] = posix_kill(-$out['pgid'], 0);
+  return $out;
 }
 
 /**

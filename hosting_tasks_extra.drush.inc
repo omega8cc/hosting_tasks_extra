@@ -25,6 +25,9 @@ function drush_hosting_tasks_extra_pre_hosting_task() {
   if ($task->ref->type == 'platform' && $task->task_type == 'drupal_upgrade_all') {
     hosting_tasks_extra_drupal_upgrade_all_start($task);
   }
+  if ($task->ref->type == 'platform' && $task->task_type == 'platform_successor') {
+    hosting_tasks_extra_platform_successor_start($task);
+  }
   // The Upgrade's move: a Migrate that is undone when the database updates
   // do not finish or a page no longer answers as it did.
   if ($task->ref->type == 'site' && $task->task_type == 'migrate' && !empty($task->task_args['upgrade_strict'])) {
@@ -964,4 +967,239 @@ function hosting_tasks_extra_export_path($task) {
     @chmod($path, 0711);
   }
   $task->options['provision_backup_export_path'] = $path;
+}
+
+/**
+ * Refuses a Build newer version when its task starts.
+ */
+function hosting_tasks_extra_platform_successor_refuse($why, $tail = 'Nothing was changed.') {
+  return drush_set_error('HOSTING_SUCCESSOR_NOT_STARTED', dt('SUCCESSOR/RESULT Not started: !why. !tail', array(
+    '!why' => _hosting_tasks_extra_plain($why),
+    '!tail' => _hosting_tasks_extra_plain($tail),
+  )));
+}
+
+/**
+ * Starts a Build newer version: every check again, then the new platform.
+ *
+ * The new node is made here, under the queue's lock and after every check
+ * the panel can make, and Locked: no site, Migrate or Upgrade takes it
+ * before the backend has judged the build. Its own Verify, run by the
+ * backend as a step of this task, builds it.
+ */
+function hosting_tasks_extra_platform_successor_start($task) {
+  if (!hosting_tasks_extra_successor_include()) {
+    return hosting_tasks_extra_platform_successor_refuse('the control panel is being updated; start again in a few minutes');
+  }
+  $platform = node_load($task->rid, NULL, TRUE);
+  $accounts = hosting_tasks_extra_task_accounts($task);
+  if (is_string($accounts)) {
+    return hosting_tasks_extra_platform_successor_refuse($accounts);
+  }
+  foreach ($accounts as $account) {
+    $why = hosting_tasks_extra_platform_successor_why($platform, $account, $task->nid);
+    if ($why !== '') {
+      return hosting_tasks_extra_platform_successor_refuse($why);
+    }
+  }
+  $why = hosting_tasks_extra_drupal_upgrade_all_refusal();
+  if ($why !== '') {
+    return hosting_tasks_extra_platform_successor_refuse($why);
+  }
+  // A Retry keeps the arguments of the row it copies, the platform that
+  // row made among them.
+  if (!empty($task->task_args['successor'])) {
+    $made = node_load((int) $task->task_args['successor'], NULL, TRUE);
+    if (is_object($made) && $made->type == 'platform' && (int) $made->platform_status !== HOSTING_PLATFORM_DELETED) {
+      return hosting_tasks_extra_platform_successor_refuse('an earlier run of this task built ' . $made->title . '; start a new Build newer version from the platform\'s page');
+    }
+  }
+  if (file_exists('/run/boa_queue_stop.pid')) {
+    return hosting_tasks_extra_platform_successor_refuse('the task queue is paused on this server for maintenance; start again later');
+  }
+  if (file_exists('/run/octopus_install_run.pid')) {
+    return hosting_tasks_extra_platform_successor_refuse('a system upgrade of this account is running; start again when it has ended');
+  }
+  $plan = hosting_tasks_extra_platform_successor_plan($platform, $task->task_args);
+  if ($plan['why'] !== '') {
+    return hosting_tasks_extra_platform_successor_refuse($plan['why']);
+  }
+  $lock = _provision_tasks_extra_lock_load(_provision_tasks_extra_docroot($platform->publish_path));
+  if (empty($lock['ok'])) {
+    return hosting_tasks_extra_platform_successor_refuse('the platform it is built from has ' . $lock['why']);
+  }
+  $made = hosting_tasks_extra_platform_successor_make($platform, $plan);
+  if (is_string($made)) {
+    return hosting_tasks_extra_platform_successor_refuse($made);
+  }
+  // Written at once: a runner killed from here on leaves the row naming
+  // the platform it made, which the next run refuses beside.
+  hosting_tasks_extra_task_args_keep($task, array(
+    'successor' => (int) $made->nid,
+    'successor_name' => $plan['title'],
+    'successor_path' => $plan['folder'],
+    'successor_run' => (int) $task->nid,
+  ));
+  $task->options['successor_context'] = '@platform_' . $plan['context'];
+  $task->options['successor_nid'] = (int) $made->nid;
+  $task->options['successor_path'] = $plan['folder'];
+  $task->options['successor_root'] = $plan['publish_path'];
+  $task->options['successor_source_path'] = $plan['source']['path'];
+  $task->options['successor_major'] = (int) $plan['major'];
+  $task->options['successor_task_nid'] = (int) $task->nid;
+  $task->options['successor_title'] = preg_replace('/[^A-Za-z0-9._ -]/', '', $plan['title']);
+  $task->options['source_title'] = preg_replace('/[^A-Za-z0-9._ -]/', '', $platform->title);
+}
+
+/**
+ * Makes the new platform's node: the source's record with the new name,
+ * folder and version, Locked, never verified, its Verify not queued.
+ *
+ * @return object|string
+ *   The node, loaded fresh, or why it was not made.
+ */
+function hosting_tasks_extra_platform_successor_make($platform, $plan) {
+  $source = $plan['source'];
+  $new = clone node_load($platform->nid, NULL, TRUE);
+  // The source's own: its ids, its context name (which a save of the clone
+  // would not change in memory), its Git row and its recorded packages.
+  foreach (array('nid', 'vid', 'created', 'changed', 'old_vid', 'is_new', 'original', 'revision', 'hosting_name', 'git', 'release', 'profiles', 'context_report_only', 'path') as $key) {
+    unset($new->{$key});
+  }
+  $new->title = $plan['title'];
+  $new->publish_path = $plan['publish_path'];
+  $new->platform_status = HOSTING_PLATFORM_LOCKED;
+  $new->verified = 0;
+  $new->makefile = '';
+  $new->frommakefile = array('makefile' => '', 'make_working_copy' => 0);
+  $new->make_working_copy = 0;
+  $new->no_verify = TRUE;
+  $fields = hosting_tasks_extra_platform_successor_fields();
+  $mine = $fields[$source['strategy']];
+  $new->{$mine['version']} = array(LANGUAGE_NONE => array(array('value' => $plan['constraint'])));
+  $new->{$mine['path']} = array(LANGUAGE_NONE => array(array('value' => $plan['folder'])));
+  $new->{$mine['docroot']} = ($source['docroot'] === '') ? array() : array(LANGUAGE_NONE => array(array('value' => $source['docroot'])));
+  // Every other build's fields empty, with no default either: the backend
+  // runs every build whose fields reach it.
+  $others = array('field_git_repository_url', 'field_git_repository_path', 'field_git_reference', 'field_git_docroot');
+  foreach ($fields as $strategy => $parts) {
+    if ($strategy !== $source['strategy']) {
+      $others = array_merge($others, array_values($parts));
+    }
+  }
+  foreach ($others as $field) {
+    $new->{$field} = array();
+  }
+  $transaction = db_transaction();
+  try {
+    node_save($new);
+    $nid = isset($new->nid) ? (int) $new->nid : 0;
+    if (!$nid) {
+      throw new Exception('the panel made no record of it');
+    }
+    // Who may see it is who may see the platform it is built from.
+    if (!empty($platform->clients) && is_array($platform->clients) && db_table_exists('hosting_platform_client_access')) {
+      db_delete('hosting_platform_client_access')->condition('pid', $nid)->execute();
+      foreach (array_keys($platform->clients) as $cid) {
+        db_insert('hosting_platform_client_access')->fields(array('pid' => $nid, 'cid' => (int) $cid))->execute();
+      }
+    }
+    $check = node_load($nid, NULL, TRUE);
+    if (!is_object($check) || !isset($check->hosting_name) || $check->hosting_name !== 'platform_' . $plan['context']
+      || (int) $check->platform_status !== HOSTING_PLATFORM_LOCKED) {
+      throw new Exception('its record did not come out as asked');
+    }
+  }
+  catch (Exception $e) {
+    $transaction->rollback();
+    entity_get_controller('node')->resetCache();
+    return 'the new platform could not be made: ' . $e->getMessage();
+  }
+  // An Error left uncaught would end the transaction's object, which
+  // commits what was written so far. PHP 5.6 has no such class and never
+  // matches it.
+  catch (Throwable $e) {
+    $transaction->rollback();
+    entity_get_controller('node')->resetCache();
+    return 'the new platform could not be made: ' . $e->getMessage();
+  }
+  unset($transaction);
+  return $check;
+}
+
+/**
+ * Implements hook_post_hosting_TASK_TYPE_task().
+ */
+function hosting_tasks_extra_post_hosting_platform_successor_task($task, $data) {
+  hosting_tasks_extra_platform_successor_end($task, TRUE);
+}
+
+/**
+ * Implements hook_hosting_TASK_TYPE_task_rollback().
+ *
+ * Also called when the post hook ends the row in error.
+ */
+function hosting_tasks_extra_hosting_platform_successor_task_rollback($task, $data) {
+  hosting_tasks_extra_platform_successor_end($task, FALSE);
+}
+
+/**
+ * Records how a Build newer version left the platform it made.
+ *
+ * The backend judges a removal by the disk and its own step; the panel's
+ * record is read only here. A run that ended before it said anything (its
+ * backend never started, say) says here what it left.
+ */
+function hosting_tasks_extra_platform_successor_end($task, $ok) {
+  $done = &drupal_static(__FUNCTION__, array());
+  if (isset($done[$task->nid])) {
+    return;
+  }
+  $done[$task->nid] = TRUE;
+  hosting_tasks_extra_drupal_upgrade_cancel_steps($task, 'Build newer version');
+  if (empty($task->task_args['successor']) || empty($task->task_args['successor_run']) || (int) $task->task_args['successor_run'] !== (int) $task->nid) {
+    return;
+  }
+  $made = node_load((int) $task->task_args['successor'], NULL, TRUE);
+  $state = !is_object($made) ? 'gone' : (((int) $made->platform_status === HOSTING_PLATFORM_DELETED) ? 'deleted' : (((int) $made->platform_status === HOSTING_PLATFORM_ENABLED) ? 'enabled' : 'locked'));
+  hosting_tasks_extra_task_args_keep($task, array('successor_end' => $state));
+  if ($ok || $state === 'deleted' || $state === 'gone') {
+    return;
+  }
+  $said = db_query_range("SELECT 1 FROM {hosting_task_log} WHERE vid = :vid AND message LIKE :result", 0, 1, array(
+    ':vid' => (int) $task->vid,
+    ':result' => '%SUCCESSOR/RESULT%',
+  ))->fetchField();
+  // A runner in backend mode keeps an error it was sent as an error alone,
+  // with no line of the log yet.
+  foreach (drush_get_context('DRUSH_ERROR_LOG', array()) as $messages) {
+    foreach ((array) $messages as $message) {
+      if (strpos((string) $message, 'SUCCESSOR/RESULT') !== FALSE) {
+        $said = TRUE;
+      }
+    }
+  }
+  if ($said) {
+    return;
+  }
+  // The backend never reached its plan (an overloaded server ends it at its
+  // start, say): the platform it was to build was never verified and holds
+  // nothing on disk, so its record goes as a Delete of its own.
+  $folder = isset($task->task_args['successor_path']) ? (string) $task->task_args['successor_path'] : '';
+  $marker = ($folder === '') ? '' : dirname($folder) . '/.' . basename($folder) . '.unfinished-build';
+  $alias = drush_server_home() . '/.drush/' . $made->hosting_name . '.alias.drushrc.php';
+  if ($state === 'locked' && empty($made->verified) && $folder !== '' && !file_exists($folder) && !is_link($folder)
+    && !file_exists($marker) && !is_link($marker) && !file_exists($alias)) {
+    $delete = hosting_add_task($made->nid, 'delete', array('upgrade_run' => (int) $task->nid));
+    drush_log(dt('SUCCESSOR/RESULT Not started: the run ended before its checks. The platform record made for it, @title, was never built and holds nothing on disk: @next', array(
+      '@title' => _hosting_tasks_extra_plain($made->title),
+      '@next' => is_object($delete) ? 'its Delete is queued.' : 'the account\'s main login can delete it.',
+    )), 'error');
+    return;
+  }
+  drush_log(dt('SUCCESSOR/RESULT Not kept: the run ended before it said what happened. @title at @path is left, @state; the account\'s main login can delete it.', array(
+    '@title' => _hosting_tasks_extra_plain($made->title),
+    '@path' => _hosting_tasks_extra_plain($made->publish_path),
+    '@state' => ($state === 'enabled') ? 'enabled' : 'Locked',
+  )), 'error');
 }
