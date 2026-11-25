@@ -3365,6 +3365,20 @@ function _provision_tasks_extra_successor_found($plan, $build) {
 }
 
 /**
+ * The result of a run whose folder appeared before its build.
+ *
+ * Provision's Delete removes what a platform's root holds only when that
+ * root holds a codebase Drush can load; otherwise only the record goes.
+ */
+function _provision_tasks_extra_successor_found_why($title, $path, $has_code) {
+  $text = 'Not kept: a folder appeared at ' . $path . ' before the build, so nothing was built and nothing there was deleted. ' . $title . ' is left, Locked, naming that folder';
+  if ($has_code) {
+    return $text . ', and its Delete would remove the code there too: move the folder away first if it is wanted, then the account\'s main login can delete ' . $title . '.';
+  }
+  return $text . '. It holds no code, so a Delete takes the record only: the account\'s main login can delete ' . $title . ' and the folder stays as it is.';
+}
+
+/**
  * The new platform's name, for the log.
  */
 function _provision_tasks_extra_successor_title() {
@@ -3529,10 +3543,12 @@ function drush_provision_tasks_extra_provision_platform_successor() {
   // warning, whether the build ended well or not.
   _provision_tasks_extra_upgrade_replay($build, TRUE);
   if (_provision_tasks_extra_successor_found($plan, $build)) {
-    return drush_set_error('PROVISION_SUCCESSOR_NOT_KEPT', dt('SUCCESSOR/RESULT Not kept: a folder appeared at !path before the build, so nothing was built and nothing there was deleted. !title is left, Locked, naming that folder, and its Delete would remove the folder too: move the folder away first if it is wanted, then the account\'s main login can delete !title.', array(
-      '!path' => _provision_tasks_extra_no_markup($plan['path']),
-      '!title' => _provision_tasks_extra_no_markup($plan['title']),
-    )));
+    clearstatcache();
+    return drush_set_error('PROVISION_SUCCESSOR_NOT_KEPT', 'SUCCESSOR/RESULT ' . _provision_tasks_extra_successor_found_why(
+      _provision_tasks_extra_no_markup($plan['title']),
+      _provision_tasks_extra_no_markup($plan['path']),
+      (bool) drush_valid_root($plan['root'])
+    ));
   }
   if (!$build['ok']) {
     return _provision_tasks_extra_successor_not_kept($plan, _provision_tasks_extra_successor_build_why($plan, $build), $build);
