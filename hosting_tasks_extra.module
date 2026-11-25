@@ -2879,10 +2879,37 @@ function hosting_tasks_extra_upgrade_due_refusal() {
   if (function_exists('hosting_panel_is_moving') && hosting_panel_is_moving()) {
     return 'the control panel is moving to its new version';
   }
-  if (!hosting_tasks_extra_upgrade_include()) {
+  // The judge of the copy of the shared rules that is loaded decides every
+  // line: only rules as new as this report's, which name an advisory a move
+  // brings, make one.
+  if (!hosting_tasks_extra_successor_include()
+    || !function_exists('_provision_tasks_extra_audit_pair_names')
+    || !function_exists('_provision_tasks_extra_lock_moved')) {
     return 'the control panel is being updated';
   }
   return '';
+}
+
+/**
+ * Drops the package rows table the comparisons made for a site.
+ *
+ * hosting_package keeps one temporary table of each compared site's package
+ * rows, in MySQL's memory, until the process ends: a report over every site
+ * of an account would hold one per site. A site is judged once in a report,
+ * so its table goes once it is judged; asking for its name makes the table
+ * where no comparison did. A hosting_package that keys those tables by the
+ * number alone (before it read each node's rows by its kind, which brought
+ * hosting_package_ref_ambiguous()) would hand a profile instance of the same
+ * number the dropped table: there nothing is dropped.
+ */
+function hosting_tasks_extra_upgrade_due_forget($site_nid) {
+  if (!function_exists('_hosting_package_temporary_table') || !function_exists('hosting_package_ref_ambiguous')) {
+    return;
+  }
+  $table = _hosting_package_temporary_table($site_nid, 'site');
+  if (is_string($table) && preg_match('/^[A-Za-z0-9_]+$/', $table)) {
+    db_query('DROP TEMPORARY TABLE IF EXISTS {' . $table . '}');
+  }
 }
 
 /**
@@ -2935,12 +2962,18 @@ function hosting_tasks_extra_upgrade_due_lines($file = '/data/conf/drupal-suppor
       || (function_exists('hosting_backdrop_platform_is_backdrop') && hosting_backdrop_platform_is_backdrop($site->platform))) {
       continue;
     }
+    // A way-back copy is the old site kept to go back to, never one to
+    // upgrade: Upgrade all sites leaves it out by the same name.
+    if (preg_match('/^back-[0-9]+\.temp\./', hosting_site_clean_domain($site->title))) {
+      continue;
+    }
     $platform = node_load($site->platform);
     $release = (is_object($platform) && isset($platform->release) && is_object($platform->release) && isset($platform->release->version)) ? (string) $platform->release->version : '';
     if ($release === '' || version_compare($release, '10', '<')) {
       continue;
     }
     $found = hosting_tasks_extra_drupal_upgrade_targets($site, $account);
+    hosting_tasks_extra_upgrade_due_forget($site->nid);
     $title = '';
     $kind = '';
     if (!empty($found['ready'])) {
