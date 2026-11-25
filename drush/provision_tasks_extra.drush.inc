@@ -3511,8 +3511,8 @@ function drush_provision_tasks_extra_provision_platform_successor_validate() {
  * build process still writes into its folder.
  */
 function drush_provision_tasks_extra_provision_platform_successor() {
-  $plan = drush_get_context('PROVISION_SUCCESSOR_PLAN');
-  if (!is_array($plan)) {
+  $plan = drush_get_context('PROVISION_SUCCESSOR_PLAN', FALSE);
+  if (!is_array($plan) || empty($plan['context'])) {
     return _provision_tasks_extra_successor_unstarted('its checks did not run');
   }
   // This process holds the platform it builds from: nothing of it is saved
