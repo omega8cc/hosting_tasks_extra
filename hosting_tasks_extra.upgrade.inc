@@ -539,6 +539,29 @@ function _provision_tasks_extra_audit_compare($source, $target) {
 }
 
 /**
+ * Whether a package's advisories can differ between two locks.
+ *
+ * Composer matches an advisory on a package's name and locked version, a dev
+ * version on its branch alias, which moves only with its commit: so only a
+ * package on one side alone, at another version, or a dev version at another
+ * commit (or one whose commit cannot be read). A patch changes neither.
+ */
+function _provision_tasks_extra_lock_moved($source, $target, $name) {
+  if (!isset($source[$name]['version'], $target[$name]['version'])) {
+    return TRUE;
+  }
+  if ($source[$name]['version'] !== $target[$name]['version']) {
+    return TRUE;
+  }
+  if (!_provision_tasks_extra_lock_is_dev($target[$name]['version'])) {
+    return FALSE;
+  }
+  $ra = _provision_tasks_extra_lock_reference($source[$name]);
+  $rb = _provision_tasks_extra_lock_reference($target[$name]);
+  return $ra === '' || $rb === '' || $ra !== $rb;
+}
+
+/**
  * What kind of move it is from one loaded lock to another.
  *
  * @param array $source
@@ -558,7 +581,9 @@ function _provision_tasks_extra_audit_compare($source, $target) {
  *   'changed' (name => what happened to it). 'appeared' and 'gone' (Drupal
  *   packages on one side only). 'named' (what set the level). 'with' (core's
  *   own libraries that crossed a major inside a core move). 'fixed', 'of',
- *   'open', 'added', 'uncovered' (the security half). 'core_move'. 'locks'
+ *   'open', 'added', 'uncovered' (the security half); 'brought', the added
+ *   pairs on a package whose locked version the move changes, the ones a
+ *   text names. 'core_move'. 'locks'
  *   FALSE when either side has no lock to read. 'patch_change' when a patch
  *   definition is known to differ (read on both sides, not the same).
  */
@@ -580,6 +605,7 @@ function _provision_tasks_extra_lock_classify($source, $target, $source_audit = 
     'of' => 0,
     'open' => array(),
     'added' => array(),
+    'brought' => array(),
     'uncovered' => array(),
     'core_move' => FALSE,
     'patches_ignored' => array(),
@@ -718,12 +744,37 @@ function _provision_tasks_extra_lock_classify($source, $target, $source_audit = 
   }
   else {
     $out['of'] = count($compare['before']);
-    $out['fixed'] = count($compare['cleared']);
     $out['open'] = $compare['after'];
     $out['added'] = $compare['added'];
-    if ($compare['added']) {
+    // A pair added or cleared on a package whose advisories cannot differ
+    // between the two locks comes from two reports read on different days
+    // (the panel's), never from the move.
+    $skew = FALSE;
+    foreach ($compare['added'] as $pair) {
+      $cols = explode("\t", $pair);
+      if (_provision_tasks_extra_lock_moved($S, $T, isset($cols[1]) ? $cols[1] : '')) {
+        $out['brought'][] = $pair;
+      }
+      else {
+        $skew = TRUE;
+      }
+    }
+    foreach ($compare['cleared'] as $pair) {
+      $cols = explode("\t", $pair);
+      if (_provision_tasks_extra_lock_moved($S, $T, isset($cols[1]) ? $cols[1] : '')) {
+        $out['fixed']++;
+      }
+      else {
+        $skew = TRUE;
+      }
+    }
+    if ($out['brought']) {
       $out['security'] = FALSE;
       $out['security_why'] = 'the new platform adds a security advisory';
+    }
+    elseif ($skew) {
+      $out['security'] = NULL;
+      $out['security_why'] = 'the two advisory reports differ on a package both locks hold at one version, so they were read on different days';
     }
     elseif (!$compare['cleared']) {
       $out['security'] = FALSE;
@@ -977,11 +1028,14 @@ function _provision_tasks_extra_upgrade_kind_text($diff) {
       $line .= '; fixes ' . $diff['fixed'] . ' of ' . $diff['of'] . ' security advisories; still open: ' . _provision_tasks_extra_upgrade_names(_provision_tasks_extra_audit_pair_names($diff['open']));
     }
   }
-  elseif (!empty($diff['added'])) {
+  elseif (!empty($diff['brought'])) {
     // A move that brings an advisory the source lacks is not refused: it is
     // named wherever the move is.
-    $added = _provision_tasks_extra_audit_pair_names($diff['added']);
-    $fixed = ($diff['fixed'] > 0) ? 'fixes ' . $diff['fixed'] . ' security ' . ($diff['fixed'] === 1 ? 'advisory' : 'advisories') . ' and ' : '';
+    $added = _provision_tasks_extra_audit_pair_names($diff['brought']);
+    $fixed = '';
+    if ($diff['fixed'] > 0) {
+      $fixed = 'fixes ' . $diff['fixed'] . (($diff['fixed'] < $diff['of']) ? ' of ' . $diff['of'] . ' security advisories' : ' security ' . ($diff['fixed'] === 1 ? 'advisory' : 'advisories')) . ' and ';
+    }
     $line .= '; ' . $fixed . 'adds security ' . (count($added) === 1 ? 'advisory ' : 'advisories ') . _provision_tasks_extra_upgrade_names($added);
   }
   return $line;
