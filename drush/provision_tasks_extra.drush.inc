@@ -4060,7 +4060,10 @@ function _provision_tasks_extra_successor_build(&$plan, $step_args) {
   // The caller sets its own result: an error of its build is kept as a
   // warning, whether the build ended well or not.
   _provision_tasks_extra_upgrade_replay($build, TRUE);
-  if (_provision_tasks_extra_successor_found($plan, $build)) {
+  // After a build from the lock the Verify finds this run's own folder, and
+  // says so: only a link put in its place is a folder that appeared.
+  clearstatcache();
+  if (!empty($plan['files']) ? is_link($plan['path']) : _provision_tasks_extra_successor_found($plan, $build)) {
     clearstatcache();
     $parts = _provision_tasks_extra_successor_found_parts(
       _provision_tasks_extra_no_markup($plan['title']),
@@ -4319,7 +4322,9 @@ function _provision_tasks_extra_successor_remove($plan, $why, $build, $step_args
     $out['tail'] = dt('Whether a build process still writes into !path cannot be read, so nothing was deleted; the account\'s main login can delete !title.', $args);
     return $out;
   }
-  if (is_array($build) && _provision_tasks_extra_successor_found($plan, $build)) {
+  // A build from the lock made its folder itself: its Verify's "already
+  // there" is that folder.
+  if (is_array($build) && (!empty($plan['files']) ? is_link($plan['path']) : _provision_tasks_extra_successor_found($plan, $build))) {
     $out['tail'] = dt('A folder appeared at !path before the build, so nothing there was deleted; !title is left, Locked, naming it: move the folder away first if it is wanted, then the account\'s main login can delete !title.', $args);
     return $out;
   }
