@@ -1157,6 +1157,31 @@ function hosting_tasks_extra_drupal_upgrade_copy_seconds($site_nid) {
 }
 
 /**
+ * A dialog's list, with its own bullets or numbers and margins.
+ *
+ * The panel's theme takes the bullets and numbers off a list in the page's
+ * content, and the space above a paragraph that follows a list, so a
+ * dialog's list and the paragraph after it carry their own.
+ *
+ * @param array $items
+ *   The items' markup, safe already.
+ * @param bool $numbered
+ *   TRUE for steps that name each other by number.
+ */
+function hosting_tasks_extra_dialog_list($items, $numbered = FALSE) {
+  $tag = $numbered ? 'ol' : 'ul';
+  $item = '<li style="list-style: ' . ($numbered ? 'decimal' : 'disc') . ' outside; margin: 0 0 0.3em 0;">';
+  return '<' . $tag . ' style="margin: 0.3em 0 0 2em; padding: 0;">' . $item . implode('</li>' . $item, $items) . '</li></' . $tag . '>';
+}
+
+/**
+ * A dialog's paragraph that follows a list, spaced from it.
+ */
+function hosting_tasks_extra_dialog_paragraph($html) {
+  return '<p style="margin-top: 1em;">' . $html . '</p>';
+}
+
+/**
  * Implements hosting_task_TASK_TYPE_form().
  */
 function hosting_task_drupal_upgrade_form($node) {
@@ -1219,14 +1244,11 @@ function hosting_task_drupal_upgrade_form($node) {
   if ($seconds > 0) {
     $before .= ' ' . t('The last copy of this site took about @time.', array('@time' => format_interval($seconds, 2)));
   }
-  // The panel's theme takes the numbers off a list in the page's content and
-  // the space between paragraphs. The steps name each other by number, so the
-  // list keeps its own numbers and margins.
-  $item = '<li style="list-style: decimal outside; margin: 0 0 0.3em 0;">';
+  // The steps name each other by number.
   $form['what'] = array(
     '#markup' => '<p><strong>' . t('What happens, in order') . '</strong></p>'
-      . '<ol style="margin: 0.3em 0 0 2em; padding: 0;">' . $item . implode('</li>' . $item, $steps) . '</li></ol>'
-      . '<p style="margin-top: 1em;"><strong>' . t('Before you start.') . '</strong> ' . $before . '</p>',
+      . hosting_tasks_extra_dialog_list($steps, TRUE)
+      . hosting_tasks_extra_dialog_paragraph('<strong>' . t('Before you start.') . '</strong> ' . $before),
     '#weight' => 50,
   );
   return $form;
@@ -1890,7 +1912,7 @@ function hosting_task_drupal_upgrade_return_form($node) {
     t('Afterwards the account holds two more sets of the uploaded files, set aside under static/files/.archived. They count toward your disk space until support prunes them or the server reclaims them when its disk runs short.'),
   );
   $form['what'] = array(
-    '#markup' => '<p>' . $intro . '</p><ul><li>' . implode('</li><li>', $points) . '</li></ul>',
+    '#markup' => '<p>' . $intro . '</p>' . hosting_tasks_extra_dialog_list($points),
     '#weight' => -100,
   );
   return $form;
