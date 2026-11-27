@@ -2291,7 +2291,8 @@ function _provision_tasks_extra_lock_build_advised($lock, $audit) {
  * pins hold. Each Drupal package named whose version is a plain release is
  * held to its minor for patch releases only, to its major for minor releases
  * too: no choice crosses a major. For security fixes only, the packages the
- * audit names inside the scope, with the fewest changes besides.
+ * audit names inside the scope and what each of them requires there, with
+ * the fewest changes besides.
  *
  * @param array $lock
  *   _provision_tasks_extra_lock_load() of the platform built from.
@@ -2356,6 +2357,28 @@ function _provision_tasks_extra_lock_build_args($lock, $choice, $advised = NULL)
       foreach ($list as $name => $package) {
         if (isset($advised[$name])) {
           $keep[$name] = $package;
+        }
+      }
+    }
+    // Under the fewest changes Composer keeps an advised release where its
+    // fixed one needs a newer release of a package it requires, so what an
+    // advised package requires moves with it, where the choice covers it.
+    // Not for core's own names: they require the whole of core's set.
+    $covered = array();
+    if ($choice['scope'] !== 'contrib') {
+      $covered += $core_libraries;
+    }
+    if ($choice['scope'] !== 'core') {
+      $covered += $ext + $libraries;
+    }
+    foreach (array_keys($keep) as $name) {
+      if (!isset($advised[$name]) || _provision_tasks_extra_lock_is_core_name($name) || !isset($lock['packages'][$name]['require']) || !is_array($lock['packages'][$name]['require'])) {
+        continue;
+      }
+      foreach (array_keys($lock['packages'][$name]['require']) as $need) {
+        $need = strtolower((string) $need);
+        if (isset($covered[$need])) {
+          $keep[$need] = $covered[$need];
         }
       }
     }
