@@ -418,7 +418,23 @@ function hosting_tasks_extra_drupal_upgrade_build_start($task, $site, $accounts)
   $task->options['successor_title'] = preg_replace('/[^A-Za-z0-9._ -]/', '', $plan['title']);
   $task->options['successor_template'] = $plan['source']['template'] ? 1 : 0;
   $task->options['successor_mode'] = isset($task->task_args['build_mode']) ? preg_replace('/[^a-z]/', '', (string) $task->task_args['build_mode']) : '';
+  hosting_tasks_extra_platform_successor_lock_options($task, $plan);
   $task->options['source_title'] = preg_replace('/[^A-Za-z0-9._ -]/', '', $platform->title);
+}
+
+/**
+ * What the backend is told of a build from the platform's own lock: the
+ * choice, and the fingerprint the platform's two files must still have.
+ */
+function hosting_tasks_extra_platform_successor_lock_options($task, $plan) {
+  if (!isset($plan['route']) || $plan['route'] !== 'lock') {
+    return;
+  }
+  $task->options['successor_route'] = 'lock';
+  $task->options['successor_scope'] = $plan['choice']['scope'];
+  $task->options['successor_level'] = $plan['choice']['level'];
+  $task->options['successor_security'] = $plan['choice']['security'] ? 1 : 0;
+  $task->options['successor_fingerprint'] = $plan['fingerprint'];
 }
 
 /**
@@ -1219,6 +1235,16 @@ function hosting_tasks_extra_platform_successor_start($task) {
       return hosting_tasks_extra_platform_successor_refuse($why);
     }
   }
+  // A build from the platform's own lock: the users who queued it may.
+  if (isset($task->task_args['mode']) && (string) $task->task_args['mode'] === 'lock') {
+    $source = hosting_tasks_extra_platform_successor_source($platform);
+    foreach ($accounts as $k => $account) {
+      $why = hosting_tasks_extra_platform_successor_lock_why($platform, $source, $account);
+      if ($why !== '') {
+        return hosting_tasks_extra_platform_successor_refuse(($k ? 'for the user who queued it again, ' : '') . $why);
+      }
+    }
+  }
   // A build Upgrade all sites queued, whose kept build queues the run: the
   // users who queued it may do both.
   if (isset($task->task_args['then']) && (string) $task->task_args['then'] !== '') {
@@ -1250,7 +1276,7 @@ function hosting_tasks_extra_platform_successor_start($task) {
   if (file_exists('/run/octopus_install_run.pid')) {
     return hosting_tasks_extra_platform_successor_refuse('a system upgrade of this account is running; start again when it has ended');
   }
-  $plan = hosting_tasks_extra_platform_successor_plan($platform, $task->task_args);
+  $plan = hosting_tasks_extra_platform_successor_plan($platform, $task->task_args, reset($accounts));
   if ($plan['why'] !== '') {
     return hosting_tasks_extra_platform_successor_refuse($plan['why']);
   }
@@ -1282,6 +1308,7 @@ function hosting_tasks_extra_platform_successor_start($task) {
   // What the backend holds against the platform's line before the build.
   $task->options['successor_template'] = $plan['source']['template'] ? 1 : 0;
   $task->options['successor_mode'] = isset($task->task_args['mode']) ? preg_replace('/[^a-z]/', '', (string) $task->task_args['mode']) : '';
+  hosting_tasks_extra_platform_successor_lock_options($task, $plan);
 }
 
 /**
@@ -1471,6 +1498,66 @@ function hosting_tasks_extra_task_said($task, $text) {
 }
 
 /**
+ * Records the files a build from a platform's own lock made, on the new
+ * platform's first Verify, a step of the run: its backend says them in one
+ * line of its own (a log entry of the ok type), taken while the build's
+ * folder was still closed to the account's logins.
+ */
+function hosting_tasks_extra_successor_record_files($task, $made_nid) {
+  $line = db_query_range("SELECT message FROM {hosting_task_log} WHERE vid = :vid AND type = 'ok' AND message LIKE :files ORDER BY lid DESC", 0, 1, array(
+    ':vid' => (int) $task->vid,
+    ':files' => db_like('SUCCESSOR/FILES ') . '%',
+  ))->fetchField();
+  $m = array();
+  if (!is_string($line) || !preg_match('/^SUCCESSOR\/FILES (sha256:[0-9a-f]{64}:[0-9a-f]{64})$/', trim($line), $m)) {
+    return;
+  }
+  $verify = db_query_range("SELECT t.nid, t.vid FROM {hosting_task} t INNER JOIN {node} n ON n.vid = t.vid
+      INNER JOIN {hosting_task_arguments} u ON u.vid = t.vid AND u.name = 'upgrade_run' AND u.value = :run
+    WHERE t.rid = :made AND t.task_type = 'verify'
+    ORDER BY t.nid ASC", 0, 1, array(':run' => (string) (int) $task->nid, ':made' => (int) $made_nid))->fetchObject();
+  if (!is_object($verify)) {
+    return;
+  }
+  $row = new stdClass();
+  $row->nid = (int) $verify->nid;
+  $row->vid = (int) $verify->vid;
+  $row->task_args = array();
+  hosting_tasks_extra_task_args_keep($row, array('build_fingerprint' => $m[1]));
+}
+
+/**
+ * Implements hook_post_hosting_TASK_TYPE_task() for verify.
+ *
+ * Records the fingerprint of the two files a platform's own published-package
+ * build made, on the Verify that built it: the backend says which folder it
+ * built, and the whole Verify is over, provision's own change to the two
+ * files included. A build from another platform's lock is recorded by its
+ * run (hosting_tasks_extra_successor_record_files()).
+ */
+function hosting_tasks_extra_post_hosting_verify_task($task, $data) {
+  if (!isset($task->ref) || !is_object($task->ref) || $task->ref->type != 'platform' || !is_array($data)
+    || empty($data['context']['platform_build_made']) || !is_string($data['context']['platform_build_made'])) {
+    return;
+  }
+  hosting_tasks_extra_upgrade_include();
+  if (!function_exists('_provision_tasks_extra_lock_fingerprint')) {
+    return;
+  }
+  if (_hosting_tasks_extra_field($task->ref, 'field_deployment_strategy') !== 'platform_composer') {
+    return;
+  }
+  $folder = rtrim(hosting_path_normalize(_hosting_tasks_extra_field($task->ref, 'field_composer_project_path')), '/');
+  if ($folder === '' || rtrim(hosting_path_normalize($data['context']['platform_build_made']), '/') !== $folder) {
+    return;
+  }
+  $files = _provision_tasks_extra_lock_fingerprint($folder);
+  if ($files !== '') {
+    hosting_tasks_extra_task_args_keep($task, array('build_fingerprint' => $files));
+  }
+}
+
+/**
  * Records how a run that made a platform left it, and ends a record its
  * backend never reached: a Build newer version, or an Upgrade that built
  * its target first.
@@ -1495,6 +1582,9 @@ function hosting_tasks_extra_successor_record_end($task, $ok, $said_by) {
     $state = 'kept_locked';
   }
   hosting_tasks_extra_task_args_keep($task, array('successor_end' => $state));
+  if ($state === 'enabled' || $state === 'kept_locked') {
+    hosting_tasks_extra_successor_record_files($task, (int) $made->nid);
+  }
   if ($ok || $state === 'deleted' || $state === 'gone') {
     return;
   }
