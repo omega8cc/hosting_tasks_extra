@@ -51,9 +51,9 @@ function drush_hosting_tasks_extra_pre_hosting_task() {
  *
  * A row carrying upgrade_run=<task nid> is a step its task runs itself, in
  * its own runner, as a nested task. One that starts any other way was left by
- * a run whose runner was lost: the run's backend lived on and made the row
- * after the queue's reaper had failed the run, so the run's end, which
- * cancels such rows, never saw it. Run alone, a Migrate of an Upgrade would
+ * a run whose runner was lost: the run's backend lived on and made the row,
+ * and the run's end, which cancels such rows, never ran (the queue's reaper
+ * only marks the run failed). Run alone, a Migrate of an Upgrade would
  * move the site with none of the run's checks and its Delete would remove the
  * way back. The one row a run's end queues for the queue itself carries
  * queued_alone=1 and is not asked.
