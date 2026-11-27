@@ -1904,31 +1904,6 @@ function drush_provision_tasks_extra_provision_drupal_upgrade_validate() {
 }
 
 /**
- * The command-line PHP a build in a folder would run on, as x.y, or ''.
- *
- * The shell wrapper picks it from the account's own settings for a folder
- * that is not there yet (a line for the folder counts only once it is), and
- * says it only when asked on the folder itself: a no-op PHP line on it goes
- * through /bin/sh the way the build will. '' where no wrapper answers.
- */
-function _provision_tasks_extra_build_php($folder) {
-  if (@realpath('/bin/sh') !== '/opt/local/bin/websh' || !defined('DRUSH_COMMAND')) {
-    return '';
-  }
-  $output = array();
-  $rc = 0;
-  exec('php ' . escapeshellarg(DRUSH_COMMAND) . ' --root=' . escapeshellarg($folder) . ' --strict=0 php-eval '
-    . escapeshellarg('echo "BOA-BUILD-PHP " . PHP_VERSION . "\n";') . ' 2>/dev/null', $output, $rc);
-  $m = array();
-  foreach ($output as $line) {
-    if (preg_match('/^BOA-BUILD-PHP ([0-9]+\.[0-9]+)\./', trim((string) $line), $m)) {
-      return $m[1];
-    }
-  }
-  return '';
-}
-
-/**
  * What an Upgrade that builds its target first checks before the build:
  * everything that needs no target. A plan, or why not.
  *
@@ -1939,7 +1914,8 @@ function _provision_tasks_extra_build_php($folder) {
  * start these fail only by a race.
  */
 function _provision_tasks_extra_upgrade_build_plan() {
-  if (!function_exists('_provision_tasks_extra_build_kind_before') || !function_exists('_provision_tasks_extra_build_time_why')) {
+  if (!function_exists('_provision_tasks_extra_build_kind_before') || !function_exists('_provision_tasks_extra_build_time_why')
+    || !function_exists('_provision_tasks_extra_build_php_why') || !function_exists('_provision_tasks_extra_codebase_kb')) {
     return 'the backend\'s copy of the task\'s rules is older than the panel\'s; start again in a few minutes';
   }
   $site = d();
@@ -2024,11 +2000,9 @@ function _provision_tasks_extra_upgrade_build_plan() {
   }
   // The build's PHP, where the version chosen names Drupal's major.
   if ($build['major'] > 0) {
-    $php = _provision_tasks_extra_build_php($build['path']);
-    $floor = _provision_tasks_extra_php_minimum($build['major'], ($build['major'] === $build['source_major']) ? $build['source_lock'] : NULL);
-    if ($php !== '' && $floor !== '' && version_compare($php, $floor, '<')) {
-      return 'the build would run on PHP ' . $php . ' (the account\'s command-line PHP) and Drupal ' . $build['major'] . ' needs ' . $floor
-        . ' or newer. Raise the account\'s command-line PHP to ' . $floor . ' or newer in ~/static/control/cli.info, then start again';
+    $why = _provision_tasks_extra_build_php_why(_provision_tasks_extra_build_php($build['path']), _provision_tasks_extra_php_minimum($build['major'], ($build['major'] === $build['source_major']) ? $build['source_lock'] : NULL), $build['major']);
+    if ($why !== '') {
+      return $why;
     }
   }
   // Room for the way back, and for a second codebase beside the first.
@@ -2037,13 +2011,11 @@ function _provision_tasks_extra_upgrade_build_plan() {
     return 'the disk has too little room for the way-back copy (see above)';
   }
   $from = _provision_tasks_extra_successor_path(drush_get_option('successor_source_path', ''));
-  $m = array();
-  $size = array();
-  exec('du -sk ' . escapeshellarg($from) . ' 2>/dev/null', $size);
-  $kb = (isset($size[0]) && preg_match('/^([0-9]+)\s/', $size[0], $m)) ? (int) $m[1] : 0;
+  $docroot = ($build['source_root'] !== $from && dirname($build['source_root']) === $from) ? basename($build['source_root']) : '';
+  $kb = _provision_tasks_extra_codebase_kb($from, $docroot);
   $free = @disk_free_space(dirname($build['path']));
   if ($kb > 0 && $free !== FALSE && $kb * 1024 > $free) {
-    return 'the disk has too little room for the newer version: ' . $from . ' uses ' . _provision_tasks_extra_human_bytes($kb * 1024) . ' and ' . _provision_tasks_extra_human_bytes((int) $free) . ' is free';
+    return 'the disk has too little room for the newer version: its codebase ' . $from . ' uses ' . _provision_tasks_extra_human_bytes($kb * 1024) . ' and ' . _provision_tasks_extra_human_bytes((int) $free) . ' is free';
   }
   return array(
     'build' => $build,
@@ -2080,9 +2052,7 @@ function _provision_tasks_extra_upgrade_build_run($pre) {
     )));
   }
   drush_log('UPGRADE/BUILD ' . _provision_tasks_extra_no_markup($head), 'ok');
-  // The warnings the move's result counts start here.
-  $warn_from = count(drush_get_log());
-  $kept = ' ' . $build['title'] . ' is kept: press Upgrade and choose it';
+  $kept =' ' . $build['title'] . ' is kept: press Upgrade and choose it';
   // The time, asked again against what is left of it.
   $ceiling = (int) drush_get_option('upgrade_ceiling', 0);
   $elapsed = time() - $pre['started'];
@@ -2104,7 +2074,6 @@ function _provision_tasks_extra_upgrade_build_run($pre) {
     return drush_set_error('PROVISION_UPGRADE_NOT_UPGRADED', _provision_tasks_extra_no_markup('UPGRADE/RESULT ' . $head . ' Not upgraded: ' . $why . '. ' . $after . $kept . ' once that is put right.'));
   }
   $plan['built'] = $build['title'];
-  $plan['warn_from'] = $warn_from;
   return _provision_tasks_extra_upgrade_run($plan);
 }
 
@@ -2292,9 +2261,9 @@ function _provision_tasks_extra_upgrade_logged($leg, $marker, $type = NULL) {
 /**
  * The warnings this process holds, one printable line each.
  */
-function _provision_tasks_extra_upgrade_warnings($from = 0) {
+function _provision_tasks_extra_upgrade_warnings() {
   $warnings = array();
-  foreach (array_slice(drush_get_log(), $from) as $entry) {
+  foreach (drush_get_log() as $entry) {
     if (is_array($entry) && isset($entry['type'], $entry['message']) && $entry['type'] === 'warning' && is_string($entry['message'])) {
       $text = trim(preg_replace('/\s+/', ' ', strip_tags($entry['message'])));
       if ($text !== '') {
@@ -2799,9 +2768,7 @@ function _provision_tasks_extra_upgrade_run($plan) {
   if (_provision_tasks_extra_upgrade_logged($leg, 'UPGRADE/PAGES ', 'ok')) {
     $pages = _provision_tasks_extra_upgrade_logged($leg, 'left out of the check') ? '; its home page answers' : '; its home and login pages answer';
   }
-  // A run that built its target counts the warnings from the build's end on:
-  // the build's own are its, not the move's.
-  $warnings = _provision_tasks_extra_upgrade_warnings(isset($plan['warn_from']) ? (int) $plan['warn_from'] : 0);
+  $warnings = _provision_tasks_extra_upgrade_warnings();
   if ($warnings) {
     $first = $warnings[0];
     if (strlen($first) > 240) {
@@ -3804,6 +3771,18 @@ function _provision_tasks_extra_successor_plan($source = NULL) {
   if ($release === '') {
     return 'the Drupal release of the platform it is built from cannot be read';
   }
+  // The line of the platform built from governs the build, read here once:
+  // a line changed while the build runs does not change the answer.
+  $modes = function_exists('_provision_tasks_extra_build_lists_refusal')
+    ? _provision_tasks_extra_upgrade_modes($source_root . '/sites/all/modules/boa_platform_control.ini')
+    : array('state' => 'absent');
+  if (function_exists('_provision_tasks_extra_build_lists_refusal')) {
+    $kind = _provision_tasks_extra_build_kind_before((bool) drush_get_option('successor_template', FALSE), trim((string) drush_get_option('successor_mode', '')));
+    $why = _provision_tasks_extra_build_lists_refusal($kind, $modes, array('state' => 'absent'));
+    if ($why !== '') {
+      return $why;
+    }
+  }
   clearstatcache();
   if (file_exists($path) || is_link($path)) {
     return 'its folder ' . $path . ' is taken';
@@ -3827,6 +3806,7 @@ function _provision_tasks_extra_successor_plan($source = NULL) {
     'source_release' => $release,
     'source_major' => $numbers ? $numbers[0] : 0,
     'marker' => 'upgrade_run=' . (int) $opt['successor_task_nid'],
+    'modes' => $modes,
   );
 }
 
@@ -4034,9 +4014,17 @@ function _provision_tasks_extra_successor_gate(&$plan) {
     }
   }
   // An advisory the build adds is named by the kind, never refused.
-  $diff = _provision_tasks_extra_lock_diff($plan['source_root'], $root, $audits['source'], $audits['build']);
+  $diff = _provision_tasks_extra_upgrade_release_step($plan['source_release'], $release, _provision_tasks_extra_lock_diff($plan['source_root'], $root, $audits['source'], $audits['build']));
   $plan['release'] = $release;
-  $plan['kind'] = _provision_tasks_extra_upgrade_kind_text(_provision_tasks_extra_upgrade_release_step($plan['source_release'], $release, $diff));
+  $plan['kind'] = _provision_tasks_extra_upgrade_kind_text($diff);
+  // The platform's line keeps only a build of a kind it admits; a kind that
+  // cannot be told on an axis the line restricts is no such build.
+  if (isset($plan['modes']) && function_exists('_provision_tasks_extra_build_kept_refusal')) {
+    $why = _provision_tasks_extra_build_kept_refusal($plan['modes'], $diff);
+    if ($why !== '') {
+      return $why . ' (the build is: ' . $plan['kind'] . ')';
+    }
+  }
   return '';
 }
 

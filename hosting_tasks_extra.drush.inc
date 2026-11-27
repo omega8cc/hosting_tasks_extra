@@ -346,9 +346,13 @@ function hosting_tasks_extra_drupal_upgrade_build_start($task, $site, $accounts)
   if (!empty($task->task_args['successor'])) {
     $made = node_load((int) $task->task_args['successor'], NULL, TRUE);
     if (is_object($made) && $made->type == 'platform' && (int) $made->platform_status !== HOSTING_PLATFORM_DELETED) {
-      return hosting_tasks_extra_drupal_upgrade_refuse(((int) $made->platform_status === HOSTING_PLATFORM_ENABLED)
-        ? 'an earlier run of this task built ' . $made->title . '; press Upgrade and choose it'
-        : 'an earlier run of this task left ' . $made->title . ' at ' . $made->publish_path . '; the account\'s main login can delete it');
+      if ((int) $made->platform_status === HOSTING_PLATFORM_ENABLED) {
+        return hosting_tasks_extra_drupal_upgrade_refuse('an earlier run of this task built ' . $made->title . '; press Upgrade and choose it');
+      }
+      if (isset($task->task_args['successor_end']) && $task->task_args['successor_end'] === 'kept_locked') {
+        return hosting_tasks_extra_drupal_upgrade_refuse('an earlier run of this task built ' . $made->title . ', which stays Locked: the account\'s main login can Unlock it on its page, then press Upgrade and choose it');
+      }
+      return hosting_tasks_extra_drupal_upgrade_refuse('an earlier run of this task left ' . $made->title . ' at ' . $made->publish_path . '; the account\'s main login can delete it');
     }
   }
   if (file_exists('/run/boa_queue_stop.pid')) {
@@ -360,6 +364,18 @@ function hosting_tasks_extra_drupal_upgrade_build_start($task, $site, $accounts)
   $lock = _provision_tasks_extra_lock_load(_provision_tasks_extra_docroot($platform->publish_path));
   if (empty($lock['ok'])) {
     return hosting_tasks_extra_drupal_upgrade_refuse('the platform it is built from has ' . $lock['why']);
+  }
+  if (isset($task->task_args['build_from']) && (int) $task->task_args['build_from'] !== (int) $site->platform) {
+    return hosting_tasks_extra_drupal_upgrade_refuse('this site is on another platform than the one the build was chosen for; open the Upgrade again');
+  }
+  // The build's PHP, asked as the build will ask it, before anything is made.
+  if ($plan['major'] > 0) {
+    $numbers = _provision_tasks_extra_release_numbers($plan['release']);
+    $floor = _provision_tasks_extra_php_minimum($plan['major'], ($numbers && $numbers[0] === $plan['major']) ? $lock : NULL);
+    $why = _provision_tasks_extra_build_php_why(_provision_tasks_extra_build_php($plan['folder']), $floor, $plan['major']);
+    if ($why !== '') {
+      return hosting_tasks_extra_drupal_upgrade_refuse($why);
+    }
   }
   $copy = hosting_site_clean_domain('back-' . $task->nid . '.temp.' . hosting_tasks_extra_drupal_upgrade_site_name($site));
   if (!_hosting_valid_fqdn($copy) || !hosting_domain_allowed($copy) || hosting_get_site_by_url($copy)) {
@@ -449,7 +465,7 @@ function hosting_tasks_extra_drupal_upgrade_end($task) {
   hosting_tasks_extra_drupal_upgrade_cancel_steps($task, 'Upgrade');
   hosting_tasks_extra_drupal_upgrade_keep_size($task);
   $site = node_load($task->rid, NULL, TRUE);
-  $target = isset($task->task_args['target_platform']) ? (int) $task->task_args['target_platform'] : 0;
+  $target = hosting_tasks_extra_drupal_upgrade_row_target($task->task_args, $task->nid);
   if (!is_object($site) || !$target || $site->platform != $target || empty($task->executed)) {
     return;
   }
@@ -1253,6 +1269,9 @@ function hosting_tasks_extra_platform_successor_start($task) {
   $task->options['successor_task_nid'] = (int) $task->nid;
   $task->options['successor_title'] = preg_replace('/[^A-Za-z0-9._ -]/', '', $plan['title']);
   $task->options['source_title'] = preg_replace('/[^A-Za-z0-9._ -]/', '', $platform->title);
+  // What the backend holds against the platform's line before the build.
+  $task->options['successor_template'] = $plan['source']['template'] ? 1 : 0;
+  $task->options['successor_mode'] = isset($task->task_args['mode']) ? preg_replace('/[^a-z]/', '', (string) $task->task_args['mode']) : '';
 }
 
 /**
@@ -1389,10 +1408,18 @@ function hosting_tasks_extra_platform_successor_then($task) {
     '@title' => is_object($target) ? _hosting_tasks_extra_plain($target->title) : 'the build',
   );
   $account = user_load((int) $row->uid);
+  // This process read the account's platforms while the build was Locked:
+  // what it holds of them is read again.
+  if (function_exists('_hosting_get_allowed_platforms')) {
+    _hosting_get_allowed_platforms((int) $row->uid, TRUE);
+  }
+  entity_get_controller('node')->resetCache();
   $result = hosting_tasks_extra_drupal_upgrade_all_enqueue((int) $row->rid, $built, $account, $row);
   if (!$result['queued']) {
     $names['@why'] = _hosting_tasks_extra_plain($result['why']);
-    drush_log(dt('SUCCESSOR/THEN No site was queued: @why. @title is kept, and @platform is not locked.', $names), 'warning');
+    $now = node_load($row->rid, NULL, TRUE);
+    $names['@locked'] = (is_object($now) && (int) $now->platform_status === HOSTING_PLATFORM_LOCKED) ? 'is locked' : 'is not locked';
+    drush_log(dt('SUCCESSOR/THEN No site was queued: @why. @title is kept, and @platform @locked.', $names), 'warning');
     return;
   }
   $names['@r'] = count($result['queued']);
@@ -1404,6 +1431,30 @@ function hosting_tasks_extra_platform_successor_then($task) {
       '@why' => _hosting_tasks_extra_plain($why),
     )), 'ok');
   }
+}
+
+/**
+ * Whether a running task's log, or the errors its backend sent, hold a text.
+ *
+ * A runner in backend mode keeps an error it was sent as an error alone,
+ * with no line of the log yet.
+ */
+function hosting_tasks_extra_task_said($task, $text) {
+  $said = db_query_range("SELECT 1 FROM {hosting_task_log} WHERE vid = :vid AND message LIKE :text", 0, 1, array(
+    ':vid' => (int) $task->vid,
+    ':text' => '%' . db_like($text) . '%',
+  ))->fetchField();
+  if ($said) {
+    return TRUE;
+  }
+  foreach (drush_get_context('DRUSH_ERROR_LOG', array()) as $messages) {
+    foreach ((array) $messages as $message) {
+      if (strpos((string) $message, $text) !== FALSE) {
+        return TRUE;
+      }
+    }
+  }
+  return FALSE;
 }
 
 /**
@@ -1425,6 +1476,11 @@ function hosting_tasks_extra_successor_record_end($task, $ok, $said_by) {
   }
   $made = node_load((int) $task->task_args['successor'], NULL, TRUE);
   $state = !is_object($made) ? 'gone' : (((int) $made->platform_status === HOSTING_PLATFORM_DELETED) ? 'deleted' : (((int) $made->platform_status === HOSTING_PLATFORM_ENABLED) ? 'enabled' : 'locked'));
+  // A build the gate kept whose Unlock did not work is no leftover: its run
+  // said so, and the account's main login can Unlock it.
+  if ($state === 'locked' && hosting_tasks_extra_task_said($task, 'since its Unlock did not work')) {
+    $state = 'kept_locked';
+  }
   hosting_tasks_extra_task_args_keep($task, array('successor_end' => $state));
   if ($ok || $state === 'deleted' || $state === 'gone') {
     return;

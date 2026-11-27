@@ -2076,25 +2076,149 @@ function _provision_tasks_extra_build_kind_before($template, $mode) {
 }
 
 /**
- * Why the two lists refuse a build's known kind before it runs, or ''.
+ * Why the lists refuse a build before it runs, or ''.
  *
- * Only the scope and the level count here: whether a move is a security
- * fix is known only once both locks can be audited, after the build.
+ * A list that switches upgrades off or cannot be read refuses every build;
+ * a list refuses a kind known beforehand by its scope and its level only:
+ * whether a move is a security fix is known only once both locks can be
+ * audited, after the build. The platform's list governs a build made from
+ * it; a site's list governs that site's move (pass array('state' =>
+ * 'absent') for none).
  *
  * @param array|NULL $kind
  *   _provision_tasks_extra_build_kind_before().
  */
 function _provision_tasks_extra_build_lists_refusal($kind, $platform_modes, $site_modes) {
+  foreach (array("the platform's" => $platform_modes, "this site's" => $site_modes) as $whose => $modes) {
+    if (isset($modes['state']) && ($modes['state'] === 'off' || $modes['state'] === 'unreadable')) {
+      return _provision_tasks_extra_upgrade_list_refusal($whose, $modes, _provision_tasks_extra_upgrade_modes_allow($modes, array()));
+    }
+  }
   if (!is_array($kind)) {
     return '';
   }
   foreach (array("the platform's" => $platform_modes, "this site's" => $site_modes) as $whose => $modes) {
     $allow = _provision_tasks_extra_upgrade_modes_allow($modes, $kind);
-    if (!$allow['allowed'] && in_array($allow['axis'], array('off', 'unreadable', 'scope', 'level'), TRUE)) {
+    if (!$allow['allowed'] && in_array($allow['axis'], array('scope', 'level'), TRUE)) {
       return _provision_tasks_extra_upgrade_list_refusal($whose, $modes, $allow);
     }
   }
   return '';
+}
+
+/**
+ * Why a platform's list refuses a finished build, or '': its kind read
+ * from the two locks and the two audits, held against the list as a move
+ * is (an unknown on an axis the list restricts refuses).
+ *
+ * @param array $modes
+ *   _provision_tasks_extra_upgrade_modes() of the platform built from, read
+ *   once in the build's plan.
+ * @param array $diff
+ *   The build's kind, the release step counted in
+ *   (_provision_tasks_extra_upgrade_release_step()).
+ */
+function _provision_tasks_extra_build_kept_refusal($modes, $diff) {
+  $allow = _provision_tasks_extra_upgrade_modes_allow($modes, $diff);
+  return $allow['allowed'] ? '' : _provision_tasks_extra_upgrade_list_refusal("the platform's", $modes, $allow);
+}
+
+/**
+ * The command-line PHP a build in a folder would run on, as x.y, or ''.
+ *
+ * The shell wrapper picks it from the account's own settings for a folder
+ * that is not there yet (a line for the folder counts only once it is), and
+ * says it only when asked on the folder itself: a no-op PHP line on it goes
+ * through /bin/sh the way the build will. '' where no wrapper answers, and
+ * for a caller that is not a Drush process of the account.
+ */
+function _provision_tasks_extra_build_php($folder) {
+  if (@realpath('/bin/sh') !== '/opt/local/bin/websh' || !defined('DRUSH_COMMAND') || (string) $folder === '') {
+    return '';
+  }
+  $output = array();
+  $rc = 0;
+  exec('php ' . escapeshellarg(DRUSH_COMMAND) . ' --root=' . escapeshellarg($folder) . ' --strict=0 php-eval '
+    . escapeshellarg('echo "BOA-BUILD-PHP " . PHP_VERSION . "\n";') . ' 2>/dev/null', $output, $rc);
+  $m = array();
+  foreach ($output as $line) {
+    if (preg_match('/^BOA-BUILD-PHP ([0-9]+\.[0-9]+)\./', trim((string) $line), $m)) {
+      return $m[1];
+    }
+  }
+  return '';
+}
+
+/**
+ * Why the build's PHP is below the major it builds, or ''.
+ *
+ * @param string $php
+ *   _provision_tasks_extra_build_php(), '' when unknown.
+ * @param string $floor
+ *   _provision_tasks_extra_php_minimum() of the major built.
+ */
+function _provision_tasks_extra_build_php_why($php, $floor, $major) {
+  if ($php === '' || $floor === '' || !version_compare($php, $floor, '<')) {
+    return '';
+  }
+  return 'the build would run on PHP ' . $php . ' (the account\'s command-line PHP) and Drupal ' . (int) $major . ' needs ' . $floor
+    . ' or newer. Raise the account\'s command-line PHP to ' . $floor . ' or newer in ~/static/control/cli.info, then start again';
+}
+
+/**
+ * The size of a Composer codebase in KB, its sites' own folders left out,
+ * or 0 when it cannot be read.
+ *
+ * The docroot's sites folder holds each site's files, which a new codebase
+ * does not copy; sites/all is kept.
+ *
+ * @param string $folder
+ *   The project folder.
+ * @param string $docroot
+ *   The docroot below it, '' for none.
+ */
+function _provision_tasks_extra_codebase_kb($folder, $docroot) {
+  $folder = rtrim((string) $folder, '/');
+  $entries = @scandir($folder);
+  if ($folder === '' || !is_array($entries)) {
+    return 0;
+  }
+  $paths = array();
+  foreach ($entries as $entry) {
+    if ($entry === '.' || $entry === '..') {
+      continue;
+    }
+    $path = $folder . '/' . $entry;
+    if ($docroot !== '' && $entry === $docroot && is_dir($path) && !is_link($path)) {
+      foreach ((array) @scandir($path) as $inner) {
+        if ($inner === '.' || $inner === '..' || $inner === 'sites') {
+          continue;
+        }
+        $paths[] = $path . '/' . $inner;
+      }
+      if (is_dir($path . '/sites/all')) {
+        $paths[] = $path . '/sites/all';
+      }
+      continue;
+    }
+    if ($docroot === '' && $entry === 'sites') {
+      if (is_dir($path . '/all')) {
+        $paths[] = $path . '/all';
+      }
+      continue;
+    }
+    $paths[] = $path;
+  }
+  if (!$paths) {
+    return 0;
+  }
+  $output = array();
+  $rc = 0;
+  exec('du -skc ' . implode(' ', array_map('escapeshellarg', $paths)) . ' 2>/dev/null', $output, $rc);
+  $m = array();
+  $last = $output ? trim((string) end($output)) : '';
+  // With -c the last line is the total, in the locale's word.
+  return preg_match('/^([0-9]+)\s/', $last, $m) ? (int) $m[1] : 0;
 }
 
 /**
