@@ -2286,7 +2286,8 @@ function _provision_tasks_extra_build_time_why($secs, $limit, $elapsed) {
   if ($need <= $limit - $elapsed) {
     return '';
   }
-  return 'the build took ' . max(1, (int) ceil($elapsed / 60)) . ' minutes, and the copy and the move need about ' . (int) ceil($need / 60) . ' more, more than this task may still run';
+  $took = max(1, (int) ceil($elapsed / 60));
+  return 'the build took ' . $took . ($took === 1 ? ' minute' : ' minutes') . ', and the copy and the move need about ' . (int) ceil($need / 60) . ' more minutes, more than this task may still run';
 }
 
 /**
