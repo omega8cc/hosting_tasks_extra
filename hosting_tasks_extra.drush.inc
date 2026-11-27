@@ -329,18 +329,16 @@ function hosting_tasks_extra_drupal_upgrade_start_options($task, $site, $target_
  * as a step of this task, builds it.
  */
 function hosting_tasks_extra_drupal_upgrade_build_start($task, $site, $accounts) {
-  $build = NULL;
+  // The checks of the site and the accounts first, then the Retry rule, then
+  // the build's plan: a Retry of a run that kept its build carries that
+  // build's name, which the plan refuses as taken, so the plan must not
+  // answer before the rule that names the build.
   foreach ($accounts as $k => $account) {
-    $build = hosting_tasks_extra_drupal_upgrade_build_why($site, $account, $task->task_args, $task->nid);
+    $build = hosting_tasks_extra_drupal_upgrade_build_why($site, $account, NULL, $task->nid);
     if ($build['why'] !== '') {
       return hosting_tasks_extra_drupal_upgrade_refuse(($k ? 'for the user who queued it again, ' : '') . $build['why']);
     }
   }
-  if ($build === NULL || !is_array($build['plan'])) {
-    return hosting_tasks_extra_drupal_upgrade_refuse('the task names no platform to build');
-  }
-  $platform = $build['platform'];
-  $plan = $build['plan'];
   // A Retry keeps the arguments of the row it copies, the platform that row
   // made among them: one row never makes a second platform beside its first.
   if (!empty($task->task_args['successor'])) {
@@ -355,6 +353,18 @@ function hosting_tasks_extra_drupal_upgrade_build_start($task, $site, $accounts)
       return hosting_tasks_extra_drupal_upgrade_refuse('an earlier run of this task left ' . $made->title . ' at ' . $made->publish_path . '; the account\'s main login can delete it');
     }
   }
+  $build = NULL;
+  foreach ($accounts as $k => $account) {
+    $build = hosting_tasks_extra_drupal_upgrade_build_why($site, $account, $task->task_args, $task->nid);
+    if ($build['why'] !== '') {
+      return hosting_tasks_extra_drupal_upgrade_refuse(($k ? 'for the user who queued it again, ' : '') . $build['why']);
+    }
+  }
+  if ($build === NULL || !is_array($build['plan'])) {
+    return hosting_tasks_extra_drupal_upgrade_refuse('the task names no platform to build');
+  }
+  $platform = $build['platform'];
+  $plan = $build['plan'];
   if (file_exists('/run/boa_queue_stop.pid')) {
     return hosting_tasks_extra_drupal_upgrade_refuse('the task queue is paused on this server for maintenance; start again later');
   }
