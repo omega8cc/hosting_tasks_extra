@@ -2053,6 +2053,79 @@ function _provision_tasks_extra_upgrade_list_refusal($whose, $modes, $allow) {
 }
 
 /**
+ * The kind of move a build is known to be before it runs, or NULL.
+ *
+ * A build of core's two project templates by a Mode moves Drupal core, and
+ * what core requires, by that much: the templates list nothing else. A typed
+ * constraint, another package and a repository tell nothing beforehand.
+ *
+ * @param bool $template
+ *   The platform is built from one of core's two project templates.
+ * @param string $mode
+ *   patch, minor, major or version.
+ *
+ * @return array|NULL
+ *   A kind as _provision_tasks_extra_upgrade_modes_allow() reads it, the
+ *   security fixes unknown.
+ */
+function _provision_tasks_extra_build_kind_before($template, $mode) {
+  if (!$template || !in_array($mode, array('patch', 'minor', 'major'), TRUE)) {
+    return NULL;
+  }
+  return array('scope' => 'core', 'level' => $mode, 'security' => NULL, 'security_why' => '');
+}
+
+/**
+ * Why the two lists refuse a build's known kind before it runs, or ''.
+ *
+ * Only the scope and the level count here: whether a move is a security
+ * fix is known only once both locks can be audited, after the build.
+ *
+ * @param array|NULL $kind
+ *   _provision_tasks_extra_build_kind_before().
+ */
+function _provision_tasks_extra_build_lists_refusal($kind, $platform_modes, $site_modes) {
+  if (!is_array($kind)) {
+    return '';
+  }
+  foreach (array("the platform's" => $platform_modes, "this site's" => $site_modes) as $whose => $modes) {
+    $allow = _provision_tasks_extra_upgrade_modes_allow($modes, $kind);
+    if (!$allow['allowed'] && in_array($allow['axis'], array('off', 'unreadable', 'scope', 'level'), TRUE)) {
+      return _provision_tasks_extra_upgrade_list_refusal($whose, $modes, $allow);
+    }
+  }
+  return '';
+}
+
+/**
+ * Why a kept build leaves too little time for the copy and the move, or ''.
+ *
+ * The Upgrade's own rule (four times the site's last copy, and half an hour
+ * for its checks) asked again against what is left of the time one task may
+ * hold the queue.
+ *
+ * @param int $secs
+ *   How long the site's newest finished Backup or Clone took; 0 when unknown.
+ * @param int $limit
+ *   The seconds one task may hold the queue.
+ * @param int $elapsed
+ *   The seconds this task has run.
+ */
+function _provision_tasks_extra_build_time_why($secs, $limit, $elapsed) {
+  $secs = (int) $secs;
+  $limit = (int) $limit;
+  $elapsed = max(0, (int) $elapsed);
+  if ($secs <= 0 || $limit <= 0) {
+    return '';
+  }
+  $need = 4 * $secs + 1800;
+  if ($need <= $limit - $elapsed) {
+    return '';
+  }
+  return 'the build took ' . max(1, (int) ceil($elapsed / 60)) . ' minutes, and the copy and the move need about ' . (int) ceil($need / 60) . ' more, more than this task may still run';
+}
+
+/**
  * A classified move with the step between the two core releases counted in.
  *
  * The kind of a move is read from the two locks. Where the releases differ
