@@ -1219,9 +1219,14 @@ function hosting_task_drupal_upgrade_form($node) {
   if ($seconds > 0) {
     $before .= ' ' . t('The last copy of this site took about @time.', array('@time' => format_interval($seconds, 2)));
   }
+  // The panel's theme takes the numbers off a list in the page's content and
+  // the space between paragraphs. The steps name each other by number, so the
+  // list keeps its own numbers and margins.
+  $item = '<li style="list-style: decimal outside; margin: 0 0 0.3em 0;">';
   $form['what'] = array(
-    '#markup' => '<p><strong>' . t('What happens, in order') . '</strong></p><ol><li>' . implode('</li><li>', $steps) . '</li></ol>'
-      . '<p><strong>' . t('Before you start.') . '</strong> ' . $before . '</p>',
+    '#markup' => '<p><strong>' . t('What happens, in order') . '</strong></p>'
+      . '<ol style="margin: 0.3em 0 0 2em; padding: 0;">' . $item . implode('</li>' . $item, $steps) . '</li></ol>'
+      . '<p style="margin-top: 1em;"><strong>' . t('Before you start.') . '</strong> ' . $before . '</p>',
     '#weight' => 50,
   );
   return $form;
