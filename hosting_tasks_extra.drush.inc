@@ -1478,7 +1478,7 @@ function hosting_tasks_extra_successor_record_end($task, $ok, $said_by) {
   $state = !is_object($made) ? 'gone' : (((int) $made->platform_status === HOSTING_PLATFORM_DELETED) ? 'deleted' : (((int) $made->platform_status === HOSTING_PLATFORM_ENABLED) ? 'enabled' : 'locked'));
   // A build the gate kept whose Unlock did not work is no leftover: its run
   // said so, and the account's main login can Unlock it.
-  if ($state === 'locked' && hosting_tasks_extra_task_said($task, 'since its Unlock did not work')) {
+  if ($state === 'locked' && hosting_tasks_extra_task_said($task, 'stays Locked, since')) {
     $state = 'kept_locked';
   }
   hosting_tasks_extra_task_args_keep($task, array('successor_end' => $state));

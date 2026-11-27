@@ -2069,7 +2069,15 @@ function _provision_tasks_extra_upgrade_list_refusal($whose, $modes, $allow) {
  *   security fixes unknown.
  */
 function _provision_tasks_extra_build_kind_before($template, $mode) {
-  if (!$template || !in_array($mode, array('patch', 'minor', 'major'), TRUE)) {
+  if (!$template) {
+    return NULL;
+  }
+  // A typed constraint on the templates still moves core alone; how far, it
+  // does not tell.
+  if ($mode === 'version') {
+    return array('scope' => 'core', 'level' => 'unknown', 'security' => NULL, 'security_why' => '');
+  }
+  if (!in_array($mode, array('patch', 'minor', 'major'), TRUE)) {
     return NULL;
   }
   return array('scope' => 'core', 'level' => $mode, 'security' => NULL, 'security_why' => '');
@@ -2099,11 +2107,43 @@ function _provision_tasks_extra_build_lists_refusal($kind, $platform_modes, $sit
   }
   foreach (array("the platform's" => $platform_modes, "this site's" => $site_modes) as $whose => $modes) {
     $allow = _provision_tasks_extra_upgrade_modes_allow($modes, $kind);
-    if (!$allow['allowed'] && in_array($allow['axis'], array('scope', 'level'), TRUE)) {
+    // A side the choice does not tell is passed over: the finished build is
+    // judged on it.
+    if (!$allow['allowed'] && in_array($allow['axis'], array('scope', 'level'), TRUE) && $kind[$allow['axis']] !== 'unknown') {
       return _provision_tasks_extra_upgrade_list_refusal($whose, $modes, $allow);
     }
   }
   return '';
+}
+
+/**
+ * The drupal_upgrade_modes line of a list, as one line of a control file.
+ *
+ * @param array $modes
+ *   _provision_tasks_extra_upgrade_modes() of a list.
+ */
+function _provision_tasks_extra_build_modes_line($modes) {
+  return 'drupal_upgrade_modes = "' . implode(', ', $modes['words']) . '"';
+}
+
+/**
+ * A control file's text with a drupal_upgrade_modes line added, or FALSE
+ * when an active one is there already (the developer's own, which is kept).
+ *
+ * @param string $text
+ *   The file's text, or the template's for a file not made yet.
+ */
+function _provision_tasks_extra_build_modes_text($text, $line) {
+  // Any line the reader takes as the key counts as there, a bad one too.
+  $found = _provision_tasks_extra_upgrade_modes_parse((string) $text);
+  if (!isset($found['state']) || $found['state'] !== 'absent') {
+    return FALSE;
+  }
+  $text = (string) $text;
+  if ($text !== '' && substr($text, -1) !== "\n") {
+    $text .= "\n";
+  }
+  return $text . $line . "\n";
 }
 
 /**

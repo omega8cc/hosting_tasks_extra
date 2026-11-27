@@ -2045,9 +2045,10 @@ function _provision_tasks_extra_upgrade_build_run($pre) {
   }
   $head = 'Built ' . $build['title'] . ' at ' . $build['built_root'] . ': ' . $build['kind'] . '.';
   if ($built['state'] === 'locked') {
-    return drush_set_error('PROVISION_UPGRADE_NOT_UPGRADED', dt('UPGRADE/RESULT !head Not upgraded: it stays Locked, since its Unlock did not work (!why); the account\'s main login can Unlock it on its page, then press Upgrade and choose it. !after', array(
+    return drush_set_error('PROVISION_UPGRADE_NOT_UPGRADED', dt('UPGRADE/RESULT !head Not upgraded: it stays Locked, since !why; !next, then press Upgrade and choose it. !after', array(
       '!head' => _provision_tasks_extra_no_markup($head),
-      '!why' => _provision_tasks_extra_no_markup($built['why']),
+      '!why' => $built['why'],
+      '!next' => $built['next'],
       '!after' => _provision_tasks_extra_no_markup($after),
     )));
   }
@@ -3841,11 +3842,12 @@ function drush_provision_tasks_extra_provision_platform_successor() {
     return drush_set_error('PROVISION_SUCCESSOR_NOT_KEPT', 'SUCCESSOR/RESULT Not kept: ' . $built['why'] . '. ' . $built['tail']);
   }
   if ($built['state'] === 'locked') {
-    drush_log(dt('SUCCESSOR/RESULT Built !title at !path: !kind. It stays Locked, since its Unlock did not work (!why): the account\'s main login can Unlock it on its page, and the Upgrade then offers it to the sites of !source.', array(
+    drush_log(dt('SUCCESSOR/RESULT Built !title at !path: !kind. It stays Locked, since !why: !next, and the Upgrade then offers it to the sites of !source.', array(
       '!title' => _provision_tasks_extra_no_markup($plan['title']),
       '!path' => _provision_tasks_extra_no_markup($plan['built_root']),
       '!kind' => _provision_tasks_extra_no_markup($plan['kind']),
-      '!why' => _provision_tasks_extra_no_markup($built['why']),
+      '!why' => $built['why'],
+      '!next' => $built['next'],
       '!source' => _provision_tasks_extra_no_markup($plan['source_title']),
     )), 'warning');
     return;
@@ -3904,12 +3906,92 @@ function _provision_tasks_extra_successor_build(&$plan, $step_args) {
   if ($why !== '') {
     return _provision_tasks_extra_successor_remove($plan, $why, NULL, $step_args);
   }
+  // The line of the platform built from goes with the build, before it is
+  // unlocked: an unlocked build without it would be offered ungoverned.
+  $carry = _provision_tasks_extra_successor_carry_line($plan);
+  if ($carry !== '') {
+    return array(
+      'state' => 'locked',
+      'why' => 'the drupal_upgrade_modes line of the platform it was built from could not be written into it (' . _provision_tasks_extra_no_markup($carry) . ')',
+      'next' => 'add `' . _provision_tasks_extra_build_modes_line($plan['modes']) . '` to its sites/all/modules/boa_platform_control.ini, then the account\'s main login can Unlock it on its page',
+      'tail' => '',
+    );
+  }
   $unlock = _provision_tasks_extra_upgrade_leg($plan['context'], 'unlock', array($step_args[0]), TRUE);
   if (!$unlock['ok']) {
     _provision_tasks_extra_upgrade_replay($unlock, TRUE);
-    return array('state' => 'locked', 'why' => _provision_tasks_extra_upgrade_step_why($unlock, $unlock['errors'] ? (string) reset($unlock['errors']) : 'it ended with no result'), 'tail' => '');
+    return array(
+      'state' => 'locked',
+      'why' => 'its Unlock did not work (' . _provision_tasks_extra_no_markup(_provision_tasks_extra_upgrade_step_why($unlock, $unlock['errors'] ? (string) reset($unlock['errors']) : 'it ended with no result')) . ')',
+      'next' => 'the account\'s main login can Unlock it on its page',
+      'tail' => '',
+    );
   }
   return array('state' => 'kept', 'why' => '', 'tail' => '');
+}
+
+/**
+ * Writes the drupal_upgrade_modes line of the platform a build was made from
+ * into the kept build's own control file, or says why it could not.
+ *
+ * A new platform has no live line: its first Verify seeds only the inactive
+ * template. Only a list goes, as read in the plan; a line the build's own
+ * file already holds (a repository's own policy) is kept. The file is made
+ * as the nightly makes it, a copy of the template, the account's own at
+ * 0664, written as a new file renamed into a folder that is no link.
+ *
+ * @return string
+ *   '' when written, kept or not needed; else why.
+ */
+function _provision_tasks_extra_successor_carry_line($plan) {
+  if (!isset($plan['modes']['state']) || $plan['modes']['state'] !== 'list' || !function_exists('_provision_tasks_extra_build_modes_text')) {
+    return '';
+  }
+  $root = rtrim((string) $plan['built_root'], '/');
+  $dir = $root . '/sites/all/modules';
+  clearstatcache();
+  foreach (array($root . '/sites', $root . '/sites/all', $dir) as $step) {
+    if (is_link($step) || !is_dir($step)) {
+      return $step . ' is not a plain folder';
+    }
+  }
+  $file = $dir . '/boa_platform_control.ini';
+  if (is_link($file) || (file_exists($file) && !is_file($file))) {
+    return $file . ' is not a plain file';
+  }
+  if (file_exists($file)) {
+    $text = _provision_tasks_extra_read_plain($file, 1048576);
+    if ($text === FALSE) {
+      return $file . ' cannot be read';
+    }
+  }
+  else {
+    $template = '/data/conf/default.boa_platform_control.ini';
+    $text = (is_file($template) && !is_link($template)) ? _provision_tasks_extra_read_plain($template, 1048576) : '';
+    $text = ($text === FALSE) ? '' : $text;
+  }
+  $line = _provision_tasks_extra_build_modes_line($plan['modes']);
+  $new = _provision_tasks_extra_build_modes_text($text, $line);
+  if ($new === FALSE) {
+    drush_log(dt('SUCCESSOR/CHECK !file already holds its own drupal_upgrade_modes line, which is kept.', array('!file' => _provision_tasks_extra_no_markup($file))), 'ok');
+    return '';
+  }
+  $tmp = @tempnam($dir, '.ctrl.');
+  if ($tmp === FALSE || dirname($tmp) !== $dir) {
+    if ($tmp !== FALSE) {
+      @unlink($tmp);
+    }
+    return 'no file can be made in ' . $dir;
+  }
+  if (@file_put_contents($tmp, $new) !== strlen($new) || !@chmod($tmp, 0664) || !@rename($tmp, $file)) {
+    @unlink($tmp);
+    return $file . ' could not be written';
+  }
+  drush_log(dt('SUCCESSOR/CHECK the line of the platform it was built from, !line, is written into !file.', array(
+    '!line' => _provision_tasks_extra_no_markup($line),
+    '!file' => _provision_tasks_extra_no_markup($file),
+  )), 'ok');
+  return '';
 }
 
 /**
