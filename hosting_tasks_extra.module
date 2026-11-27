@@ -3435,13 +3435,17 @@ function hosting_tasks_extra_platform_successor_plan($platform, $args) {
 }
 
 /**
- * A name for the new platform: "<platform> <date>", a number added while
+ * A name for the new platform: "<platform>-<date>", "-2", "-3" added while
  * taken.
+ *
+ * The folder is made from the name with every space dropped, so a hyphen
+ * keeps the date apart from the old name in the folder too ("shop-1-4-0
+ * 2026-11-27" made the folder shop-1-4-02026-11-27).
  */
 function hosting_tasks_extra_platform_successor_default_name($platform, $source) {
-  $base = trim(preg_replace('/\s+/', ' ', $platform->title)) . ' ' . format_date(REQUEST_TIME, 'custom', 'Y-m-d');
+  $base = trim(preg_replace('/\s+/', ' ', $platform->title)) . '-' . format_date(REQUEST_TIME, 'custom', 'Y-m-d');
   for ($n = 1; $n < 50; $n++) {
-    $name = ($n === 1) ? $base : $base . ' ' . $n;
+    $name = ($n === 1) ? $base : $base . '-' . $n;
     $context = _hosting_platform_context_name($name);
     if ($context === '') {
       break;
