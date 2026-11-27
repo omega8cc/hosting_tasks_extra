@@ -1250,6 +1250,10 @@ function hosting_task_drupal_upgrade_form($node) {
   // Last, the choice of building a newer version of the site's platform first.
   $build = hosting_tasks_extra_drupal_upgrade_build_why($node, $GLOBALS['user']);
   $source = ($build['why'] === '' && is_object($build['platform'])) ? hosting_tasks_extra_platform_successor_source($build['platform']) : '';
+  $build_refused = is_array($source) ? hosting_tasks_extra_drupal_upgrade_build_refused($node, $source) : array();
+  if (is_array($source) && $source['template'] && count($build_refused) === 4) {
+    $source = '';
+  }
   if (is_array($source)) {
     $platform_title = check_plain($build['platform']->title);
     $form['build']['target_platform'] = array(
@@ -1270,7 +1274,7 @@ function hosting_task_drupal_upgrade_form($node) {
       '#weight' => $weight++,
       '#states' => array('visible' => array(':input[name="parameters[target_platform]"]' => array('value' => 'build'))),
     );
-    $form['build_fields'] += hosting_tasks_extra_platform_successor_fields_form($build['platform'], $source, 'build_', array(), hosting_tasks_extra_drupal_upgrade_build_refused($node, $source));
+    $form['build_fields'] += hosting_tasks_extra_platform_successor_fields_form($build['platform'], $source, 'build_', array(), $build_refused);
     // The platform the build was confirmed for: the start refuses another.
     $form['build_fields']['build_from'] = array('#type' => 'value', '#value' => (int) $build['platform']->nid, '#parents' => array('parameters', 'build_from'));
     $form['build_fields']['build_knows'] = array(
@@ -3457,7 +3461,7 @@ function hosting_tasks_extra_drupal_upgrade_build_refused($site, $source) {
   $platform_modes = _provision_tasks_extra_upgrade_modes($root . '/sites/all/modules/boa_platform_control.ini');
   $site_modes = _provision_tasks_extra_upgrade_modes($root . '/sites/' . hosting_tasks_extra_drupal_upgrade_site_name($site) . '/modules/boa_site_control.ini');
   $refused = array();
-  foreach (array('patch', 'minor', 'major') as $mode) {
+  foreach (array('patch', 'minor', 'major', 'version') as $mode) {
     $why = _provision_tasks_extra_build_lists_refusal(_provision_tasks_extra_build_kind_before(TRUE, $mode), $platform_modes, $site_modes);
     if ($why !== '') {
       $refused[$mode] = $why;
@@ -3669,7 +3673,7 @@ function hosting_tasks_extra_platform_successor_refused($platform, $source) {
     return $refused;
   }
   $modes = hosting_tasks_extra_platform_successor_modes($platform);
-  foreach (array('patch', 'minor', 'major') as $mode) {
+  foreach (array('patch', 'minor', 'major', 'version') as $mode) {
     $why = _provision_tasks_extra_build_lists_refusal(_provision_tasks_extra_build_kind_before(TRUE, $mode), $modes, array('state' => 'absent'));
     if ($why !== '') {
       $refused[$mode] = $why;
@@ -4053,7 +4057,14 @@ function hosting_task_platform_successor_form($node) {
     );
     return $form;
   }
-  $form += hosting_tasks_extra_platform_successor_fields_form($platform, $source, '', array(), hosting_tasks_extra_platform_successor_refused($platform, $source));
+  $refused = hosting_tasks_extra_platform_successor_refused($platform, $source);
+  if ($source['template'] && count($refused) === 4) {
+    $form['none'] = array(
+      '#markup' => '<p>' . t('Nothing can be built from here: @why.', array('@why' => reset($refused))) . '</p>',
+    );
+    return $form;
+  }
+  $form += hosting_tasks_extra_platform_successor_fields_form($platform, $source, '', array(), $refused);
   $form['kept'] = array(
     '#markup' => '<p>' . t('The build is kept, and offered to the sites of this platform by their Upgrade, only when it is a newer version of the same codebase; otherwise it is deleted. A security advisory the build has and this platform does not is named in the result. While it runs, the other tasks of this account wait.') . '</p>',
     '#weight' => 4,
@@ -4112,7 +4123,9 @@ function hosting_tasks_extra_platform_successor_fields_form($platform, $source, 
       );
       $options[$mode] = $words[$mode];
     }
-    $options['version'] = t('Another version constraint');
+    if (!isset($refused['version'])) {
+      $options['version'] = t('Another version constraint');
+    }
     $form[$prefix . 'mode'] = array(
       '#type' => 'radios',
       '#title' => t('Version'),
@@ -4122,7 +4135,8 @@ function hosting_tasks_extra_platform_successor_fields_form($platform, $source, 
       '#states' => $shown,
     );
     if ($refused) {
-      $form[$prefix . 'mode']['#description'] = check_plain(t('Not offered: @why.', array('@why' => implode('; ', array_unique($refused)))));
+      // t() escapes the reasons once.
+      $form[$prefix . 'mode']['#description'] = t('Not offered: @why.', array('@why' => implode('; ', array_unique($refused))));
     }
     $form[$prefix . 'version'] = array(
       '#type' => 'textfield',
