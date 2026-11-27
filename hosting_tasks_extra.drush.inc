@@ -8,6 +8,14 @@
  */
 function drush_hosting_tasks_extra_pre_hosting_task() {
   $task =& drush_get_context('HOSTING_TASK');
+  // A step of an Upgrade, a Go back or a Build newer version runs only inside
+  // the run that queued it; a row its run's end queued for the queue says so.
+  if (!empty($task->task_args['upgrade_run']) && empty($task->task_args['queued_alone'])) {
+    $why = hosting_tasks_extra_step_outside_run($task);
+    if ($why !== '') {
+      return drush_set_error('HOSTING_UPGRADE_STEP_ALONE', dt('Not run: !why. Nothing was done.', array('!why' => $why)));
+    }
+  }
   if ($task->task_type == 'features_update_all' || $task->task_type == 'features_revert_all') {
     $task->options['features'] = $task->task_args['features'];
     $task->options['revert'] = $task->task_args['revert'];
@@ -36,6 +44,34 @@ function drush_hosting_tasks_extra_pre_hosting_task() {
   if ($task->ref->type == 'site' && $task->task_type == 'migrate') {
     hosting_tasks_extra_drupal_upgrade_migrate_start($task);
   }
+}
+
+/**
+ * Why a step row is not run where it is starting now, or ''.
+ *
+ * A row carrying upgrade_run=<task nid> is a step its task runs itself, in
+ * its own runner, as a nested task. One that starts any other way was left by
+ * a run whose runner was lost: the run's backend lived on and made the row
+ * after the queue's reaper had failed the run, so the run's end, which
+ * cancels such rows, never saw it. Run alone, a Migrate of an Upgrade would
+ * move the site with none of the run's checks and its Delete would remove the
+ * way back. The one row a run's end queues for the queue itself carries
+ * queued_alone=1 and is not asked.
+ *
+ * @return string
+ *   '' when the row runs inside its own run's runner (or when the panel's
+ *   task runner keeps no holder record to tell by), else the reason.
+ */
+function hosting_tasks_extra_step_outside_run($task) {
+  if (!function_exists('hosting_task_runner_lock_holder_record') || !function_exists('hosting_task_runner_is_ancestor')) {
+    return '';
+  }
+  $run = (int) $task->task_args['upgrade_run'];
+  $holder = hosting_task_runner_lock_holder_record();
+  if (is_array($holder) && (int) $holder['nid'] === $run && hosting_task_runner_is_ancestor($holder['pid'])) {
+    return '';
+  }
+  return 'this row is a step of task ' . $run . ' and runs only inside that task, which is not running it now (its runner was lost before the step began)';
 }
 
 /**
@@ -1221,7 +1257,8 @@ function hosting_tasks_extra_platform_successor_end($task, $ok) {
   $alias = drush_server_home() . '/.drush/' . $made->hosting_name . '.alias.drushrc.php';
   if ($state === 'locked' && empty($made->verified) && $folder !== '' && !file_exists($folder) && !is_link($folder)
     && !file_exists($marker) && !is_link($marker) && !file_exists($alias)) {
-    $delete = hosting_add_task($made->nid, 'delete', array('upgrade_run' => (int) $task->nid));
+    // The run is over: the queue runs this Delete on its own.
+    $delete = hosting_add_task($made->nid, 'delete', array('upgrade_run' => (int) $task->nid, 'queued_alone' => 1));
     drush_log(dt('SUCCESSOR/RESULT Not started: the run ended before its checks. The platform record made for it, @title, was never built and holds nothing on disk: @next', array(
       '@title' => _hosting_tasks_extra_plain($made->title),
       '@next' => is_object($delete) ? 'its Delete is queued.' : 'the account\'s main login can delete it.',
