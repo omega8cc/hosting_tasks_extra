@@ -2059,16 +2059,27 @@ function _provision_tasks_extra_upgrade_list_refusal($whose, $modes, $allow) {
  * what core requires, by that much: the templates list nothing else. A typed
  * constraint, another package and a repository tell nothing beforehand.
  *
+ * A build from the platform's own lock changes what was chosen, by at most
+ * the size chosen, whatever the package.
+ *
  * @param bool $template
  *   The platform is built from one of core's two project templates.
  * @param string $mode
- *   patch, minor, major or version.
+ *   patch, minor, major, version or lock.
+ * @param array|NULL $choice
+ *   For lock: _provision_tasks_extra_lock_build_choice().
  *
  * @return array|NULL
  *   A kind as _provision_tasks_extra_upgrade_modes_allow() reads it, the
  *   security fixes unknown.
  */
-function _provision_tasks_extra_build_kind_before($template, $mode) {
+function _provision_tasks_extra_build_kind_before($template, $mode, $choice = NULL) {
+  if ($mode === 'lock') {
+    if (!is_array($choice) || !isset($choice['scope'], $choice['level'])) {
+      return NULL;
+    }
+    return array('scope' => $choice['scope'], 'level' => $choice['level'], 'security' => NULL, 'security_why' => '');
+  }
   if (!$template) {
     return NULL;
   }
@@ -2161,6 +2172,383 @@ function _provision_tasks_extra_build_modes_text($text, $line) {
 function _provision_tasks_extra_build_kept_refusal($modes, $diff) {
   $allow = _provision_tasks_extra_upgrade_modes_allow($modes, $diff);
   return $allow['allowed'] ? '' : _provision_tasks_extra_upgrade_list_refusal("the platform's", $modes, $allow);
+}
+
+/**
+ * What a build from a platform's own lock is asked to change, read from a
+ * task's arguments, or why it is no choice the panel offers.
+ *
+ * @param array $args
+ *   The task's arguments, or the options the backend was given.
+ * @param string $prefix
+ *   Put before each name: '' for Build newer version's own, 'build_' for an
+ *   Upgrade's, 'successor_' for the backend's options.
+ *
+ * @return array|string
+ *   'scope' (core, contrib or full), 'level' (patch or minor) and 'security'
+ *   (TRUE for security fixes only); or why not.
+ */
+function _provision_tasks_extra_lock_build_choice($args, $prefix = '') {
+  $read = array();
+  foreach (array('scope', 'level', 'security') as $key) {
+    $read[$key] = (is_array($args) && isset($args[$prefix . $key]) && is_scalar($args[$prefix . $key])) ? trim((string) $args[$prefix . $key]) : '';
+  }
+  if (!in_array($read['scope'], array('core', 'contrib', 'full'), TRUE)
+    || !in_array($read['level'], array('patch', 'minor'), TRUE)
+    || !in_array($read['security'], array('', '0', '1'), TRUE)) {
+    return 'the choice of what to upgrade is not one the panel offers';
+  }
+  return array('scope' => $read['scope'], 'level' => $read['level'], 'security' => $read['security'] === '1');
+}
+
+/**
+ * The choice in words: "Drupal core, patch releases only, security fixes
+ * only".
+ */
+function _provision_tasks_extra_lock_build_words($choice) {
+  $scopes = array(
+    'core' => 'Drupal core',
+    'contrib' => 'modules and themes',
+    'full' => 'Drupal core and modules and themes',
+  );
+  $levels = array(
+    'patch' => 'patch releases only',
+    'minor' => 'minor releases too',
+  );
+  return $scopes[$choice['scope']] . ', ' . $levels[$choice['level']] . (empty($choice['security']) ? '' : ', security fixes only');
+}
+
+/**
+ * The choice as a list of a control file would say it, for the judges.
+ *
+ * @param bool $security
+ *   FALSE leaves the security fixes out: a resolve is judged before any
+ *   audit can say whether it fixes one.
+ */
+function _provision_tasks_extra_lock_build_modes($choice, $security = TRUE) {
+  $words = array($choice['scope'], $choice['level']);
+  if ($security && !empty($choice['security'])) {
+    $words[] = 'security';
+  }
+  return array('state' => 'list', 'line' => 0, 'words' => $words, 'file' => '');
+}
+
+/**
+ * The packages a platform's audit names, as a build from its lock reads
+ * them: name => TRUE. An advisory on any package of core's own set counts as
+ * one on core too (drupal/core is added), and a name core stands for that
+ * the lock holds no package of is counted as drupal/core alone: Composer
+ * cannot be asked to update it.
+ *
+ * @param array $lock
+ *   _provision_tasks_extra_lock_load() of the platform.
+ * @param array $audit
+ *   _provision_tasks_extra_lock_advisories() of the same platform.
+ *
+ * @return array|string
+ *   The names, or why the audit gives none.
+ */
+function _provision_tasks_extra_lock_build_advised($lock, $audit) {
+  if (!is_array($audit) || !isset($audit['lines']) || !is_array($audit['lines'])) {
+    $why = (is_array($audit) && isset($audit['why']) && is_string($audit['why']) && $audit['why'] !== '') ? ' (' . $audit['why'] . ')' : '';
+    return 'the security audit of its composer.lock did not finish' . $why;
+  }
+  $pairs = _provision_tasks_extra_audit_pairs($audit['lines']);
+  if ($pairs === FALSE) {
+    return 'the security audit of its composer.lock is not whole';
+  }
+  if (empty($lock['ok'])) {
+    return 'its composer.lock cannot be read';
+  }
+  $index = _provision_tasks_extra_lock_providers($lock['packages']);
+  $set = _provision_tasks_extra_lock_core_set($lock['packages'], TRUE, $index);
+  $proper = _provision_tasks_extra_lock_core_set($lock['packages'], FALSE, $index);
+  $out = array();
+  foreach ($pairs as $pair) {
+    $cols = explode("\t", $pair);
+    $name = isset($cols[1]) ? strtolower($cols[1]) : '';
+    if ($name === '') {
+      continue;
+    }
+    if (isset($set['names'][$name]) || isset($proper['packages'][$name])) {
+      $out['drupal/core'] = TRUE;
+      if (!isset($lock['packages'][$name])) {
+        continue;
+      }
+    }
+    $out[$name] = TRUE;
+  }
+  ksort($out);
+  return $out;
+}
+
+/**
+ * The words after `composer update` for a build from a platform's own lock.
+ *
+ * Drupal core is every core name the lock holds, moved with what it needs,
+ * its root companions among them; modules and themes are every other Drupal
+ * package, moved with what they need but the root requirements, so core's
+ * pins hold. Each Drupal package named whose version is a plain release is
+ * held to its minor for patch releases only, to its major for minor releases
+ * too: no choice crosses a major. For security fixes only, the packages the
+ * audit names inside the scope and what each of them requires there, with
+ * the fewest changes besides.
+ *
+ * @param array $lock
+ *   _provision_tasks_extra_lock_load() of the platform built from.
+ * @param array $choice
+ *   _provision_tasks_extra_lock_build_choice().
+ * @param array|NULL $advised
+ *   For security fixes only: _provision_tasks_extra_lock_build_advised().
+ *
+ * @return array|string
+ *   The words, or why nothing can be built.
+ */
+function _provision_tasks_extra_lock_build_args($lock, $choice, $advised = NULL) {
+  if (empty($lock['ok']) || !isset($lock['packages']) || !is_array($lock['packages'])) {
+    return 'its composer.lock cannot be read';
+  }
+  $core = array();
+  $ext = array();
+  $libraries = array();
+  $core_libraries = array();
+  $index = _provision_tasks_extra_lock_providers($lock['packages']);
+  $set = _provision_tasks_extra_lock_core_set($lock['packages'], TRUE, $index);
+  foreach ($lock['packages'] as $name => $package) {
+    if (!empty($lock['dev_only'][$name])) {
+      continue;
+    }
+    if (_provision_tasks_extra_lock_is_core_name($name)) {
+      $core[$name] = $package;
+    }
+    elseif (_provision_tasks_extra_lock_is_drupal($package)) {
+      $ext[$name] = $package;
+    }
+    elseif (isset($set['packages'][$name])) {
+      $core_libraries[$name] = $package;
+    }
+    else {
+      $libraries[$name] = $package;
+    }
+  }
+  $names = array();
+  if ($choice['scope'] !== 'contrib') {
+    $names += $core;
+  }
+  if ($choice['scope'] !== 'core') {
+    $names += $ext;
+  }
+  if (!empty($choice['security'])) {
+    if (!is_array($advised)) {
+      return is_string($advised) ? $advised : 'no security audit of its composer.lock is at hand';
+    }
+    $keep = array();
+    foreach ($names as $name => $package) {
+      if (isset($advised[$name]) || (isset($advised['drupal/core']) && isset($core[$name]))) {
+        $keep[$name] = $package;
+      }
+    }
+    // A library an advisory names moves too: one of core's own set with
+    // core, one outside it with the modules that need it.
+    foreach (array('core' => $core_libraries, 'contrib' => $libraries) as $part => $list) {
+      if ($choice['scope'] !== 'full' && $choice['scope'] !== $part) {
+        continue;
+      }
+      foreach ($list as $name => $package) {
+        if (isset($advised[$name])) {
+          $keep[$name] = $package;
+        }
+      }
+    }
+    // Under the fewest changes Composer keeps an advised release where its
+    // fixed one needs a newer release of a package it requires, so what an
+    // advised package requires moves with it, where the choice covers it.
+    // Not for core's own names: they require the whole of core's set.
+    $covered = array();
+    if ($choice['scope'] !== 'contrib') {
+      $covered += $core_libraries;
+    }
+    if ($choice['scope'] !== 'core') {
+      $covered += $ext + $libraries;
+    }
+    foreach (array_keys($keep) as $name) {
+      if (!isset($advised[$name]) || _provision_tasks_extra_lock_is_core_name($name) || !isset($lock['packages'][$name]['require']) || !is_array($lock['packages'][$name]['require'])) {
+        continue;
+      }
+      foreach (array_keys($lock['packages'][$name]['require']) as $need) {
+        $need = strtolower((string) $need);
+        if (isset($covered[$need])) {
+          $keep[$need] = $covered[$need];
+        }
+      }
+    }
+    $names = $keep;
+  }
+  if (!$names) {
+    $where = array('core' => 'Drupal core', 'contrib' => 'its modules and themes', 'full' => 'Drupal core or its modules and themes');
+    if (!empty($choice['security'])) {
+      return 'its composer.lock has no security advisory on ' . $where[$choice['scope']];
+    }
+    return ($choice['scope'] === 'core') ? 'its composer.lock holds no Drupal core to upgrade' : 'its composer.lock holds no modules or themes to upgrade';
+  }
+  ksort($names);
+  $words = array();
+  foreach (array_keys($names) as $name) {
+    if (!preg_match('/^[a-z0-9_.-]+\/[a-z0-9_.-]+$/', $name)) {
+      return 'its composer.lock names a package the panel does not pass to Composer (' . preg_replace('/[^\x20-\x7e]/', '?', substr($name, 0, 80)) . ')';
+    }
+    $words[] = $name;
+  }
+  $words[] = ($choice['scope'] === 'contrib') ? '--with-dependencies' : '--with-all-dependencies';
+  if (!empty($choice['security'])) {
+    $words[] = '--minimal-changes';
+  }
+  $hold = ($choice['level'] === 'patch') ? '~' : '^';
+  $m = array();
+  foreach ($names as $name => $package) {
+    if (_provision_tasks_extra_lock_is_drupal($package) && isset($package['version']) && is_string($package['version'])
+      && preg_match('/^v?([0-9]+)\.([0-9]+)\.([0-9]+)$/', $package['version'], $m)) {
+      $words[] = '--with=' . $name . ':' . $hold . (int) $m[1] . '.' . (int) $m[2] . '.' . (int) $m[3];
+    }
+  }
+  return $words;
+}
+
+/**
+ * Whether a codebase was built with its require-dev packages: FALSE when its
+ * vendor/composer/installed.json says it was not, the rule of
+ * _provision_tasks_extra_lock_load().
+ */
+function _provision_tasks_extra_lock_dev($app) {
+  $installed = _provision_tasks_extra_read_plain(rtrim((string) $app, '/') . '/vendor/composer/installed.json');
+  if ($installed !== FALSE) {
+    $info = json_decode($installed, TRUE);
+    if (is_array($info) && array_key_exists('dev', $info) && $info['dev'] === FALSE) {
+      return FALSE;
+    }
+  }
+  return TRUE;
+}
+
+/**
+ * Judges the lock a build from a platform's own lock has just written,
+ * before anything is installed: '' to install it, or why not.
+ *
+ * It must be newer, change only the part chosen by at most the size chosen,
+ * and make no Drupal package older. Whether it fixes an advisory is judged
+ * once it is built, with the two audits.
+ *
+ * @param array $plan
+ *   'source_lock', 'source_release', 'source_dev' and 'choice'.
+ * @param string $folder
+ *   The new project folder.
+ */
+function _provision_tasks_extra_lock_build_judge($plan, $folder) {
+  $folder = rtrim((string) $folder, '/');
+  $text = _provision_tasks_extra_read_plain($folder . '/composer.lock');
+  $lock = ($text === FALSE) ? NULL : json_decode($text, TRUE);
+  if (!is_array($lock) || !isset($lock['packages']) || !is_array($lock['packages'])) {
+    return 'the new composer.lock cannot be read';
+  }
+  $raw = _provision_tasks_extra_read_plain($folder . '/composer.json', 4194304);
+  $json = ($raw === FALSE) ? NULL : json_decode($raw, TRUE);
+  $json = is_array($json) ? $json : NULL;
+  $new = _provision_tasks_extra_lock_shape($lock, !empty($plan['source_dev']), $json, array(
+    'patches.json' => _provision_tasks_extra_lock_patch_file($folder, 'patches.json'),
+    'patches.lock.json' => _provision_tasks_extra_lock_patch_file($folder, 'patches.lock.json'),
+    'patches-file' => _provision_tasks_extra_lock_patch_file($folder, _provision_tasks_extra_lock_patches_file_name($json)),
+  ));
+  $release = isset($new['packages']['drupal/core']['version']) ? ltrim((string) $new['packages']['drupal/core']['version'], 'v') : '';
+  if ($release === '' || _provision_tasks_extra_release_numbers($release) === FALSE) {
+    return 'the new composer.lock holds no Drupal core release';
+  }
+  $diff = _provision_tasks_extra_upgrade_release_step($plan['source_release'], $release, _provision_tasks_extra_lock_classify($plan['source_lock'], $new));
+  if ($diff['downgrades']) {
+    return 'the resolve made ' . _provision_tasks_extra_upgrade_names(array_keys($diff['downgrades'])) . ' older';
+  }
+  $newer = _provision_tasks_extra_successor_newer($plan['source_release'], $release, $diff, _provision_tasks_extra_tooling_skip($plan['source_lock'], $new));
+  if ($newer['why'] !== '') {
+    return $newer['why'];
+  }
+  $allow = _provision_tasks_extra_upgrade_modes_allow(_provision_tasks_extra_lock_build_modes($plan['choice'], FALSE), $diff);
+  if (!$allow['allowed']) {
+    return 'the resolve moved more than was asked for (' . _provision_tasks_extra_lock_build_words($plan['choice']) . '): it is ' . _provision_tasks_extra_upgrade_kind_text($diff);
+  }
+  return '';
+}
+
+/**
+ * sha256:<composer.json>:<composer.lock> of a project folder, or '' when
+ * either is not a plain file or cannot be read.
+ *
+ * The fingerprint a panel build records of the two files it made, and the
+ * one hosting_deploy's build from the lock checks its copy against. The
+ * folder can be one the account's logins write, so each file is read with
+ * _provision_tasks_extra_read_plain().
+ */
+function _provision_tasks_extra_lock_fingerprint($folder) {
+  $out = 'sha256';
+  foreach (array('composer.json', 'composer.lock') as $name) {
+    $file = rtrim((string) $folder, '/') . '/' . $name;
+    clearstatcache(TRUE, $file);
+    $bytes = _provision_tasks_extra_read_plain($file, 33554432);
+    if (!is_string($bytes)) {
+      return '';
+    }
+    $out .= ':' . hash('sha256', $bytes);
+  }
+  return $out;
+}
+
+/**
+ * Why a published-package build cannot be built from its own lock by what
+ * its composer.json declares, or '': a repository of the account's own
+ * folders would make a resolve take packages, plugins among them, from
+ * files the account's logins can write.
+ *
+ * @param array|NULL $json
+ *   The decoded composer.json.
+ */
+function _provision_tasks_extra_lock_build_repositories_why($json) {
+  if (!is_array($json)) {
+    return 'its composer.json cannot be read';
+  }
+  if (!isset($json['repositories'])) {
+    return '';
+  }
+  if (!is_array($json['repositories'])) {
+    return 'its composer.json lists repositories in a form the panel does not read';
+  }
+  foreach ($json['repositories'] as $repository) {
+    if ($repository === FALSE) {
+      continue;
+    }
+    $type = (is_array($repository) && isset($repository['type']) && is_string($repository['type'])) ? strtolower($repository['type']) : '';
+    if ($type === '' || in_array($type, array('path', 'artifact'), TRUE)) {
+      return 'its composer.json takes packages from folders of the account (a repository of type ' . ($type === '' ? 'unknown' : $type) . ')';
+    }
+    // Every address a repository gives must be a remote one.
+    $urls = array();
+    if (isset($repository['url'])) {
+      $urls[] = $repository['url'];
+    }
+    if ($type === 'package' && isset($repository['package']) && is_array($repository['package'])) {
+      $list = isset($repository['package']['name']) ? array($repository['package']) : $repository['package'];
+      foreach ($list as $package) {
+        foreach (array('dist', 'source') as $part) {
+          if (is_array($package) && isset($package[$part]) && is_array($package[$part]) && isset($package[$part]['url'])) {
+            $urls[] = $package[$part]['url'];
+          }
+        }
+      }
+    }
+    foreach ($urls as $url) {
+      if (!is_string($url) || !preg_match('#^(https?://|ssh://|git://|git@)#i', $url)) {
+        return 'its composer.json takes packages from an address that is no remote one (a repository of type ' . $type . ')';
+      }
+    }
+  }
+  return '';
 }
 
 /**

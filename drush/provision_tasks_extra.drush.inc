@@ -1989,7 +1989,7 @@ function _provision_tasks_extra_upgrade_build_plan() {
       return _provision_tasks_extra_upgrade_list_refusal($whose, $modes, _provision_tasks_extra_upgrade_modes_allow($modes, array()));
     }
   }
-  $kind = _provision_tasks_extra_build_kind_before((bool) drush_get_option('successor_template', FALSE), trim((string) drush_get_option('successor_mode', '')));
+  $kind = _provision_tasks_extra_build_kind_before((bool) drush_get_option('successor_template', FALSE), trim((string) drush_get_option('successor_mode', '')), isset($build['choice']) ? $build['choice'] : NULL);
   $why = _provision_tasks_extra_build_lists_refusal($kind, $platform_modes, $site_modes);
   if ($why !== '') {
     return $why;
@@ -3790,8 +3790,13 @@ function _provision_tasks_extra_successor_plan($source = NULL) {
   $modes = function_exists('_provision_tasks_extra_build_lists_refusal')
     ? _provision_tasks_extra_upgrade_modes($source_root . '/sites/all/modules/boa_platform_control.ini')
     : array('state' => 'absent');
+  $mode = trim((string) drush_get_option('successor_mode', ''));
+  $lock_build = _provision_tasks_extra_successor_lock_plan($source, $mode, $from, $built, $source_root, $lock);
+  if (is_string($lock_build)) {
+    return $lock_build;
+  }
   if (function_exists('_provision_tasks_extra_build_lists_refusal')) {
-    $kind = _provision_tasks_extra_build_kind_before((bool) drush_get_option('successor_template', FALSE), trim((string) drush_get_option('successor_mode', '')));
+    $kind = _provision_tasks_extra_build_kind_before((bool) drush_get_option('successor_template', FALSE), $mode, isset($lock_build['choice']) ? $lock_build['choice'] : NULL);
     $why = _provision_tasks_extra_build_lists_refusal($kind, $modes, array('state' => 'absent'));
     if ($why !== '') {
       return $why;
@@ -3821,7 +3826,142 @@ function _provision_tasks_extra_successor_plan($source = NULL) {
     'source_major' => $numbers ? $numbers[0] : 0,
     'marker' => 'upgrade_run=' . (int) $opt['successor_task_nid'],
     'modes' => $modes,
+  ) + $lock_build;
+}
+
+/**
+ * The plan of a build from the platform's own lock, array() for another
+ * build, or why it cannot be built so.
+ *
+ * Only a platform the panel built from a published package, whose two files
+ * are still the ones the panel's build left (the panel names them in the
+ * task's options), and whose composer.json takes no package from the
+ * account's own folders.
+ *
+ * @param object $source
+ *   The platform built from.
+ * @param string $mode
+ *   The task's Mode.
+ * @param string $from
+ *   Its project folder, as the panel named it.
+ * @param string $built
+ *   Its build folder, as its record has it.
+ * @param string $source_root
+ *   Its docroot.
+ * @param array $lock
+ *   _provision_tasks_extra_lock_load() of it.
+ */
+function _provision_tasks_extra_successor_lock_plan($source, $mode, $from, $built, $source_root, $lock) {
+  $route = trim((string) drush_get_option('successor_route', ''));
+  if ($route === '' && $mode !== 'lock') {
+    return array();
+  }
+  if ($route !== 'lock' || $mode !== 'lock') {
+    return 'the task did not say how to build (its route and its Mode differ); start it from the platform\'s page';
+  }
+  if (!function_exists('_provision_tasks_extra_lock_build_args')) {
+    return 'the backend\'s copy of the task\'s rules is older than the panel\'s; start again in a few minutes';
+  }
+  $choice = _provision_tasks_extra_lock_build_choice(array(
+    'successor_scope' => drush_get_option('successor_scope', ''),
+    'successor_level' => drush_get_option('successor_level', ''),
+    'successor_security' => drush_get_option('successor_security', ''),
+  ), 'successor_');
+  if (is_string($choice)) {
+    return $choice;
+  }
+  if (!class_exists('Provision_ComposerLockBuild')) {
+    return 'the backend\'s copy of the platform builds is older than the panel\'s; start again in a few minutes';
+  }
+  $package = (isset($source->composer_project_package) && is_string($source->composer_project_package)) ? trim($source->composer_project_package) : '';
+  $git = (isset($source->composer_git_path) && is_string($source->composer_git_path)) ? trim($source->composer_git_path) : '';
+  if ($package === '' || $git !== '' || $built === '' || $built !== $from) {
+    return 'it was not built by the panel from a published package, so it cannot be built from its own composer.lock';
+  }
+  $expected = trim((string) drush_get_option('successor_fingerprint', ''));
+  if (!preg_match('/^sha256:[0-9a-f]{64}:[0-9a-f]{64}$/', $expected)) {
+    return 'the task did not say what the files it builds from must be; start it from the platform\'s page';
+  }
+  $now = _provision_tasks_extra_lock_fingerprint($from);
+  if ($now === '') {
+    return 'its composer.json or composer.lock cannot be read';
+  }
+  if ($now !== $expected) {
+    return 'its composer.json or composer.lock changed since the panel built it';
+  }
+  $raw = _provision_tasks_extra_read_plain($from . '/composer.json', 4194304);
+  $why = _provision_tasks_extra_lock_build_repositories_why(($raw === FALSE) ? NULL : json_decode($raw, TRUE));
+  if ($why !== '') {
+    return $why;
+  }
+  $advised = NULL;
+  if ($choice['security']) {
+    $advised = _provision_tasks_extra_lock_build_advised($lock, _provision_tasks_extra_lock_advisories($source_root));
+    if (is_string($advised)) {
+      return $advised . ', so no fix can be chosen';
+    }
+  }
+  $words = _provision_tasks_extra_lock_build_args($lock, $choice, $advised);
+  if (is_string($words)) {
+    return $words;
+  }
+  $perms = @fileperms($from);
+  return array(
+    'route' => 'lock',
+    'choice' => $choice,
+    'resolve' => $words,
+    'fingerprint' => $expected,
+    'source_path' => $from,
+    'source_dev' => _provision_tasks_extra_lock_dev($from),
+    'source_mode' => ($perms === FALSE) ? 0 : ($perms & 07777),
   );
+}
+
+/**
+ * Builds the new folder from the platform's own lock, before the new
+ * platform's Verify: '' when it is built, or why not.
+ *
+ * hosting_deploy's build runs in this process, so the recipe and the files
+ * it checks never leave the task that checked them; its marker, its step
+ * limits and the removal of a failed build are every panel build's. Sets
+ * 'files' in $plan, the fingerprint of the two files it made.
+ */
+function _provision_tasks_extra_successor_lock_run(&$plan) {
+  drush_log(dt('SUCCESSOR/CHECK building !title from the composer.lock of !source: !words.', array(
+    '!title' => _provision_tasks_extra_no_markup($plan['title']),
+    '!source' => _provision_tasks_extra_no_markup($plan['source_title']),
+    '!words' => _provision_tasks_extra_lock_build_words($plan['choice']),
+  )), 'ok');
+  $judged = array(
+    'source_lock' => $plan['source_lock'],
+    'source_release' => $plan['source_release'],
+    'source_dev' => $plan['source_dev'],
+    'choice' => $plan['choice'],
+  );
+  $docroot = ($plan['root'] === $plan['path']) ? '' : basename($plan['root']);
+  $build = new Provision_ComposerLockBuild(array(
+    'path' => $plan['path'],
+    'source' => $plan['source_path'],
+    'docroot' => $docroot,
+    'resolve' => $plan['resolve'],
+    'fingerprint' => $plan['fingerprint'],
+    'judge' => function ($folder) use ($judged) {
+      return _provision_tasks_extra_lock_build_judge($judged, $folder);
+    },
+    'mode' => $plan['source_mode'],
+  ));
+  if ($build->deploy() !== TRUE) {
+    $text = trim(preg_replace('/\s+/', ' ', (string) $build->errorText()));
+    if (strlen($text) > 600) {
+      $text = substr($text, 0, 600) . '...';
+    }
+    if ($build->errorCode() === 'PLATFORM_LOCK_BUILD_REFUSED' && $text !== '') {
+      return $text;
+    }
+    return 'its build from the composer.lock failed: ' . ($text === '' ? 'it ended with no result' : $text);
+  }
+  $plan['files'] = $build->files();
+  return '';
 }
 
 /**
@@ -3899,11 +4039,31 @@ function _provision_tasks_extra_successor_build(&$plan, $step_args) {
     '!source' => _provision_tasks_extra_no_markup($plan['source_title']),
     '!release' => _provision_tasks_extra_no_markup($plan['source_release']),
   )), 'ok');
+  // A build from the platform's own lock makes the folder first, here; the
+  // Verify then takes it as it is.
+  if (isset($plan['route']) && $plan['route'] === 'lock') {
+    clearstatcache();
+    if (file_exists($plan['path']) || is_link($plan['path'])) {
+      $parts = _provision_tasks_extra_successor_found_parts(
+        _provision_tasks_extra_no_markup($plan['title']),
+        _provision_tasks_extra_no_markup($plan['path']),
+        (bool) drush_valid_root($plan['root'])
+      );
+      return array('state' => 'not_kept', 'why' => $parts['why'], 'tail' => $parts['tail']);
+    }
+    $why = _provision_tasks_extra_successor_lock_run($plan);
+    if ($why !== '') {
+      return _provision_tasks_extra_successor_remove($plan, $why, NULL, $step_args);
+    }
+  }
   $build = _provision_tasks_extra_upgrade_leg($plan['context'], 'verify', $step_args, TRUE);
   // The caller sets its own result: an error of its build is kept as a
   // warning, whether the build ended well or not.
   _provision_tasks_extra_upgrade_replay($build, TRUE);
-  if (_provision_tasks_extra_successor_found($plan, $build)) {
+  // After a build from the lock the Verify finds this run's own folder, and
+  // says so: only a link put in its place is a folder that appeared.
+  clearstatcache();
+  if (!empty($plan['files']) ? is_link($plan['path']) : _provision_tasks_extra_successor_found($plan, $build)) {
     clearstatcache();
     $parts = _provision_tasks_extra_successor_found_parts(
       _provision_tasks_extra_no_markup($plan['title']),
@@ -3918,6 +4078,11 @@ function _provision_tasks_extra_successor_build(&$plan, $step_args) {
   $why = _provision_tasks_extra_successor_gate($plan);
   if ($why !== '') {
     return _provision_tasks_extra_successor_remove($plan, $why, NULL, $step_args);
+  }
+  // What a build from the lock made, for the panel to record on the new
+  // platform's first Verify: the panel reads it from this line alone.
+  if (!empty($plan['files'])) {
+    drush_log('SUCCESSOR/FILES ' . $plan['files'], 'ok');
   }
   // The line of the platform built from goes with the build, before it is
   // unlocked: an unlocked build without it would be offered ungoverned.
@@ -4121,6 +4286,14 @@ function _provision_tasks_extra_successor_gate(&$plan) {
       return $why . ' (the build is: ' . $plan['kind'] . ')';
     }
   }
+  // A build from the lock is kept only as what it was asked to be: a
+  // security build that fixes nothing among them.
+  if (isset($plan['choice']) && is_array($plan['choice'])) {
+    $allow = _provision_tasks_extra_upgrade_modes_allow(_provision_tasks_extra_lock_build_modes($plan['choice']), $diff);
+    if (!$allow['allowed']) {
+      return 'it was asked for ' . _provision_tasks_extra_lock_build_words($plan['choice']) . ', and the choice ' . $allow['why'] . ' (the build is: ' . $plan['kind'] . ')';
+    }
+  }
   return '';
 }
 
@@ -4149,7 +4322,9 @@ function _provision_tasks_extra_successor_remove($plan, $why, $build, $step_args
     $out['tail'] = dt('Whether a build process still writes into !path cannot be read, so nothing was deleted; the account\'s main login can delete !title.', $args);
     return $out;
   }
-  if (is_array($build) && _provision_tasks_extra_successor_found($plan, $build)) {
+  // A build from the lock made its folder itself: its Verify's "already
+  // there" is that folder.
+  if (is_array($build) && (!empty($plan['files']) ? is_link($plan['path']) : _provision_tasks_extra_successor_found($plan, $build))) {
     $out['tail'] = dt('A folder appeared at !path before the build, so nothing there was deleted; !title is left, Locked, naming it: move the folder away first if it is wanted, then the account\'s main login can delete !title.', $args);
     return $out;
   }

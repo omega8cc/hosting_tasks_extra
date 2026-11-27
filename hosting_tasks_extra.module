@@ -352,6 +352,10 @@ function hosting_tasks_extra_permission() {
       'title' => t('build drupal_upgrade target'),
       'description' => t('Let an Upgrade, or Upgrade all sites, build a newer version of the platform first, as Build newer version does. Needs create platform_successor task and create platform too.'),
     ),
+    'build platform_successor from lock' => array(
+      'title' => t('build platform_successor from lock'),
+      'description' => t('Let Build newer version, and the build of an Upgrade or Upgrade all sites, build a platform again from its own composer.json and composer.lock, updating only the part chosen. Needs create platform_successor task and create platform too.'),
+    ),
   );
 }
 
@@ -1251,7 +1255,8 @@ function hosting_task_drupal_upgrade_form($node) {
   $build = hosting_tasks_extra_drupal_upgrade_build_why($node, $GLOBALS['user']);
   $source = ($build['why'] === '' && is_object($build['platform'])) ? hosting_tasks_extra_platform_successor_source($build['platform']) : '';
   $build_refused = is_array($source) ? hosting_tasks_extra_drupal_upgrade_build_refused($node, $source) : array();
-  if (is_array($source) && $source['template'] && count($build_refused) === 4) {
+  $site_modes = is_array($source) ? hosting_tasks_extra_drupal_upgrade_site_modes($node) : NULL;
+  if (is_array($source) && $source['template'] && count($build_refused) === 4 && !hosting_tasks_extra_platform_successor_lock_offer($build['platform'], $source, $site_modes)['open']) {
     $source = '';
   }
   if (is_array($source)) {
@@ -1274,7 +1279,7 @@ function hosting_task_drupal_upgrade_form($node) {
       '#weight' => $weight++,
       '#states' => array('visible' => array(':input[name="parameters[target_platform]"]' => array('value' => 'build'))),
     );
-    $form['build_fields'] += hosting_tasks_extra_platform_successor_fields_form($build['platform'], $source, 'build_', array(), $build_refused);
+    $form['build_fields'] += hosting_tasks_extra_platform_successor_fields_form($build['platform'], $source, 'build_', array(), $build_refused, 0, $site_modes);
     // The platform the build was confirmed for: the start refuses another.
     $form['build_fields']['build_from'] = array('#type' => 'value', '#value' => (int) $build['platform']->nid, '#parents' => array('parameters', 'build_from'));
     $form['build_fields']['build_knows'] = array(
@@ -2435,7 +2440,7 @@ function hosting_tasks_extra_drupal_upgrade_all_build_why($platform, $account, $
     $out['why'] = $why;
     return $out;
   }
-  $plan = hosting_tasks_extra_platform_successor_plan($platform, hosting_tasks_extra_drupal_upgrade_build_args($args));
+  $plan = hosting_tasks_extra_platform_successor_plan($platform, hosting_tasks_extra_drupal_upgrade_build_args($args), $account);
   $out['why'] = $plan['why'];
   $out['plan'] = ($plan['why'] === '') ? $plan : NULL;
   return $out;
@@ -2590,7 +2595,7 @@ function hosting_task_drupal_upgrade_all_form($node) {
   $build = ($why === '') ? hosting_tasks_extra_drupal_upgrade_all_build_why($node, $account) : array('why' => $why);
   $source = ($build['why'] === '') ? hosting_tasks_extra_platform_successor_source($node) : '';
   $all_refused = is_array($source) ? hosting_tasks_extra_platform_successor_refused($node, $source) : array();
-  if (is_array($source) && $source['template'] && count($all_refused) === 4) {
+  if (is_array($source) && $source['template'] && count($all_refused) === 4 && !hosting_tasks_extra_platform_successor_lock_offer($node, $source)['open']) {
     $source = '';
   }
   if ($why === '' && !$judged['targets'] && !is_array($source)) {
@@ -3440,6 +3445,136 @@ function hosting_tasks_extra_build_include() {
 }
 
 /**
+ * Whether the copy of the shared rules that is loaded knows a build from a
+ * platform's own lock. An older one, loaded while the panel moves, takes that
+ * way to build away and leaves every other build as it is.
+ */
+function hosting_tasks_extra_lock_include() {
+  return hosting_tasks_extra_build_include()
+    && function_exists('_provision_tasks_extra_lock_build_choice')
+    && function_exists('_provision_tasks_extra_lock_build_words')
+    && function_exists('_provision_tasks_extra_lock_build_modes')
+    && function_exists('_provision_tasks_extra_lock_build_args')
+    && function_exists('_provision_tasks_extra_lock_build_judge')
+    && function_exists('_provision_tasks_extra_lock_fingerprint')
+    && function_exists('_provision_tasks_extra_lock_build_repositories_why');
+}
+
+/**
+ * The fingerprint of the files the panel's own build of a platform made, or
+ * '' when no build of it recorded one.
+ *
+ * The newest Verify of the platform that carries one: a Verify that built
+ * the platform, or the first Verify of a build from another one's lock.
+ */
+function hosting_tasks_extra_platform_build_fingerprint($nid) {
+  $value = db_query_range("SELECT a.value FROM {hosting_task} t INNER JOIN {node} n ON n.vid = t.vid
+      INNER JOIN {hosting_task_arguments} a ON a.vid = t.vid AND a.name = 'build_fingerprint'
+    WHERE t.rid = :rid AND t.task_type = 'verify'
+    ORDER BY t.nid DESC", 0, 1, array(':rid' => (int) $nid))->fetchField();
+  return (is_string($value) && preg_match('/^sha256:[0-9a-f]{64}:[0-9a-f]{64}$/', $value)) ? $value : '';
+}
+
+/**
+ * Why a platform cannot be built again from its own lock by an account, or
+ * ''. Read fresh for the dialogs, their validation and the start.
+ *
+ * Only a platform the panel built from a published package (ruling A), whose
+ * composer.json and composer.lock are still the ones the panel's build left:
+ * the account's logins can write both, and the build runs what they name.
+ *
+ * @param array|string $source
+ *   hosting_tasks_extra_platform_successor_source().
+ */
+function hosting_tasks_extra_platform_successor_lock_why($platform, $source, $account) {
+  if (!hosting_tasks_extra_lock_include()) {
+    return 'the control panel is being updated; look again in a few minutes';
+  }
+  if (!user_access('build platform_successor from lock', $account)) {
+    return 'this account may not build a platform again from its own composer.lock';
+  }
+  if (!is_array($source) || $source['strategy'] !== 'platform_composer') {
+    return 'it was not built from a published package: a platform built from a repository is built again from its Branch/tag';
+  }
+  $recorded = hosting_tasks_extra_platform_build_fingerprint($platform->nid);
+  if ($recorded === '') {
+    return 'it was built before the panel recorded the files of its builds: a build of its package makes a platform that can be built from its own composer.lock';
+  }
+  $now = _provision_tasks_extra_lock_fingerprint($source['path']);
+  if ($now === '') {
+    return 'its composer.json or composer.lock cannot be read';
+  }
+  if ($now !== $recorded) {
+    return 'its composer.json or composer.lock changed since the panel built it';
+  }
+  $raw = _provision_tasks_extra_read_plain($source['path'] . '/composer.json', 4194304);
+  return _provision_tasks_extra_lock_build_repositories_why(($raw === FALSE) ? NULL : json_decode($raw, TRUE));
+}
+
+/**
+ * The choices of a build from a platform's own lock that the lists refuse
+ * before the build: 'scope' and 'level', each value => why; and 'security',
+ * TRUE when a list takes security fixes only, so the tick cannot be cleared.
+ *
+ * @param array $site_modes
+ *   The site's own list for an Upgrade, array('state' => 'absent') for none.
+ */
+function hosting_tasks_extra_platform_successor_lock_refused($platform, $site_modes) {
+  $modes = hosting_tasks_extra_platform_successor_modes($platform);
+  $out = array('scope' => array(), 'level' => array(), 'security' => FALSE);
+  foreach (array('core', 'contrib', 'full') as $scope) {
+    $why = _provision_tasks_extra_build_lists_refusal(_provision_tasks_extra_build_kind_before(FALSE, 'lock', array('scope' => $scope, 'level' => 'patch')), $modes, $site_modes);
+    if ($why !== '') {
+      $out['scope'][$scope] = $why;
+    }
+  }
+  foreach (array('patch', 'minor') as $level) {
+    $kind = array('scope' => 'unchanged', 'level' => $level, 'security' => NULL, 'security_why' => '');
+    $why = _provision_tasks_extra_build_lists_refusal($kind, $modes, $site_modes);
+    if ($why !== '') {
+      $out['level'][$level] = $why;
+    }
+  }
+  foreach (array($modes, $site_modes) as $list) {
+    if (isset($list['state']) && $list['state'] === 'list') {
+      $axes = _provision_tasks_extra_upgrade_modes_axes($list['words']);
+      if ($axes['security']) {
+        $out['security'] = TRUE;
+      }
+    }
+  }
+  return $out;
+}
+
+/**
+ * Whether a dialog offers the current user a build from the platform's own
+ * lock: 'open', 'why' (when not open) and 'refused'
+ * (hosting_tasks_extra_platform_successor_lock_refused()).
+ *
+ * @param array|NULL $site_modes
+ *   The site's own list in an Upgrade's dialog, NULL elsewhere.
+ */
+function hosting_tasks_extra_platform_successor_lock_offer($platform, $source, $site_modes = NULL) {
+  $out = array('open' => FALSE, 'why' => '', 'refused' => NULL);
+  if (!hosting_tasks_extra_lock_include()) {
+    return $out;
+  }
+  $out['why'] = hosting_tasks_extra_platform_successor_lock_why($platform, $source, $GLOBALS['user']);
+  if ($out['why'] !== '') {
+    return $out;
+  }
+  $out['refused'] = hosting_tasks_extra_platform_successor_lock_refused($platform, is_array($site_modes) ? $site_modes : array('state' => 'absent'));
+  if (count($out['refused']['scope']) === 3) {
+    $out['why'] = reset($out['refused']['scope']);
+  }
+  elseif (count($out['refused']['level']) === 2) {
+    $out['why'] = reset($out['refused']['level']);
+  }
+  $out['open'] = ($out['why'] === '');
+  return $out;
+}
+
+/**
  * The permissions an Upgrade that builds its target first needs, all of them.
  */
 function hosting_tasks_extra_drupal_upgrade_build_access($account) {
@@ -3457,10 +3592,25 @@ function hosting_tasks_extra_drupal_upgrade_build_access($account) {
  */
 function hosting_tasks_extra_drupal_upgrade_build_args($args) {
   $out = array();
-  foreach (array('mode', 'version', 'name') as $key) {
+  // The last three only for a build from the platform's own lock.
+  foreach (array('mode', 'version', 'name', 'scope', 'level', 'security') as $key) {
     $out[$key] = (is_array($args) && isset($args['build_' . $key]) && is_scalar($args['build_' . $key])) ? (string) $args['build_' . $key] : '';
   }
+  if ($out['mode'] !== 'lock') {
+    unset($out['scope'], $out['level'], $out['security']);
+  }
   return $out;
+}
+
+/**
+ * The site's own drupal_upgrade_modes list, read on its platform.
+ */
+function hosting_tasks_extra_drupal_upgrade_site_modes($site) {
+  $platform = is_object($site) ? node_load($site->platform) : NULL;
+  if (!is_object($platform)) {
+    return array('state' => 'unreadable', 'line' => 0, 'why' => 'the platform of this site is not known', 'file' => '');
+  }
+  return _provision_tasks_extra_upgrade_modes(_provision_tasks_extra_docroot($platform->publish_path) . '/sites/' . hosting_tasks_extra_drupal_upgrade_site_name($site) . '/modules/boa_site_control.ini');
 }
 
 /**
@@ -3543,7 +3693,7 @@ function hosting_tasks_extra_drupal_upgrade_build_why($site, $account, $args = N
     return $out;
   }
   $build = hosting_tasks_extra_drupal_upgrade_build_args($args);
-  $plan = hosting_tasks_extra_platform_successor_plan($platform, $build);
+  $plan = hosting_tasks_extra_platform_successor_plan($platform, $build, $account);
   if ($plan['why'] !== '') {
     $out['why'] = $plan['why'];
     return $out;
@@ -3552,6 +3702,21 @@ function hosting_tasks_extra_drupal_upgrade_build_why($site, $account, $args = N
   if (isset($refused[$build['mode']])) {
     $out['why'] = $refused[$build['mode']];
     return $out;
+  }
+  // A build from the lock tells its kind beforehand too: this site's own
+  // list leaves out what it refuses, and one that takes security fixes only
+  // needs the tick.
+  if (isset($plan['choice'])) {
+    $site_modes = hosting_tasks_extra_drupal_upgrade_site_modes($site);
+    $why = _provision_tasks_extra_build_lists_refusal(_provision_tasks_extra_build_kind_before(FALSE, 'lock', $plan['choice']), array('state' => 'absent'), $site_modes);
+    $lock_refused = hosting_tasks_extra_platform_successor_lock_refused($platform, $site_modes);
+    if ($why === '' && $lock_refused['security'] && !$plan['choice']['security']) {
+      $why = 'the list in this site\'s boa_site_control.ini accepts security fixes only: tick Security fixes only';
+    }
+    if ($why !== '') {
+      $out['why'] = $why;
+      return $out;
+    }
   }
   $out['plan'] = $plan;
   return $out;
@@ -3955,14 +4120,19 @@ function hosting_tasks_extra_platform_successor_name_why($name, $context, $folde
  * @param object $platform
  *   The platform, loaded fresh.
  * @param array $args
- *   'mode', 'version', 'name'.
+ *   'mode', 'version', 'name'; for Mode lock also 'scope', 'level' and
+ *   'security'.
+ * @param object $account
+ *   The account that asks: a build from the platform's own lock is its
+ *   permission's alone.
  *
  * @return array
  *   'why' ('' when it may go ahead); then 'source'
  *   (hosting_tasks_extra_platform_successor_source()), 'release', 'title',
- *   'context', 'folder', 'publish_path', 'constraint' and 'major'.
+ *   'context', 'folder', 'publish_path', 'constraint' and 'major'; for Mode
+ *   lock also 'route', 'choice' and 'fingerprint'.
  */
-function hosting_tasks_extra_platform_successor_plan($platform, $args) {
+function hosting_tasks_extra_platform_successor_plan($platform, $args, $account = NULL) {
   $out = array('why' => '');
   $source = hosting_tasks_extra_platform_successor_source($platform);
   if (is_string($source)) {
@@ -3972,22 +4142,54 @@ function hosting_tasks_extra_platform_successor_plan($platform, $args) {
   $mode = isset($args['mode']) ? (string) $args['mode'] : '';
   $version = isset($args['version']) ? (string) $args['version'] : '';
   $name = isset($args['name']) ? trim(preg_replace('/\s+/', ' ', (string) $args['name'])) : '';
-  if (!$source['template'] && $mode !== 'version') {
+  if (!$source['template'] && $mode !== 'version' && $mode !== 'lock') {
     $out['why'] = 'give the ' . ($source['strategy'] === 'platform_composer_git' ? 'Branch/tag' : 'Version') . ' to build';
     return $out;
   }
   $release = hosting_tasks_extra_platform_release($platform);
-  $made = _provision_tasks_extra_successor_constraint($mode, $release, $version);
-  if ($made['why'] !== '') {
-    $out['why'] = 'the version: ' . $made['why'];
-    return $out;
+  $lock = array();
+  if ($mode === 'lock') {
+    // Built again from its own lock: what was chosen moves, the platform's
+    // own Version stays on the new record, and no major is crossed.
+    $why = is_object($account) ? hosting_tasks_extra_platform_successor_lock_why($platform, $source, $account) : 'the account that asks for it is not known';
+    if ($why !== '') {
+      $out['why'] = $why;
+      return $out;
+    }
+    $choice = _provision_tasks_extra_lock_build_choice($args);
+    if (is_string($choice)) {
+      $out['why'] = $choice;
+      return $out;
+    }
+    $refused = hosting_tasks_extra_platform_successor_lock_refused($platform, array('state' => 'absent'));
+    $why = _provision_tasks_extra_build_lists_refusal(_provision_tasks_extra_build_kind_before(FALSE, 'lock', $choice), hosting_tasks_extra_platform_successor_modes($platform), array('state' => 'absent'));
+    if ($why === '' && $refused['security'] && !$choice['security']) {
+      $why = 'the list in this platform\'s boa_platform_control.ini accepts security fixes only: tick Security fixes only';
+    }
+    if ($why !== '') {
+      $out['why'] = $why;
+      return $out;
+    }
+    $made = array('constraint' => $source['version'], 'major' => 0, 'why' => '');
+    $lock = array(
+      'route' => 'lock',
+      'choice' => $choice,
+      'fingerprint' => hosting_tasks_extra_platform_build_fingerprint($platform->nid),
+    );
   }
-  // The platform's line governs the build: a Mode of core's templates tells
-  // its kind beforehand.
-  $refused = hosting_tasks_extra_platform_successor_refused($platform, $source);
-  if (isset($refused[$mode])) {
-    $out['why'] = $refused[$mode];
-    return $out;
+  else {
+    $made = _provision_tasks_extra_successor_constraint($mode, $release, $version);
+    if ($made['why'] !== '') {
+      $out['why'] = 'the version: ' . $made['why'];
+      return $out;
+    }
+    // The platform's line governs the build: a Mode of core's templates
+    // tells its kind beforehand.
+    $refused = hosting_tasks_extra_platform_successor_refused($platform, $source);
+    if (isset($refused[$mode])) {
+      $out['why'] = $refused[$mode];
+      return $out;
+    }
   }
   $constraint = $made['constraint'];
   // A constraint typed for core's templates still names the major it asks
@@ -3995,7 +4197,7 @@ function hosting_tasks_extra_platform_successor_plan($platform, $args) {
   if ($source['template'] && $mode === 'version') {
     $made['major'] = _provision_tasks_extra_constraint_major($constraint);
   }
-  if (strlen($constraint) > 255 || $constraint[0] === '-' || preg_match('/[\x00-\x1f\x7f]/', $constraint)) {
+  if ($mode !== 'lock' && (strlen($constraint) > 255 || $constraint === '' || $constraint[0] === '-' || preg_match('/[\x00-\x1f\x7f]/', $constraint))) {
     $out['why'] = 'the version must be at most 255 characters, start with no dash and hold no control characters';
     return $out;
   }
@@ -4043,7 +4245,7 @@ function hosting_tasks_extra_platform_successor_plan($platform, $args) {
     'publish_path' => $publish_path,
     'constraint' => $constraint,
     'major' => (int) $made['major'],
-  );
+  ) + $lock;
 }
 
 /**
@@ -4089,7 +4291,8 @@ function hosting_task_platform_successor_form($node) {
     return $form;
   }
   $refused = hosting_tasks_extra_platform_successor_refused($platform, $source);
-  if ($source['template'] && count($refused) === 4) {
+  $offer = hosting_tasks_extra_platform_successor_lock_offer($platform, $source);
+  if ($source['template'] && count($refused) === 4 && !$offer['open']) {
     $form['none'] = array(
       '#markup' => '<p>' . t('Nothing can be built from here: @why.', array('@why' => reset($refused))) . '</p>',
     );
@@ -4117,13 +4320,18 @@ function hosting_task_platform_successor_form($node) {
  *   Mode => why, for the Modes a list refuses: left out, the reasons said.
  * @param int $weight
  *   The weight of the first field.
+ * @param array|NULL $site_modes
+ *   In an Upgrade's dialog, the site's own list, which a build from the
+ *   platform's own lock is held against too.
  */
-function hosting_tasks_extra_platform_successor_fields_form($platform, $source, $prefix = '', $visible = array(), $refused = array(), $weight = 0) {
+function hosting_tasks_extra_platform_successor_fields_form($platform, $source, $prefix = '', $visible = array(), $refused = array(), $weight = 0, $site_modes = NULL) {
   $form = array();
   $release = hosting_tasks_extra_platform_release($platform);
   $labels = (class_exists('HostingDeployForm') && method_exists('HostingDeployForm', 'getStrategyLabels')) ? HostingDeployForm::getStrategyLabels() : array();
   $git = $source['strategy'] === 'platform_composer_git';
   $shown = $visible ? array('visible' => $visible) : array();
+  $lock = hosting_tasks_extra_platform_successor_lock_offer($platform, $source, $site_modes);
+  $lock_label = t('From its own composer.lock: only what you choose below');
   $form[$prefix . 'source_line'] = array(
     '#markup' => '<p>' . t('Built from: @how, @what, @field @version, Drupal @release.', array(
       '@how' => isset($labels[$source['strategy']]) ? strip_tags($labels[$source['strategy']]) : $source['strategy'],
@@ -4157,6 +4365,9 @@ function hosting_tasks_extra_platform_successor_fields_form($platform, $source, 
     if (!isset($refused['version'])) {
       $options['version'] = t('Another version constraint');
     }
+    if ($lock['open']) {
+      $options['lock'] = $lock_label;
+    }
     $form[$prefix . 'mode'] = array(
       '#type' => 'radios',
       '#title' => t('Version'),
@@ -4179,6 +4390,29 @@ function hosting_tasks_extra_platform_successor_fields_form($platform, $source, 
       '#states' => array('visible' => array(':input[name="parameters[' . $prefix . 'mode]"]' => array('value' => 'version')) + $visible),
     );
   }
+  elseif ($lock['open']) {
+    // Another package: its new Version, or its own lock.
+    $form[$prefix . 'mode'] = array(
+      '#type' => 'radios',
+      '#title' => t('Build'),
+      '#options' => array(
+        'version' => t('A newer version of @package', array('@package' => $source['source'])),
+        'lock' => $lock_label,
+      ),
+      '#default_value' => 'version',
+      '#weight' => $weight + 1,
+      '#states' => $shown,
+    );
+    $form[$prefix . 'version'] = array(
+      '#type' => 'textfield',
+      '#title' => t('Version'),
+      '#description' => t('The Composer constraint to build.'),
+      '#default_value' => $source['version'],
+      '#maxlength' => 255,
+      '#weight' => $weight + 2,
+      '#states' => array('visible' => array(':input[name="parameters[' . $prefix . 'mode]"]' => array('value' => 'version')) + $visible),
+    );
+  }
   else {
     $form[$prefix . 'mode'] = array('#type' => 'value', '#value' => 'version');
     $form[$prefix . 'version'] = array(
@@ -4189,6 +4423,61 @@ function hosting_tasks_extra_platform_successor_fields_form($platform, $source, 
       '#required' => $required,
       '#maxlength' => 255,
       '#weight' => $weight + 1,
+      '#states' => $shown,
+    );
+  }
+  if ($lock['open']) {
+    $lock_shown = array('visible' => array(':input[name="parameters[' . $prefix . 'mode]"]' => array('value' => 'lock')) + $visible);
+    $scopes = array_diff_key(array(
+      'core' => t('Drupal core'),
+      'contrib' => t('Modules and themes'),
+      'full' => t('Drupal core and modules and themes'),
+    ), $lock['refused']['scope']);
+    $form[$prefix . 'scope'] = array(
+      '#type' => 'radios',
+      '#title' => t('What to upgrade'),
+      '#options' => $scopes,
+      '#default_value' => key($scopes),
+      '#weight' => $weight + 2,
+      '#states' => $lock_shown,
+    );
+    $levels = array_diff_key(array(
+      'patch' => t('Patch releases only'),
+      'minor' => t('Minor releases too'),
+    ), $lock['refused']['level']);
+    $form[$prefix . 'level'] = array(
+      '#type' => 'radios',
+      '#title' => t('How far'),
+      '#options' => $levels,
+      '#default_value' => key($levels),
+      '#weight' => $weight + 2,
+      '#states' => $lock_shown,
+    );
+    $not = array_unique(array_merge(array_values($lock['refused']['scope']), array_values($lock['refused']['level'])));
+    if ($not) {
+      $form[$prefix . 'level']['#description'] = t('Not offered: @why.', array('@why' => implode('; ', $not)));
+    }
+    $form[$prefix . 'security'] = array(
+      '#type' => 'checkbox',
+      '#title' => t('Security fixes only'),
+      '#description' => $lock['refused']['security']
+        ? t('Set by the list of upgrades this accepts: only the packages its security audit names, with the fewest changes besides.')
+        : t('Only the packages its security audit names, with the fewest changes besides.'),
+      '#default_value' => $lock['refused']['security'] ? 1 : 0,
+      '#disabled' => $lock['refused']['security'],
+      '#weight' => $weight + 2,
+      '#states' => $lock_shown,
+    );
+    $form[$prefix . 'lock_line'] = array(
+      '#markup' => '<p>' . t('Built again from its own composer.json and composer.lock: only what you choose moves, inside the versions its composer.json allows, and never to a new major release.') . '</p>',
+      '#weight' => $weight + 2,
+      '#states' => $lock_shown,
+    );
+  }
+  elseif ($lock['why'] !== '' && user_access('build platform_successor from lock')) {
+    $form[$prefix . 'lock_line'] = array(
+      '#markup' => '<p>' . t('A build from its own composer.lock is not offered: @why.', array('@why' => $lock['why'])) . '</p>',
+      '#weight' => $weight + 2,
       '#states' => $shown,
     );
   }
@@ -4218,8 +4507,10 @@ function hosting_tasks_extra_platform_successor_fields_form($platform, $source, 
   // Placed in a container of another dialog, each keeps its place among the
   // task's parameters.
   if ($prefix !== '') {
-    foreach (array('mode', 'version', 'name') as $key) {
-      $form[$prefix . $key]['#parents'] = array('parameters', $prefix . $key);
+    foreach (array('mode', 'version', 'name', 'scope', 'level', 'security') as $key) {
+      if (isset($form[$prefix . $key])) {
+        $form[$prefix . $key]['#parents'] = array('parameters', $prefix . $key);
+      }
     }
   }
   return $form;
@@ -4236,7 +4527,7 @@ function hosting_task_platform_successor_form_validate($form, &$form_state) {
     $why = hosting_tasks_extra_drupal_upgrade_all_refusal();
   }
   if ($why === '') {
-    $plan = hosting_tasks_extra_platform_successor_plan($platform, $args);
+    $plan = hosting_tasks_extra_platform_successor_plan($platform, $args, $GLOBALS['user']);
     $why = $plan['why'];
   }
   if ($why !== '') {
@@ -4273,9 +4564,15 @@ function hosting_tasks_extra_platform_successor_line($platform) {
       if ($row->site) {
         $task_words = (is_object($site) && node_access('view', $site)) ? t('the Upgrade of !site', array('!site' => l($site->title, 'node/' . $site->nid))) : t('an Upgrade');
       }
+      // A build from the lock of the platform it came from says so.
+      $mode = db_query("SELECT value FROM {hosting_task_arguments} WHERE vid = :vid AND name = :name", array(
+        ':vid' => (int) $row->vid,
+        ':name' => $row->site ? 'build_mode' : 'mode',
+      ))->fetchField();
+      $link = l($from->title, 'node/' . $from->nid);
       $items[] = t('Built by !task from !link on @date: @kind.', array(
         '!task' => $task_words,
-        '!link' => l($from->title, 'node/' . $from->nid),
+        '!link' => ($mode === 'lock') ? t('the composer.lock of !platform', array('!platform' => $link)) : $link,
         '@date' => format_date($row->executed ? $row->executed : $row->created, 'custom', 'Y-m-d'),
         '@kind' => hosting_tasks_extra_platform_successor_kind($from, $platform),
       ));
