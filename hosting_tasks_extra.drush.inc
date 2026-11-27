@@ -749,7 +749,7 @@ function hosting_tasks_extra_drupal_upgrade_return_start($task) {
       'return_copy_nid' => (int) $state['copy_nid'],
       'return_aside' => $aside,
       'return_upgrade' => (int) $state['upgrade'],
-      'return_when' => $state['date'] ? format_date($state['date'], 'custom', 'Y-m-d H:i') : '',
+      'return_when' => (isset($state['at']) && $state['at'] !== '') ? $state['at'] : ($state['date'] ? format_date($state['date'], 'custom', 'Y-m-d H:i') : ''),
       // A run that switches the copy on for its rename switches it off again
       // when the rename fails, unless it was on before Go back began.
       'return_copy_was_on' => ($copy_node->site_status == HOSTING_SITE_ENABLED) ? 1 : 0,

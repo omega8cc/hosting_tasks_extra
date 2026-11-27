@@ -1375,17 +1375,43 @@ function hosting_tasks_extra_drupal_upgrade_runs($site) {
 }
 
 /**
+ * When an Upgrade's way-back copy was made, as its own log line says it.
+ *
+ * The Upgrade reads its clock as the copy starts, after its checks: the
+ * task's start can fall in the minute before. Go back names the copy by the
+ * time the Upgrade gave it.
+ *
+ * @return string
+ *   'Y-m-d H:i', or '' when the row holds no such line.
+ */
+function hosting_tasks_extra_drupal_upgrade_copy_time($vid) {
+  if (!$vid) {
+    return '';
+  }
+  $line = db_query_range("SELECT message FROM {hosting_task_log} WHERE vid = :vid AND message LIKE :done ORDER BY lid DESC", 0, 1, array(
+    ':vid' => (int) $vid,
+    ':done' => db_like('UPGRADE/1/COPY done: ') . '%',
+  ))->fetchField();
+  $m = array();
+  if (is_string($line) && preg_match('/ as it was at ([0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}),/', $line, $m)) {
+    return $m[1];
+  }
+  return '';
+}
+
+/**
  * The newest Upgrade that moved a site, while the site is still where it
  * put it.
  *
  * @return array
  *   'platform' (the one it left, or 0), 'task' (the Upgrade's node id),
- *   'date', 'copy' (the name of the way back), 'made' (when the panel
- *   recorded that copy, or 0) and 'files' and 'database' (what the copy uses,
- *   in bytes, as its Upgrade measured them, or FALSE).
+ *   'date', 'at' (when its copy was made, as the Upgrade said it, or ''),
+ *   'copy' (the name of the way back), 'made' (when the panel recorded that
+ *   copy, or 0) and 'files' and 'database' (what the copy uses, in bytes, as
+ *   its Upgrade measured them, or FALSE).
  */
 function hosting_tasks_extra_drupal_upgrade_left($site) {
-  $out = array('platform' => 0, 'task' => 0, 'date' => 0, 'copy' => '', 'made' => 0, 'files' => FALSE, 'database' => FALSE);
+  $out = array('platform' => 0, 'task' => 0, 'date' => 0, 'at' => '', 'copy' => '', 'made' => 0, 'files' => FALSE, 'database' => FALSE);
   $runs = hosting_tasks_extra_drupal_upgrade_runs($site);
   if (!$runs || $runs[0]['target'] != $site->platform) {
     return $out;
@@ -1393,6 +1419,7 @@ function hosting_tasks_extra_drupal_upgrade_left($site) {
   $out['platform'] = $runs[0]['source'];
   $out['task'] = $runs[0]['task'];
   $out['date'] = $runs[0]['date'];
+  $out['at'] = hosting_tasks_extra_drupal_upgrade_copy_time($runs[0]['vid']);
   $out['copy'] = $runs[0]['copy'];
   if ($out['copy'] !== '') {
     $copy = hosting_get_site_by_url($out['copy']);
@@ -1657,11 +1684,13 @@ function hosting_tasks_extra_drupal_upgrade_migrate_validate($form, &$form_state
  * @return array
  *   'state': 'upgraded', 'resume' or '' (not offered), with 'why' for the
  *   last where there is something to say. 'domain', 'copy', 'copy_nid',
- *   'upgrade' (the Upgrade's node id), 'date', 'platform' and 'release' (of
- *   the copy), and for 'resume' the 'record' the earlier run kept.
+ *   'upgrade' (the Upgrade's node id), 'date' (when the Upgrade started),
+ *   'at' (when it made the copy, 'Y-m-d H:i' as it said it, or ''),
+ *   'platform' and 'release' (of the copy), and for 'resume' the 'record' the
+ *   earlier run kept.
  */
 function hosting_tasks_extra_drupal_upgrade_return_state($node, $account, $except_nid = 0) {
-  $out = array('state' => '', 'why' => '', 'domain' => '', 'copy' => '', 'copy_nid' => 0, 'upgrade' => 0, 'date' => 0, 'platform' => '', 'release' => '', 'record' => array());
+  $out = array('state' => '', 'why' => '', 'domain' => '', 'copy' => '', 'copy_nid' => 0, 'upgrade' => 0, 'date' => 0, 'at' => '', 'platform' => '', 'release' => '', 'record' => array());
   if (!is_object($node) || $node->type != 'site' || !is_object($account) || !isset($node->site_status)) {
     return $out;
   }
@@ -1750,7 +1779,12 @@ function hosting_tasks_extra_drupal_upgrade_return_state($node, $account, $excep
     $out['copy'] = $record['return_copy'];
     $out['copy_nid'] = (int) $copy->nid;
     $out['upgrade'] = isset($record['return_upgrade']) ? (int) $record['return_upgrade'] : 0;
-    $out['date'] = $out['upgrade'] ? (int) db_query_range("SELECT executed FROM {hosting_task} WHERE nid = :nid ORDER BY vid DESC", 0, 1, array(':nid' => $out['upgrade']))->fetchField() : 0;
+    $up = $out['upgrade'] ? db_query_range("SELECT vid, executed FROM {hosting_task} WHERE nid = :nid ORDER BY vid DESC", 0, 1, array(':nid' => $out['upgrade']))->fetchObject() : FALSE;
+    $out['date'] = is_object($up) ? (int) $up->executed : 0;
+    // The time the earlier run was given, else the Upgrade's own.
+    $out['at'] = (isset($record['return_when']) && preg_match('/^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}$/', $record['return_when']))
+      ? $record['return_when']
+      : (is_object($up) ? hosting_tasks_extra_drupal_upgrade_copy_time($up->vid) : '');
     $out['platform'] = is_object($platform) ? $platform->title : '';
     $out['release'] = (is_object($platform) && isset($platform->release) && is_object($platform->release) && isset($platform->release->version)) ? (string) $platform->release->version : '';
     $out['record'] = $record;
@@ -1803,6 +1837,7 @@ function hosting_tasks_extra_drupal_upgrade_return_state($node, $account, $excep
   $out['copy_nid'] = (int) $copy->nid;
   $out['upgrade'] = (int) $left['task'];
   $out['date'] = (int) $left['date'];
+  $out['at'] = $left['at'];
   $out['platform'] = $platform->title;
   $out['release'] = (isset($platform->release) && is_object($platform->release) && isset($platform->release->version)) ? (string) $platform->release->version : '';
   return $out;
@@ -1830,8 +1865,8 @@ function hosting_task_drupal_upgrade_return_form($node) {
   }
   $names = array(
     '!domain' => check_plain($state['domain']),
-    '@date' => $state['date'] ? format_date($state['date'], 'custom', 'Y-m-d') : t('the day of the upgrade'),
-    '@time' => $state['date'] ? format_date($state['date'], 'custom', 'H:i') : t('the time of the upgrade'),
+    '@date' => $state['at'] !== '' ? substr($state['at'], 0, 10) : ($state['date'] ? format_date($state['date'], 'custom', 'Y-m-d') : t('the day of the upgrade')),
+    '@time' => $state['at'] !== '' ? substr($state['at'], 11, 5) : ($state['date'] ? format_date($state['date'], 'custom', 'H:i') : t('the time of the upgrade')),
     '@platform' => $state['platform'],
     '@release' => $state['release'],
   );
