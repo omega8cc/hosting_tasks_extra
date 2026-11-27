@@ -348,6 +348,10 @@ function hosting_tasks_extra_permission() {
       'title' => t('create platform_successor task'),
       'description' => t('Build a Composer platform again at a newer version, kept only when it is a newer version of the same codebase. Needs create platform too.'),
     ),
+    'build drupal_upgrade target' => array(
+      'title' => t('build drupal_upgrade target'),
+      'description' => t('Let an Upgrade, or Upgrade all sites, build a newer version of the platform first, as Build newer version does. Needs create platform_successor task and create platform too.'),
+    ),
   );
 }
 
@@ -551,14 +555,34 @@ function hosting_tasks_extra_upgrade_include() {
  *
  * A task's own callback replaces the panel's check, which is what tests the
  * permission, view access, the panel's own site and an enabled site: so it
- * comes first. The button then shows only when a platform is ready.
+ * comes first. The button then shows when a platform is ready, or when none
+ * is and the Upgrade may build a newer version of the site's platform first.
  */
 function hosting_tasks_extra_drupal_upgrade_task_access($node, $task) {
   if (!hosting_task_menu_access($node, $task)) {
     return FALSE;
   }
   $found = hosting_tasks_extra_drupal_upgrade_targets($node, $GLOBALS['user']);
-  return !empty($found['ready']);
+  return !empty($found['ready']) || hosting_tasks_extra_drupal_upgrade_build_open($node, $GLOBALS['user'], $found);
+}
+
+/**
+ * Whether the Upgrade may offer to build a newer version of a site's
+ * platform first, by what is cheap to read: the permissions, the judge's
+ * answer already at hand, the platform's record and one query. The dialog
+ * and the start read the rest.
+ */
+function hosting_tasks_extra_drupal_upgrade_build_open($site, $account, $found) {
+  if (!in_array($found['state'], array('ready', 'not_ready', 'none'), TRUE) || !hosting_tasks_extra_drupal_upgrade_build_access($account) || !hosting_tasks_extra_build_include()) {
+    return FALSE;
+  }
+  $platform = node_load($site->platform);
+  if (!is_object($platform) || $platform->type != 'platform' || !isset($platform->platform_status)
+    || !in_array((int) $platform->platform_status, array(HOSTING_PLATFORM_ENABLED, HOSTING_PLATFORM_LOCKED), TRUE)
+    || !node_access('update', $platform, $account)) {
+    return FALSE;
+  }
+  return hosting_tasks_extra_platform_successor_built($platform) === '' && !hosting_tasks_extra_platform_successor_busy($platform->nid);
 }
 
 /**
@@ -1220,7 +1244,40 @@ function hosting_task_drupal_upgrade_form($node) {
       $form[$nid]['target_platform']['#description'] = t('Security advisories, and whatever else cannot be told from here, are checked when the upgrade starts.');
     }
   }
-  if (!$found['ready']) {
+  // Last, the choice of building a newer version of the site's platform first.
+  $build = hosting_tasks_extra_drupal_upgrade_build_why($node, $GLOBALS['user']);
+  $source = ($build['why'] === '' && is_object($build['platform'])) ? hosting_tasks_extra_platform_successor_source($build['platform']) : '';
+  if (is_array($source)) {
+    $platform_title = check_plain($build['platform']->title);
+    $form['build']['target_platform'] = array(
+      '#type' => 'radio',
+      '#title' => t('Build a newer version of !platform first', array('!platform' => $platform_title)),
+      '#parents' => array('parameters', 'target_platform'),
+      '#return_value' => 'build',
+      '#weight' => $weight++,
+    );
+    if (!$found['ready']) {
+      $form['build']['target_platform']['#default_value'] = 'build';
+    }
+    $knows = $source['template']
+      ? t('A version chosen by its release moves Drupal core only, with what core requires; another version constraint brings whatever that version holds.')
+      : (($source['strategy'] === 'platform_composer_git') ? t('The build holds what your branch or tag holds.') : t('The build brings whatever the package\'s new version brings.'));
+    $form['build_fields'] = array(
+      '#type' => 'container',
+      '#weight' => $weight++,
+      '#states' => array('visible' => array(':input[name="parameters[target_platform]"]' => array('value' => 'build'))),
+    );
+    $form['build_fields'] += hosting_tasks_extra_platform_successor_fields_form($build['platform'], $source, 'build_', array(), hosting_tasks_extra_drupal_upgrade_build_refused($node, $source));
+    $form['build_fields']['build_knows'] = array(
+      '#markup' => '<p>' . $knows . '</p>',
+      '#weight' => 4,
+    );
+    $form['build_fields']['build_text'] = array(
+      '#markup' => '<p>' . t('The newer version is built first, in a new folder, and kept only when it is a newer version of the same codebase. If it is not kept, or this site cannot move onto it, the site is not touched. A kept build stays as a platform and is offered to the other sites of !platform too. While it builds, the other tasks of this account wait.', array('!platform' => $platform_title)) . '</p>',
+      '#weight' => 5,
+    );
+  }
+  if (!$found['ready'] && !is_array($source)) {
     $form['none'] = array(
       '#markup' => '<p><strong>' . t('No platform is ready for this site to be upgraded onto.') . '</strong>' . ($found['why'] !== '' ? ' ' . check_plain(drupal_ucfirst($found['why'])) . '.' : '') . '</p>',
       '#weight' => -95,
@@ -1259,6 +1316,14 @@ function hosting_task_drupal_upgrade_form($node) {
  */
 function hosting_task_drupal_upgrade_form_validate($form, &$form_state) {
   $site = node_load($form_state['values']['nid']);
+  $parameters = (isset($form_state['values']['parameters']) && is_array($form_state['values']['parameters'])) ? $form_state['values']['parameters'] : array();
+  if (is_object($site) && isset($parameters['target_platform']) && (string) $parameters['target_platform'] === 'build') {
+    $build = hosting_tasks_extra_drupal_upgrade_build_why($site, $GLOBALS['user'], $parameters);
+    if ($build['why'] !== '') {
+      form_set_error('parameters][target_platform', t('Not started: @why.', array('@why' => $build['why'])));
+    }
+    return;
+  }
   $target = isset($form_state['values']['parameters']['target_platform']) ? (int) $form_state['values']['parameters']['target_platform'] : 0;
   if (!is_object($site) || $target < 1) {
     form_set_error('parameters][target_platform', t('Choose the platform to upgrade onto.'));
@@ -1325,16 +1390,26 @@ function hosting_tasks_extra_drupal_upgrade_step_title($node) {
       'unlock' => 'Build newer version (the build unlocked)',
       'delete' => 'Build newer version (the build removed)',
     ),
+    // The same rows of an Upgrade that builds its target first.
+    'drupal_upgrade_build' => array(
+      'verify' => 'Upgrade, the build',
+      'unlock' => 'Upgrade, the build unlocked',
+      'delete' => 'Upgrade, the build removed',
+    ),
   );
   $parent = db_query_range("SELECT task_type FROM {hosting_task} WHERE nid = :nid ORDER BY vid DESC", 0, 1, array(':nid' => (int) $node->task_args['upgrade_run']))->fetchField();
   $step = ($parent === 'drupal_upgrade_return')
     ? (isset($node->task_args['return_step']) ? (string) $node->task_args['return_step'] : '')
     : (string) $node->task_type;
-  if (!$parent || !isset($steps[$parent][$step])) {
-    return;
-  }
   $ref = node_load($node->rid);
   if (!is_object($ref)) {
+    return;
+  }
+  // An Upgrade's steps on a platform are those of its build.
+  if ($parent === 'drupal_upgrade' && $ref->type == 'platform') {
+    $parent = 'drupal_upgrade_build';
+  }
+  if (!$parent || !isset($steps[$parent][$step])) {
     return;
   }
   $title = $steps[$parent][$step] . ': ' . ($ref->type == 'site' ? hosting_site_canonical_url($ref) : $ref->title);
@@ -2826,6 +2901,20 @@ function hosting_tasks_extra_drupal_upgrade_line($site, $account) {
       }
       $lines[] = ($by_list ? t('No upgrade is accepted: @why.', array('@why' => $found['why'])) : t('Not ready: @why.', array('@why' => $found['why'])));
       break;
+  }
+  // With no platform ready, the Upgrade that can build a newer version of
+  // the site's platform first says so, with its button.
+  if (in_array($found['state'], array('none', 'not_ready'), TRUE) && hosting_tasks_extra_drupal_upgrade_build_open($site, $account, $found)) {
+    $platform = node_load($site->platform);
+    $lines[] = t('The Upgrade can build a newer version of @platform first.', array('@platform' => $platform->title))
+      . ' ' . l(t('Upgrade'), 'hosting_confirm/' . $site->nid . '/site_drupal_upgrade', array('query' => array('token' => drupal_get_token($account->uid))));
+  }
+  switch ($found['state']) {
+    case 'ready':
+    case 'none':
+    case 'not_ready':
+      break;
+
 
     case 'off':
     case 'unreadable':
@@ -3063,6 +3152,136 @@ function hosting_tasks_extra_successor_include() {
 }
 
 /**
+ * Whether the copy of the shared rules that is loaded knows an Upgrade that
+ * builds its target first. An older one, loaded while the panel moves, takes
+ * that choice away and leaves the Upgrade and Build newer version as they are.
+ */
+function hosting_tasks_extra_build_include() {
+  return hosting_tasks_extra_successor_include()
+    && function_exists('_provision_tasks_extra_build_kind_before')
+    && function_exists('_provision_tasks_extra_build_lists_refusal')
+    && function_exists('_provision_tasks_extra_build_time_why');
+}
+
+/**
+ * The permissions an Upgrade that builds its target first needs, all of them.
+ */
+function hosting_tasks_extra_drupal_upgrade_build_access($account) {
+  foreach (array('build drupal_upgrade target', 'create platform_successor task', 'create platform') as $permission) {
+    if (!user_access($permission, $account)) {
+      return FALSE;
+    }
+  }
+  return TRUE;
+}
+
+/**
+ * The three build values of a task's arguments, by Build newer version's
+ * names: an Upgrade carries them as build_mode, build_version, build_name.
+ */
+function hosting_tasks_extra_drupal_upgrade_build_args($args) {
+  $out = array();
+  foreach (array('mode', 'version', 'name') as $key) {
+    $out[$key] = (is_array($args) && isset($args['build_' . $key]) && is_scalar($args['build_' . $key])) ? (string) $args['build_' . $key] : '';
+  }
+  return $out;
+}
+
+/**
+ * The template Modes the site's two lists refuse before a build: mode =>
+ * why. A Mode of core's templates tells the kind of move beforehand.
+ */
+function hosting_tasks_extra_drupal_upgrade_build_refused($site, $source) {
+  $platform = node_load($site->platform);
+  if (!is_object($platform) || !$source['template']) {
+    return array();
+  }
+  $root = _provision_tasks_extra_docroot($platform->publish_path);
+  $platform_modes = _provision_tasks_extra_upgrade_modes($root . '/sites/all/modules/boa_platform_control.ini');
+  $site_modes = _provision_tasks_extra_upgrade_modes($root . '/sites/' . hosting_tasks_extra_drupal_upgrade_site_name($site) . '/modules/boa_site_control.ini');
+  $refused = array();
+  foreach (array('patch', 'minor', 'major') as $mode) {
+    $why = _provision_tasks_extra_build_lists_refusal(_provision_tasks_extra_build_kind_before(TRUE, $mode), $platform_modes, $site_modes);
+    if ($why !== '') {
+      $refused[$mode] = $why;
+    }
+  }
+  return $refused;
+}
+
+/**
+ * Why an account cannot have a site's Upgrade build its target first, or ''.
+ *
+ * Read fresh for the dialog, its validate and the start: the permissions,
+ * the site's own refusals (by the Upgrade's judge), what an earlier run left
+ * of the site, the site busy, Build newer version's own checks of the site's
+ * platform and the panel-wide refusal; with $args also the build's own plan
+ * and the two lists against the kind a template's Mode tells.
+ *
+ * @param array $args
+ *   The task's build_mode, build_version and build_name, or NULL.
+ * @param int $except
+ *   The run's own row, at its start.
+ *
+ * @return array
+ *   'why' ('' when it may go ahead), 'platform' (loaded fresh) and, with
+ *   $args, 'plan' (hosting_tasks_extra_platform_successor_plan()).
+ */
+function hosting_tasks_extra_drupal_upgrade_build_why($site, $account, $args = NULL, $except = 0) {
+  $out = array('why' => '', 'platform' => NULL, 'plan' => NULL);
+  if (!user_access('create drupal_upgrade task', $account) || !hosting_tasks_extra_drupal_upgrade_build_access($account)) {
+    $out['why'] = 'this account may not build a newer version of a platform from an Upgrade';
+    return $out;
+  }
+  if (!hosting_tasks_extra_build_include()) {
+    $out['why'] = 'the control panel is being updated; look again in a few minutes';
+    return $out;
+  }
+  $found = hosting_tasks_extra_drupal_upgrade_targets($site, $account, (bool) $except);
+  if (!in_array($found['state'], array('ready', 'not_ready', 'none'), TRUE)) {
+    $out['why'] = ($found['why'] !== '') ? $found['why'] : 'this site cannot be upgraded';
+    return $out;
+  }
+  $busy = hosting_tasks_extra_drupal_upgrade_busy($site->nid, $except);
+  if ($busy !== '') {
+    $out['why'] = 'a ' . $busy . ' task is waiting or running on this site';
+    return $out;
+  }
+  $platform = node_load($site->platform, NULL, TRUE);
+  $out['platform'] = $platform;
+  if (!is_object($platform)) {
+    $out['why'] = 'the platform of this site is not known';
+    return $out;
+  }
+  $left = hosting_tasks_extra_drupal_upgrade_leftover($site, _provision_tasks_extra_docroot($platform->publish_path));
+  if (is_string($left) && $left !== '') {
+    $out['why'] = $left;
+    return $out;
+  }
+  $why = hosting_tasks_extra_platform_successor_why($platform, $account, $except);
+  if ($why === '') {
+    $why = hosting_tasks_extra_drupal_upgrade_all_refusal();
+  }
+  if ($why !== '' || $args === NULL) {
+    $out['why'] = $why;
+    return $out;
+  }
+  $build = hosting_tasks_extra_drupal_upgrade_build_args($args);
+  $plan = hosting_tasks_extra_platform_successor_plan($platform, $build);
+  if ($plan['why'] !== '') {
+    $out['why'] = $plan['why'];
+    return $out;
+  }
+  $refused = hosting_tasks_extra_drupal_upgrade_build_refused($site, $plan['source']);
+  if (isset($refused[$build['mode']])) {
+    $out['why'] = $refused[$build['mode']];
+    return $out;
+  }
+  $out['plan'] = $plan;
+  return $out;
+}
+
+/**
  * One value of a platform's build field, as text.
  */
 function _hosting_tasks_extra_field($node, $field) {
@@ -3183,7 +3402,7 @@ function hosting_tasks_extra_platform_successor_built($platform) {
  *   A row left out: the run that asks.
  */
 function hosting_tasks_extra_platform_successor_busy($platform_nid, $except = 0) {
-  return db_query_range("SELECT t.task_type FROM {hosting_task} t INNER JOIN {node} n ON n.vid = t.vid
+  $type = db_query_range("SELECT t.task_type FROM {hosting_task} t INNER JOIN {node} n ON n.vid = t.vid
     WHERE t.rid = :rid AND t.nid <> :except AND t.task_type IN (:types) AND t.task_status IN (:open)
     ORDER BY t.vid ASC", 0, 1, array(
       ':rid' => (int) $platform_nid,
@@ -3191,6 +3410,25 @@ function hosting_tasks_extra_platform_successor_busy($platform_nid, $except = 0)
       ':types' => array('delete', 'platform_successor'),
       ':open' => array(HOSTING_TASK_QUEUED, HOSTING_TASK_PROCESSING),
     ))->fetchField();
+  if ($type) {
+    return $type;
+  }
+  // An Upgrade that builds a newer version of this platform first counts as
+  // a build of it: by the site it upgrades, and once it runs by its own row.
+  $site = db_query_range("SELECT t.rid FROM {hosting_task} t INNER JOIN {node} n ON n.vid = t.vid
+      INNER JOIN {hosting_task_arguments} a ON a.vid = t.vid AND a.name = 'target_platform' AND a.value = 'build'
+      LEFT JOIN {node} sn ON sn.nid = t.rid
+      LEFT JOIN {hosting_site} s ON s.vid = sn.vid
+      LEFT JOIN {hosting_task_arguments} f ON f.vid = t.vid AND f.name = 'successor_from'
+    WHERE t.task_type = 'drupal_upgrade' AND t.nid <> :except AND t.task_status IN (:open)
+      AND (s.platform = :rid OR f.value = :from)
+    ORDER BY t.vid ASC", 0, 1, array(
+      ':rid' => (int) $platform_nid,
+      ':from' => (string) (int) $platform_nid,
+      ':except' => (int) $except,
+      ':open' => array(HOSTING_TASK_QUEUED, HOSTING_TASK_PROCESSING),
+    ))->fetchField();
+  return $site ? 'drupal_upgrade:' . (int) $site : FALSE;
 }
 
 /**
@@ -3227,13 +3465,39 @@ function hosting_tasks_extra_platform_successor_runs($nid, $statuses, $built = 0
       INNER JOIN {hosting_task_arguments} r ON r.vid = t.vid AND r.name = :run AND r.value = CAST(t.nid AS CHAR)
     WHERE " . $where . " AND t.task_type = :type AND t.task_status IN (:statuses)
     ORDER BY t.nid DESC", $args)->fetchAll();
+  // And the Upgrades that built their target first: the row sits on the
+  // site, the platform built from is its successor_from.
+  $where = $nid ? 'f.value = :from' : 's.value = :built';
+  $args[':type'] = 'drupal_upgrade';
+  $args[':fromname'] = 'successor_from';
+  if ($nid) {
+    unset($args[':rid']);
+    $args[':from'] = (string) (int) $nid;
+  }
+  $upgrades = db_query("SELECT t.nid, f.value AS rid, t.rid AS site, t.vid, t.task_status, t.executed, n.created, s.value AS successor
+    FROM {hosting_task} t INNER JOIN {node} n ON n.vid = t.vid
+      INNER JOIN {hosting_task_arguments} s ON s.vid = t.vid AND s.name = :successor
+      INNER JOIN {hosting_task_arguments} r ON r.vid = t.vid AND r.name = :run AND r.value = CAST(t.nid AS CHAR)
+      INNER JOIN {hosting_task_arguments} f ON f.vid = t.vid AND f.name = :fromname
+    WHERE " . $where . " AND t.task_type = :type AND t.task_status IN (:statuses)
+    ORDER BY t.nid DESC", $args)->fetchAll();
+  $rows = array_merge($rows, $upgrades);
+  usort($rows, '_hosting_tasks_extra_platform_successor_runs_order');
   $out = array();
   foreach ($rows as $row) {
+    $row->site = isset($row->site) ? (int) $row->site : 0;
     $made = db_query("SELECT h.status, h.publish_path, n.title FROM {hosting_platform} h INNER JOIN {node} n ON n.vid = h.vid WHERE n.nid = :nid", array(':nid' => (int) $row->successor))->fetchObject();
     $row->made = $made ? $made : NULL;
     $out[] = $row;
   }
   return $out;
+}
+
+/**
+ * Orders the runs that made a platform: newest row first.
+ */
+function _hosting_tasks_extra_platform_successor_runs_order($a, $b) {
+  return ((int) $b->nid > (int) $a->nid) ? 1 : (((int) $b->nid < (int) $a->nid) ? -1 : 0);
 }
 
 /**
@@ -3300,6 +3564,9 @@ function hosting_tasks_extra_platform_successor_why($platform, $account, $except
   $busy = hosting_tasks_extra_platform_successor_busy($platform->nid, $except);
   if ($busy === 'delete') {
     return 'a Delete of this platform is waiting or running';
+  }
+  if (is_string($busy) && strpos($busy, 'drupal_upgrade:') === 0) {
+    return 'an Upgrade of ' . hosting_tasks_extra_node_title(substr($busy, 15)) . ' builds a newer version of this platform';
   }
   if ($busy) {
     return 'a Build newer version of this platform is waiting or running';
@@ -3476,10 +3743,36 @@ function hosting_task_platform_successor_form($node) {
     );
     return $form;
   }
+  $form += hosting_tasks_extra_platform_successor_fields_form($platform, $source);
+  $form['kept'] = array(
+    '#markup' => '<p>' . t('The build is kept, and offered to the sites of this platform by their Upgrade, only when it is a newer version of the same codebase; otherwise it is deleted. A security advisory the build has and this platform does not is named in the result. While it runs, the other tasks of this account wait.') . '</p>',
+    '#weight' => 4,
+  );
+  return $form;
+}
+
+/**
+ * Build newer version's fields for a platform, for its own dialog and for
+ * an Upgrade's that builds its target first.
+ *
+ * @param string $prefix
+ *   Put before each field's name: '' in Build newer version's own dialog,
+ *   'build_' in a site task's (a site task's plain name is one of
+ *   hosting_git's generic arguments).
+ * @param array $visible
+ *   A #states condition every field also needs to be shown, or array().
+ * @param array $refused
+ *   Mode => why, for the Modes a list refuses: left out, the reasons said.
+ * @param int $weight
+ *   The weight of the first field.
+ */
+function hosting_tasks_extra_platform_successor_fields_form($platform, $source, $prefix = '', $visible = array(), $refused = array(), $weight = 0) {
+  $form = array();
   $release = hosting_tasks_extra_platform_release($platform);
   $labels = (class_exists('HostingDeployForm') && method_exists('HostingDeployForm', 'getStrategyLabels')) ? HostingDeployForm::getStrategyLabels() : array();
   $git = $source['strategy'] === 'platform_composer_git';
-  $form['from'] = array(
+  $shown = $visible ? array('visible' => $visible) : array();
+  $form[$prefix . 'from'] = array(
     '#markup' => '<p>' . t('Built from: @how, @what, @field @version, Drupal @release.', array(
       '@how' => isset($labels[$source['strategy']]) ? strip_tags($labels[$source['strategy']]) : $source['strategy'],
       '@what' => $source['source'],
@@ -3487,13 +3780,18 @@ function hosting_task_platform_successor_form($node) {
       '@version' => $source['version'] !== '' ? $source['version'] : ($git ? 'master' : t('(none)')),
       '@release' => $release,
     )) . '</p>',
-    '#weight' => 0,
+    '#weight' => $weight,
+    '#states' => $shown,
   );
+  // A field hidden by its dialog's choice is checked by the dialog's own
+  // validate, never as required: a required field the browser does not show
+  // would refuse every other choice.
+  $required = ($prefix === '');
   if ($source['template']) {
     $options = array();
     foreach (array('patch', 'minor', 'major') as $mode) {
       $made = _provision_tasks_extra_successor_constraint($mode, $release, '');
-      if ($made['why'] !== '') {
+      if ($made['why'] !== '' || isset($refused[$mode])) {
         continue;
       }
       $n = _provision_tasks_extra_release_numbers($release);
@@ -3505,49 +3803,58 @@ function hosting_task_platform_successor_form($node) {
       $options[$mode] = $words[$mode];
     }
     $options['version'] = t('Another version constraint');
-    $form['mode'] = array(
+    $form[$prefix . 'mode'] = array(
       '#type' => 'radios',
       '#title' => t('Version'),
       '#options' => $options,
-      '#default_value' => 'patch',
-      '#weight' => 1,
+      '#default_value' => key($options),
+      '#weight' => $weight + 1,
+      '#states' => $shown,
     );
-    $form['version'] = array(
+    if ($refused) {
+      $form[$prefix . 'mode']['#description'] = check_plain(t('Not offered: @why.', array('@why' => implode('; ', array_unique($refused)))));
+    }
+    $form[$prefix . 'version'] = array(
       '#type' => 'textfield',
       '#title' => t('Version constraint'),
       '#description' => t('A Composer constraint, used with "Another version constraint" only.'),
       '#default_value' => $source['version'],
       '#maxlength' => 255,
-      '#weight' => 2,
-      '#states' => array('visible' => array(':input[name="parameters[mode]"]' => array('value' => 'version'))),
+      '#weight' => $weight + 2,
+      '#states' => array('visible' => array(':input[name="parameters[' . $prefix . 'mode]"]' => array('value' => 'version')) + $visible),
     );
   }
   else {
-    $form['mode'] = array('#type' => 'value', '#value' => 'version');
-    $form['version'] = array(
+    $form[$prefix . 'mode'] = array('#type' => 'value', '#value' => 'version');
+    $form[$prefix . 'version'] = array(
       '#type' => 'textfield',
       '#title' => $git ? t('Branch/tag') : t('Version'),
       '#description' => $git ? t('The branch or tag of the repository to build.') : t('The Composer constraint to build.'),
       '#default_value' => $source['version'],
-      '#required' => TRUE,
+      '#required' => $required,
       '#maxlength' => 255,
-      '#weight' => 1,
+      '#weight' => $weight + 1,
+      '#states' => $shown,
     );
   }
   $name = hosting_tasks_extra_platform_successor_default_name($platform, $source);
-  $form['name'] = array(
+  $form[$prefix . 'name'] = array(
     '#type' => 'textfield',
     '#title' => t('Name of the new platform'),
     '#default_value' => $name,
-    '#required' => TRUE,
+    '#required' => $required,
     '#maxlength' => 200,
-    '#weight' => 3,
+    '#weight' => $weight + 3,
     '#description' => t('Its folder is made from the name: @folder for this one.', array('@folder' => dirname($source['path']) . '/' . _hosting_platform_context_name($name))),
+    '#states' => $shown,
   );
-  $form['kept'] = array(
-    '#markup' => '<p>' . t('The build is kept, and offered to the sites of this platform by their Upgrade, only when it is a newer version of the same codebase; otherwise it is deleted. A security advisory the build has and this platform does not is named in the result. While it runs, the other tasks of this account wait.') . '</p>',
-    '#weight' => 4,
-  );
+  // Placed in a container of another dialog, each keeps its place among the
+  // task's parameters.
+  if ($prefix !== '') {
+    foreach (array('mode', 'version', 'name') as $key) {
+      $form[$prefix . $key]['#parents'] = array('parameters', $prefix . $key);
+    }
+  }
   return $form;
 }
 
@@ -3581,26 +3888,48 @@ function hosting_tasks_extra_platform_successor_line($platform) {
   if (!hosting_tasks_extra_successor_include()) {
     return '';
   }
-  $kept = array(HOSTING_TASK_SUCCESS, HOSTING_TASK_WARNING);
+  $ended = array(HOSTING_TASK_SUCCESS, HOSTING_TASK_WARNING, HOSTING_TASK_ERROR);
   $items = array();
-  foreach (hosting_tasks_extra_platform_successor_runs(0, $kept, $platform->nid) as $row) {
+  $named = FALSE;
+  foreach (hosting_tasks_extra_platform_successor_runs(0, $ended, $platform->nid) as $row) {
+    if (!hosting_tasks_extra_platform_successor_row_kept($row)) {
+      continue;
+    }
     $from = node_load($row->rid);
     if (is_object($from)) {
-      $items[] = t('Built by Build newer version from !link on @date: @kind.', array(
+      $site = $row->site ? node_load($row->site) : FALSE;
+      $items[] = t('Built by !task from !link on @date: @kind.', array(
+        '!task' => is_object($site) ? t('the Upgrade of !site', array('!site' => l($site->title, 'node/' . $site->nid))) : t('Build newer version'),
         '!link' => l($from->title, 'node/' . $from->nid),
         '@date' => format_date($row->executed ? $row->executed : $row->created, 'custom', 'Y-m-d'),
         '@kind' => hosting_tasks_extra_platform_successor_kind($from, $platform),
       ));
+      $named = TRUE;
     }
     break;
   }
+  // A row gone with its site: the build's own first Verify keeps where it
+  // came from.
+  if (!$named) {
+    $verify = db_query_range("SELECT f.value AS rid, t.executed FROM {hosting_task} t INNER JOIN {node} n ON n.vid = t.vid
+        INNER JOIN {hosting_task_arguments} f ON f.vid = t.vid AND f.name = 'successor_from'
+      WHERE t.rid = :rid AND t.task_type = 'verify' ORDER BY t.nid ASC", 0, 1, array(':rid' => (int) $platform->nid))->fetchObject();
+    $from = $verify ? node_load((int) $verify->rid) : FALSE;
+    if (is_object($from) && $from->type == 'platform') {
+      $items[] = t('Built from !link on @date: @kind.', array(
+        '!link' => l($from->title, 'node/' . $from->nid),
+        '@date' => format_date($verify->executed, 'custom', 'Y-m-d'),
+        '@kind' => hosting_tasks_extra_platform_successor_kind($from, $platform),
+      ));
+    }
+  }
   $n = 0;
-  foreach (hosting_tasks_extra_platform_successor_runs($platform->nid, $kept) as $row) {
+  foreach (hosting_tasks_extra_platform_successor_runs($platform->nid, $ended) as $row) {
+    if (!hosting_tasks_extra_platform_successor_row_kept($row)) {
+      continue;
+    }
     if (++$n > 3) {
       break;
-    }
-    if (!$row->made || (int) $row->made->status === HOSTING_PLATFORM_DELETED) {
-      continue;
     }
     $built = node_load((int) $row->successor);
     if (is_object($built)) {
@@ -3612,6 +3941,21 @@ function hosting_tasks_extra_platform_successor_line($platform) {
     }
   }
   return implode('<br />', $items);
+}
+
+/**
+ * Whether a run that made a platform kept it: Build newer version's row by
+ * its status, as before; an Upgrade's by its platform, which is kept whether
+ * or not the site then moved onto it.
+ */
+function hosting_tasks_extra_platform_successor_row_kept($row) {
+  if (!$row->made || (int) $row->made->status === HOSTING_PLATFORM_DELETED) {
+    return FALSE;
+  }
+  if (!empty($row->site)) {
+    return (int) $row->made->status === HOSTING_PLATFORM_ENABLED;
+  }
+  return in_array((int) $row->task_status, array(HOSTING_TASK_SUCCESS, HOSTING_TASK_WARNING), TRUE);
 }
 
 /**

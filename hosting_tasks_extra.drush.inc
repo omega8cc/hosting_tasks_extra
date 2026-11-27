@@ -84,7 +84,54 @@ function hosting_tasks_extra_drush_command() {
     'callback' => 'hosting_tasks_extra_upgrade_due_command',
     'bootstrap' => DRUSH_BOOTSTRAP_DRUPAL_FULL,
   );
+  $items['hosting-drupal-upgrade-judge'] = array(
+    'description' => "Say whether the site of an Upgrade that built its target first may move onto the build, for the users who queued the task: its backend asks, once the build is kept.",
+    'arguments' => array('task' => 'The Upgrade task node id.'),
+    'callback' => 'hosting_tasks_extra_drupal_upgrade_judge_command',
+    'bootstrap' => DRUSH_BOOTSTRAP_DRUPAL_FULL,
+  );
   return $items;
+}
+
+/**
+ * The panel's judgement of an Upgrade's site onto the platform it built.
+ *
+ * Asked by the run's backend in a process of its own, after the build's
+ * Unlock: a step's own process keeps what it read before the build was
+ * unlocked. The answer is the command's result.
+ *
+ * @return array
+ *   'ready' and 'why'.
+ */
+function hosting_tasks_extra_drupal_upgrade_judge_command($nid = 0) {
+  $task = node_load((int) $nid, NULL, TRUE);
+  if (!is_object($task) || $task->type != 'task' || $task->task_type != 'drupal_upgrade' || empty($task->task_args['successor'])
+    || empty($task->task_args['successor_run']) || (int) $task->task_args['successor_run'] !== (int) $task->nid) {
+    return array('ready' => FALSE, 'why' => 'that task is not an Upgrade that built its target');
+  }
+  if (!hosting_tasks_extra_build_include()) {
+    return array('ready' => FALSE, 'why' => 'the control panel is being updated; start again in a few minutes');
+  }
+  $site = node_load($task->rid, NULL, TRUE);
+  if (!is_object($site) || $site->type != 'site') {
+    return array('ready' => FALSE, 'why' => 'the site of this task is not known');
+  }
+  $accounts = hosting_tasks_extra_task_accounts($task);
+  if (!is_array($accounts)) {
+    return array('ready' => FALSE, 'why' => $accounts);
+  }
+  $built = (int) $task->task_args['successor'];
+  foreach ($accounts as $k => $account) {
+    $entry = hosting_tasks_extra_drupal_upgrade_target($site, $account, $built, TRUE);
+    if (!$entry['ready']) {
+      return array('ready' => FALSE, 'why' => ($k ? 'for the user who queued it again, ' : '') . $entry['why']);
+    }
+  }
+  $busy = hosting_tasks_extra_drupal_upgrade_busy($site->nid, $task->nid);
+  if ($busy !== '') {
+    return array('ready' => FALSE, 'why' => 'a ' . $busy . ' task is waiting or running on this site');
+  }
+  return array('ready' => TRUE, 'why' => '');
 }
 
 /**
@@ -205,11 +252,17 @@ function hosting_tasks_extra_drupal_upgrade_start($task) {
     return hosting_tasks_extra_drupal_upgrade_refuse($accounts);
   }
   $account = $accounts[0];
-  if ($target_nid < 1) {
-    return hosting_tasks_extra_drupal_upgrade_refuse('the task names no platform to upgrade onto');
-  }
   if (isset($task->task_args['new_db_server']) && $task->task_args['new_db_server'] != $site->db_server) {
     return hosting_tasks_extra_drupal_upgrade_refuse('an Upgrade keeps the site on its database server, and this task names another one');
+  }
+  if (isset($task->task_args['target_platform']) && (string) $task->task_args['target_platform'] === 'build') {
+    if ($member['member']) {
+      return hosting_tasks_extra_drupal_upgrade_refuse('start this from Upgrade all sites');
+    }
+    return hosting_tasks_extra_drupal_upgrade_build_start($task, $site, $accounts);
+  }
+  if ($target_nid < 1) {
+    return hosting_tasks_extra_drupal_upgrade_refuse('the task names no platform to upgrade onto');
   }
   $busy = hosting_tasks_extra_drupal_upgrade_busy($site->nid, $task->nid);
   if ($busy !== '') {
@@ -231,27 +284,20 @@ function hosting_tasks_extra_drupal_upgrade_start($task) {
   if (!_hosting_valid_fqdn($copy) || !hosting_domain_allowed($copy) || hosting_get_site_by_url($copy)) {
     return hosting_tasks_extra_drupal_upgrade_refuse('the name the way-back copy would get, ' . $copy . ', is not valid or is taken');
   }
-  $source = node_load($site->platform);
-  $target = node_load($target_nid);
-  $tasks = hosting_available_tasks('site');
   // Kept on the row for what comes after: the platform the site left. It
   // is written now and not only by the save that ends the run, so a runner
   // that dies after the move does not lose it.
-  $task->task_args['source_platform'] = (int) $site->platform;
-  if (!empty($task->vid)) {
-    db_delete('hosting_task_arguments')
-      ->condition('vid', $task->vid)
-      ->condition('name', 'source_platform')
-      ->execute();
-    db_insert('hosting_task_arguments')
-      ->fields(array(
-        'vid' => $task->vid,
-        'nid' => $task->nid,
-        'name' => 'source_platform',
-        'value' => (int) $site->platform,
-      ))
-      ->execute();
-  }
+  hosting_tasks_extra_task_args_keep($task, array('source_platform' => (int) $site->platform));
+  hosting_tasks_extra_drupal_upgrade_start_options($task, $site, $target_nid, $copy);
+}
+
+/**
+ * The options an Upgrade's backend gets, its target given.
+ */
+function hosting_tasks_extra_drupal_upgrade_start_options($task, $site, $target_nid, $copy) {
+  $source = node_load($site->platform);
+  $target = node_load($target_nid);
+  $tasks = hosting_available_tasks('site');
   $task->options['upgrade_target'] = hosting_context_name($target_nid);
   $task->options['upgrade_target_nid'] = $target_nid;
   $task->options['upgrade_source_nid'] = (int) $site->platform;
@@ -274,10 +320,87 @@ function hosting_tasks_extra_drupal_upgrade_start($task) {
 }
 
 /**
+ * Starts an Upgrade that builds its target first: every check again for the
+ * users who queued it, then the new platform's record, as Build newer
+ * version's start makes it.
+ *
+ * Nothing is made before every check the panel can make has passed. The new
+ * platform is Locked until the build is kept; its Verify, run by the backend
+ * as a step of this task, builds it.
+ */
+function hosting_tasks_extra_drupal_upgrade_build_start($task, $site, $accounts) {
+  $build = NULL;
+  foreach ($accounts as $k => $account) {
+    $build = hosting_tasks_extra_drupal_upgrade_build_why($site, $account, $task->task_args, $task->nid);
+    if ($build['why'] !== '') {
+      return hosting_tasks_extra_drupal_upgrade_refuse(($k ? 'for the user who queued it again, ' : '') . $build['why']);
+    }
+  }
+  if ($build === NULL || !is_array($build['plan'])) {
+    return hosting_tasks_extra_drupal_upgrade_refuse('the task names no platform to build');
+  }
+  $platform = $build['platform'];
+  $plan = $build['plan'];
+  // A Retry keeps the arguments of the row it copies, the platform that row
+  // made among them: one row never makes a second platform beside its first.
+  if (!empty($task->task_args['successor'])) {
+    $made = node_load((int) $task->task_args['successor'], NULL, TRUE);
+    if (is_object($made) && $made->type == 'platform' && (int) $made->platform_status !== HOSTING_PLATFORM_DELETED) {
+      return hosting_tasks_extra_drupal_upgrade_refuse(((int) $made->platform_status === HOSTING_PLATFORM_ENABLED)
+        ? 'an earlier run of this task built ' . $made->title . '; press Upgrade and choose it'
+        : 'an earlier run of this task left ' . $made->title . ' at ' . $made->publish_path . '; the account\'s main login can delete it');
+    }
+  }
+  if (file_exists('/run/boa_queue_stop.pid')) {
+    return hosting_tasks_extra_drupal_upgrade_refuse('the task queue is paused on this server for maintenance; start again later');
+  }
+  if (file_exists('/run/octopus_install_run.pid')) {
+    return hosting_tasks_extra_drupal_upgrade_refuse('a system upgrade of this account is running; start again when it has ended');
+  }
+  $lock = _provision_tasks_extra_lock_load(_provision_tasks_extra_docroot($platform->publish_path));
+  if (empty($lock['ok'])) {
+    return hosting_tasks_extra_drupal_upgrade_refuse('the platform it is built from has ' . $lock['why']);
+  }
+  $copy = hosting_site_clean_domain('back-' . $task->nid . '.temp.' . hosting_tasks_extra_drupal_upgrade_site_name($site));
+  if (!_hosting_valid_fqdn($copy) || !hosting_domain_allowed($copy) || hosting_get_site_by_url($copy)) {
+    return hosting_tasks_extra_drupal_upgrade_refuse('the name the way-back copy would get, ' . $copy . ', is not valid or is taken');
+  }
+  $made = hosting_tasks_extra_platform_successor_make($platform, $plan);
+  if (is_string($made)) {
+    return hosting_tasks_extra_drupal_upgrade_refuse($made);
+  }
+  // Written at once: a runner killed from here on leaves the row naming the
+  // platform it made, which the next run refuses beside.
+  hosting_tasks_extra_task_args_keep($task, array(
+    'source_platform' => (int) $site->platform,
+    'successor' => (int) $made->nid,
+    'successor_name' => $plan['title'],
+    'successor_path' => $plan['folder'],
+    'successor_run' => (int) $task->nid,
+    'successor_from' => (int) $platform->nid,
+  ));
+  hosting_tasks_extra_drupal_upgrade_start_options($task, $site, (int) $made->nid, $copy);
+  $task->options['upgrade_build'] = 1;
+  $task->options['upgrade_started'] = time();
+  $task->options['successor_context'] = '@platform_' . $plan['context'];
+  $task->options['successor_nid'] = (int) $made->nid;
+  $task->options['successor_path'] = $plan['folder'];
+  $task->options['successor_root'] = $plan['publish_path'];
+  $task->options['successor_source_path'] = $plan['source']['path'];
+  $task->options['successor_major'] = (int) $plan['major'];
+  $task->options['successor_task_nid'] = (int) $task->nid;
+  $task->options['successor_title'] = preg_replace('/[^A-Za-z0-9._ -]/', '', $plan['title']);
+  $task->options['successor_template'] = $plan['source']['template'] ? 1 : 0;
+  $task->options['successor_mode'] = isset($task->task_args['build_mode']) ? preg_replace('/[^a-z]/', '', (string) $task->task_args['build_mode']) : '';
+  $task->options['source_title'] = preg_replace('/[^A-Za-z0-9._ -]/', '', $platform->title);
+}
+
+/**
  * Implements hook_post_hosting_TASK_TYPE_task().
  */
 function hosting_tasks_extra_post_hosting_drupal_upgrade_task($task, $data) {
   hosting_tasks_extra_drupal_upgrade_end($task);
+  hosting_tasks_extra_successor_record_end($task, TRUE, 'UPGRADE/RESULT');
 }
 
 /**
@@ -285,6 +408,7 @@ function hosting_tasks_extra_post_hosting_drupal_upgrade_task($task, $data) {
  */
 function hosting_tasks_extra_hosting_drupal_upgrade_task_rollback($task, $data) {
   hosting_tasks_extra_drupal_upgrade_end($task);
+  hosting_tasks_extra_successor_record_end($task, FALSE, 'UPGRADE/RESULT');
 }
 
 /**
@@ -1224,6 +1348,23 @@ function hosting_tasks_extra_platform_successor_end($task, $ok) {
   }
   $done[$task->nid] = TRUE;
   hosting_tasks_extra_drupal_upgrade_cancel_steps($task, 'Build newer version');
+  hosting_tasks_extra_successor_record_end($task, $ok, 'SUCCESSOR/RESULT');
+}
+
+/**
+ * Records how a run that made a platform left it, and ends a record its
+ * backend never reached: a Build newer version, or an Upgrade that built
+ * its target first.
+ *
+ * @param string $said_by
+ *   The run's result line marker: a run that said it is not spoken for.
+ */
+function hosting_tasks_extra_successor_record_end($task, $ok, $said_by) {
+  $done = &drupal_static(__FUNCTION__, array());
+  if (isset($done[$task->nid])) {
+    return;
+  }
+  $done[$task->nid] = TRUE;
   if (empty($task->task_args['successor']) || empty($task->task_args['successor_run']) || (int) $task->task_args['successor_run'] !== (int) $task->nid) {
     return;
   }
@@ -1235,13 +1376,13 @@ function hosting_tasks_extra_platform_successor_end($task, $ok) {
   }
   $said = db_query_range("SELECT 1 FROM {hosting_task_log} WHERE vid = :vid AND message LIKE :result", 0, 1, array(
     ':vid' => (int) $task->vid,
-    ':result' => '%SUCCESSOR/RESULT%',
+    ':result' => '%' . db_like($said_by) . '%',
   ))->fetchField();
   // A runner in backend mode keeps an error it was sent as an error alone,
   // with no line of the log yet.
   foreach (drush_get_context('DRUSH_ERROR_LOG', array()) as $messages) {
     foreach ((array) $messages as $message) {
-      if (strpos((string) $message, 'SUCCESSOR/RESULT') !== FALSE) {
+      if (strpos((string) $message, $said_by) !== FALSE) {
         $said = TRUE;
       }
     }
@@ -1259,13 +1400,15 @@ function hosting_tasks_extra_platform_successor_end($task, $ok) {
     && !file_exists($marker) && !is_link($marker) && !file_exists($alias)) {
     // The run is over: the queue runs this Delete on its own.
     $delete = hosting_add_task($made->nid, 'delete', array('upgrade_run' => (int) $task->nid, 'queued_alone' => 1));
-    drush_log(dt('SUCCESSOR/RESULT Not started: the run ended before its checks. The platform record made for it, @title, was never built and holds nothing on disk: @next', array(
+    drush_log(dt('!marker Not started: the run ended before its checks. The platform record made for it, @title, was never built and holds nothing on disk: @next', array(
+      '!marker' => $said_by,
       '@title' => _hosting_tasks_extra_plain($made->title),
       '@next' => is_object($delete) ? 'its Delete is queued.' : 'the account\'s main login can delete it.',
     )), 'error');
     return;
   }
-  drush_log(dt('SUCCESSOR/RESULT Not kept: the run ended before it said what happened. @title at @path is left, @state; the account\'s main login can delete it.', array(
+  drush_log(dt('!marker Not kept: the run ended before it said what happened. @title at @path is left, @state; the account\'s main login can delete it.', array(
+    '!marker' => $said_by,
     '@title' => _hosting_tasks_extra_plain($made->title),
     '@path' => _hosting_tasks_extra_plain($made->publish_path),
     '@state' => ($state === 'enabled') ? 'enabled' : 'Locked',
