@@ -1258,7 +1258,7 @@ function hosting_task_drupal_upgrade_form($node) {
     $platform_title = check_plain($build['platform']->title);
     $form['build']['target_platform'] = array(
       '#type' => 'radio',
-      '#title' => t('Build a newer version of !platform first', array('!platform' => $platform_title)),
+      '#title' => t('Build a newer version of !platform first', array('!platform' => $platform_title)) . hosting_tasks_extra_platform_successor_list_words($build['platform']),
       '#parents' => array('parameters', 'target_platform'),
       '#return_value' => 'build',
       '#weight' => $weight++,
@@ -2647,10 +2647,14 @@ function hosting_task_drupal_upgrade_all_form($node) {
     );
   }
   // Last, the choice of building a newer version of this platform first.
+  $all_refused = is_array($source) ? hosting_tasks_extra_platform_successor_refused($node, $source) : array();
+  if (is_array($source) && $source['template'] && count($all_refused) === 4) {
+    $source = '';
+  }
   if (is_array($source)) {
     $form['build']['target_platform'] = array(
       '#type' => 'radio',
-      '#title' => t('Build a newer version of @platform first', array('@platform' => $node->title)),
+      '#title' => t('Build a newer version of @platform first', array('@platform' => $node->title)) . hosting_tasks_extra_platform_successor_list_words($node),
       '#parents' => array('parameters', 'target_platform'),
       '#return_value' => 'build',
       '#weight' => $weight++,
@@ -2663,7 +2667,7 @@ function hosting_task_drupal_upgrade_all_form($node) {
       '#weight' => $weight++,
       '#states' => array('visible' => array(':input[name="parameters[target_platform]"]' => array('value' => 'build'))),
     );
-    $form['build_fields'] += hosting_tasks_extra_platform_successor_fields_form($node, $source, 'build_');
+    $form['build_fields'] += hosting_tasks_extra_platform_successor_fields_form($node, $source, 'build_', array(), $all_refused);
     $rows = array();
     foreach ($judged['sites'] as $site_nid => $title) {
       $rows[] = array(check_plain($title), hosting_tasks_extra_drupal_upgrade_all_build_verdict($site_nid, $account, isset($judged['copy'][$site_nid]), $source));
@@ -3161,8 +3165,10 @@ function hosting_tasks_extra_drupal_upgrade_line($site, $account) {
   }
   // With no platform ready, the Upgrade that can build a newer version of
   // the site's platform first says so, with its button.
-  if (in_array($found['state'], array('none', 'not_ready'), TRUE) && hosting_tasks_extra_drupal_upgrade_build_open($site, $account, $found)) {
-    $platform = node_load($site->platform);
+  $platform = node_load($site->platform);
+  $source = is_object($platform) ? hosting_tasks_extra_platform_successor_source($platform) : '';
+  if (in_array($found['state'], array('none', 'not_ready'), TRUE) && hosting_tasks_extra_drupal_upgrade_build_open($site, $account, $found)
+    && is_array($source) && (!$source['template'] || count(hosting_tasks_extra_drupal_upgrade_build_refused($site, $source)) < 4)) {
     $lines[] = t('The Upgrade can build a newer version of @platform first.', array('@platform' => $platform->title))
       . ' ' . l(t('Upgrade'), 'hosting_confirm/' . $site->nid . '/site_drupal_upgrade', array('query' => array('token' => drupal_get_token($account->uid))));
   }
@@ -3662,6 +3668,14 @@ function hosting_tasks_extra_platform_successor_built($platform) {
  */
 function hosting_tasks_extra_platform_successor_modes($platform) {
   return _provision_tasks_extra_upgrade_modes(_provision_tasks_extra_docroot($platform->publish_path) . '/sites/all/modules/boa_platform_control.ini');
+}
+
+/**
+ * ' (within what its list accepts: ...)' for a platform with a list, or ''.
+ */
+function hosting_tasks_extra_platform_successor_list_words($platform) {
+  $modes = hosting_tasks_extra_platform_successor_modes($platform);
+  return ($modes['state'] === 'list') ? ' ' . t('(within what its list accepts: @words)', array('@words' => _provision_tasks_extra_upgrade_modes_text($modes))) : '';
 }
 
 /**
