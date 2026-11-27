@@ -1193,6 +1193,19 @@ function hosting_tasks_extra_platform_successor_start($task) {
       return hosting_tasks_extra_platform_successor_refuse($why);
     }
   }
+  // A build Upgrade all sites queued, whose kept build queues the run: the
+  // users who queued it may do both.
+  if (isset($task->task_args['then']) && (string) $task->task_args['then'] !== '') {
+    if ((string) $task->task_args['then'] !== 'upgrade_all' || !hosting_tasks_extra_build_include()) {
+      return hosting_tasks_extra_platform_successor_refuse('start this from Upgrade all sites');
+    }
+    foreach ($accounts as $k => $account) {
+      $build = hosting_tasks_extra_drupal_upgrade_all_build_why($platform, $account, NULL, $task->nid);
+      if ($build['why'] !== '') {
+        return hosting_tasks_extra_platform_successor_refuse(($k ? 'for the user who queued it again, ' : '') . $build['why']);
+      }
+    }
+  }
   $why = hosting_tasks_extra_drupal_upgrade_all_refusal();
   if ($why !== '') {
     return hosting_tasks_extra_platform_successor_refuse($why);
@@ -1349,6 +1362,48 @@ function hosting_tasks_extra_platform_successor_end($task, $ok) {
   $done[$task->nid] = TRUE;
   hosting_tasks_extra_drupal_upgrade_cancel_steps($task, 'Build newer version');
   hosting_tasks_extra_successor_record_end($task, $ok, 'SUCCESSOR/RESULT');
+  if ($ok) {
+    hosting_tasks_extra_platform_successor_then($task);
+  }
+}
+
+/**
+ * Queues the Upgrade all sites run of a build that row queued, once the
+ * build is kept: onto the build, for the user who queued it.
+ *
+ * A build that is not kept queues nothing and locks nothing.
+ */
+function hosting_tasks_extra_platform_successor_then($task) {
+  if (!isset($task->task_args['then']) || (string) $task->task_args['then'] !== 'upgrade_all' || !hosting_tasks_extra_build_include()) {
+    return;
+  }
+  $row = node_load($task->nid, NULL, TRUE);
+  $built = isset($row->task_args['successor']) ? (int) $row->task_args['successor'] : 0;
+  if (!is_object($row) || !$built || !isset($row->task_args['successor_end']) || $row->task_args['successor_end'] !== 'enabled') {
+    return;
+  }
+  $platform = node_load($row->rid, NULL, TRUE);
+  $target = node_load($built, NULL, TRUE);
+  $names = array(
+    '@platform' => is_object($platform) ? _hosting_tasks_extra_plain($platform->title) : 'the platform',
+    '@title' => is_object($target) ? _hosting_tasks_extra_plain($target->title) : 'the build',
+  );
+  $account = user_load((int) $row->uid);
+  $result = hosting_tasks_extra_drupal_upgrade_all_enqueue((int) $row->rid, $built, $account, $row);
+  if (!$result['queued']) {
+    $names['@why'] = _hosting_tasks_extra_plain($result['why']);
+    drush_log(dt('SUCCESSOR/THEN No site was queued: @why. @title is kept, and @platform is not locked.', $names), 'warning');
+    return;
+  }
+  $names['@r'] = count($result['queued']);
+  $names['@n'] = count($result['queued']) + count($result['refused']);
+  drush_log(dt('SUCCESSOR/THEN Upgrade all sites started: @r of @n sites of @platform queued onto @title.', $names), 'ok');
+  foreach ($result['refused'] as $site_nid => $why) {
+    drush_log(dt('SUCCESSOR/THEN left out: @site: @why.', array(
+      '@site' => _hosting_tasks_extra_plain(hosting_tasks_extra_node_title($site_nid)),
+      '@why' => _hosting_tasks_extra_plain($why),
+    )), 'ok');
+  }
 }
 
 /**
