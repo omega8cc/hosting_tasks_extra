@@ -2235,8 +2235,10 @@ function _provision_tasks_extra_lock_build_modes($choice, $security = TRUE) {
 
 /**
  * The packages a platform's audit names, as a build from its lock reads
- * them: name => TRUE, a name core stands for counted as drupal/core and an
- * advisory on any package of core's own set as one on core.
+ * them: name => TRUE. An advisory on any package of core's own set counts as
+ * one on core too (drupal/core is added), and a name core stands for that
+ * the lock holds no package of is counted as drupal/core alone: Composer
+ * cannot be asked to update it.
  *
  * @param array $lock
  *   _provision_tasks_extra_lock_load() of the platform.
@@ -2269,10 +2271,14 @@ function _provision_tasks_extra_lock_build_advised($lock, $audit) {
       continue;
     }
     if (isset($set['names'][$name]) || isset($proper['packages'][$name])) {
-      $name = 'drupal/core';
+      $out['drupal/core'] = TRUE;
+      if (!isset($lock['packages'][$name])) {
+        continue;
+      }
     }
     $out[$name] = TRUE;
   }
+  ksort($out);
   return $out;
 }
 
@@ -2304,6 +2310,7 @@ function _provision_tasks_extra_lock_build_args($lock, $choice, $advised = NULL)
   $core = array();
   $ext = array();
   $libraries = array();
+  $core_libraries = array();
   $index = _provision_tasks_extra_lock_providers($lock['packages']);
   $set = _provision_tasks_extra_lock_core_set($lock['packages'], TRUE, $index);
   foreach ($lock['packages'] as $name => $package) {
@@ -2316,7 +2323,10 @@ function _provision_tasks_extra_lock_build_args($lock, $choice, $advised = NULL)
     elseif (_provision_tasks_extra_lock_is_drupal($package)) {
       $ext[$name] = $package;
     }
-    elseif (!isset($set['packages'][$name])) {
+    elseif (isset($set['packages'][$name])) {
+      $core_libraries[$name] = $package;
+    }
+    else {
       $libraries[$name] = $package;
     }
   }
@@ -2337,10 +2347,13 @@ function _provision_tasks_extra_lock_build_args($lock, $choice, $advised = NULL)
         $keep[$name] = $package;
       }
     }
-    // A library outside core's own set that an advisory names moves with the
-    // modules that need it.
-    if ($choice['scope'] !== 'core') {
-      foreach ($libraries as $name => $package) {
+    // A library an advisory names moves too: one of core's own set with
+    // core, one outside it with the modules that need it.
+    foreach (array('core' => $core_libraries, 'contrib' => $libraries) as $part => $list) {
+      if ($choice['scope'] !== 'full' && $choice['scope'] !== $part) {
+        continue;
+      }
+      foreach ($list as $name => $package) {
         if (isset($advised[$name])) {
           $keep[$name] = $package;
         }
