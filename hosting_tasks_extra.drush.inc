@@ -1403,9 +1403,11 @@ function hosting_tasks_extra_platform_successor_then($task) {
   }
   $platform = node_load($row->rid, NULL, TRUE);
   $target = node_load($built, NULL, TRUE);
+  // Plain text, put in as it is: dt()'s @ would escape a why's apostrophe in
+  // a run with Drupal bootstrapped.
   $names = array(
-    '@platform' => is_object($platform) ? _hosting_tasks_extra_plain($platform->title) : 'the platform',
-    '@title' => is_object($target) ? _hosting_tasks_extra_plain($target->title) : 'the build',
+    '!platform' => is_object($platform) ? _hosting_tasks_extra_plain($platform->title) : 'the platform',
+    '!title' => is_object($target) ? _hosting_tasks_extra_plain($target->title) : 'the build',
   );
   $account = user_load((int) $row->uid);
   // This process read the account's platforms while the build was Locked:
@@ -1416,25 +1418,20 @@ function hosting_tasks_extra_platform_successor_then($task) {
   entity_get_controller('node')->resetCache();
   $result = hosting_tasks_extra_drupal_upgrade_all_enqueue((int) $row->rid, $built, $account, $row);
   if (!$result['queued']) {
-    $names['@why'] = _hosting_tasks_extra_plain($result['why']);
+    $names['!why'] = _hosting_tasks_extra_plain($result['why']);
     $now = node_load($row->rid, NULL, TRUE);
-    $names['@locked'] = (is_object($now) && (int) $now->platform_status === HOSTING_PLATFORM_LOCKED) ? 'is locked' : 'is not locked';
-    drush_log(dt('SUCCESSOR/THEN No site was queued: @why. @title is kept, and @platform @locked.', $names), 'warning');
-    foreach ($result['refused'] as $site_nid => $why) {
-      drush_log(dt('SUCCESSOR/THEN left out: @site: @why.', array(
-        '@site' => _hosting_tasks_extra_plain(hosting_tasks_extra_node_title($site_nid)),
-        '@why' => _hosting_tasks_extra_plain($why),
-      )), 'ok');
-    }
-    return;
+    $names['!locked'] = (is_object($now) && (int) $now->platform_status === HOSTING_PLATFORM_LOCKED) ? 'is locked' : 'is not locked';
+    drush_log(dt('SUCCESSOR/THEN No site was queued: !why. !title is kept, and !platform !locked.', $names), 'warning');
   }
-  $names['@r'] = count($result['queued']);
-  $names['@n'] = count($result['queued']) + count($result['refused']);
-  drush_log(dt('SUCCESSOR/THEN Upgrade all sites started: @r of @n sites of @platform queued onto @title.', $names), 'ok');
+  else {
+    $names['@r'] = count($result['queued']);
+    $names['@n'] = count($result['queued']) + count($result['refused']);
+    drush_log(dt('SUCCESSOR/THEN Upgrade all sites started: @r of @n sites of !platform queued onto !title.', $names), 'ok');
+  }
   foreach ($result['refused'] as $site_nid => $why) {
-    drush_log(dt('SUCCESSOR/THEN left out: @site: @why.', array(
-      '@site' => _hosting_tasks_extra_plain(hosting_tasks_extra_node_title($site_nid)),
-      '@why' => _hosting_tasks_extra_plain($why),
+    drush_log(dt('SUCCESSOR/THEN left out: !site: !why.', array(
+      '!site' => _hosting_tasks_extra_plain(hosting_tasks_extra_node_title($site_nid)),
+      '!why' => _hosting_tasks_extra_plain($why),
     )), 'ok');
   }
 }
@@ -1517,17 +1514,17 @@ function hosting_tasks_extra_successor_record_end($task, $ok, $said_by) {
     && !file_exists($marker) && !is_link($marker) && !file_exists($alias)) {
     // The run is over: the queue runs this Delete on its own.
     $delete = hosting_add_task($made->nid, 'delete', array('upgrade_run' => (int) $task->nid, 'queued_alone' => 1));
-    drush_log(dt('!marker Not started: the run ended before its checks. The platform record made for it, @title, was never built and holds nothing on disk: @next', array(
+    drush_log(dt('!marker Not started: the run ended before its checks. The platform record made for it, !title, was never built and holds nothing on disk: !next', array(
       '!marker' => $said_by,
-      '@title' => _hosting_tasks_extra_plain($made->title),
-      '@next' => is_object($delete) ? 'its Delete is queued.' : 'the account\'s main login can delete it.',
+      '!title' => _hosting_tasks_extra_plain($made->title),
+      '!next' => is_object($delete) ? 'its Delete is queued.' : 'the account\'s main login can delete it.',
     )), 'error');
     return;
   }
-  drush_log(dt('!marker Not kept: the run ended before it said what happened. @title at @path is left, @state; the account\'s main login can delete it.', array(
+  drush_log(dt('!marker Not kept: the run ended before it said what happened. !title at !path is left, !state; the account\'s main login can delete it.', array(
     '!marker' => $said_by,
-    '@title' => _hosting_tasks_extra_plain($made->title),
-    '@path' => _hosting_tasks_extra_plain($made->publish_path),
-    '@state' => ($state === 'enabled') ? 'enabled' : 'Locked',
+    '!title' => _hosting_tasks_extra_plain($made->title),
+    '!path' => _hosting_tasks_extra_plain($made->publish_path),
+    '!state' => ($state === 'enabled') ? 'enabled' : 'Locked',
   )), 'error');
 }
