@@ -1501,10 +1501,12 @@ function hosting_tasks_extra_task_said($task, $text) {
  * Records the files a build from a platform's own lock made, on the new
  * platform's first Verify, a step of the run: its backend says them in one
  * line of its own (a log entry of the ok type), taken while the build's
- * folder was still closed to the account's logins.
+ * folder was still closed to the account's logins. The first such line is
+ * the run's: it is written right after the gate, before an Upgrade's steps
+ * run the site's own code, whose log lines this row's log takes in too.
  */
 function hosting_tasks_extra_successor_record_files($task, $made_nid) {
-  $line = db_query_range("SELECT message FROM {hosting_task_log} WHERE vid = :vid AND type = 'ok' AND message LIKE :files ORDER BY lid DESC", 0, 1, array(
+  $line = db_query_range("SELECT message FROM {hosting_task_log} WHERE vid = :vid AND type = 'ok' AND message LIKE :files ORDER BY lid ASC", 0, 1, array(
     ':vid' => (int) $task->vid,
     ':files' => db_like('SUCCESSOR/FILES ') . '%',
   ))->fetchField();
