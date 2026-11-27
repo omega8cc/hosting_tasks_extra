@@ -2459,22 +2459,20 @@ function _provision_tasks_extra_lock_build_judge($plan, $folder) {
  * either is not a plain file or cannot be read.
  *
  * The fingerprint a panel build records of the two files it made, and the
- * one hosting_deploy's build from the lock checks its copy against.
+ * one hosting_deploy's build from the lock checks its copy against. The
+ * folder can be one the account's logins write, so each file is read with
+ * _provision_tasks_extra_read_plain().
  */
 function _provision_tasks_extra_lock_fingerprint($folder) {
   $out = 'sha256';
   foreach (array('composer.json', 'composer.lock') as $name) {
     $file = rtrim((string) $folder, '/') . '/' . $name;
     clearstatcache(TRUE, $file);
-    $stat = @lstat($file);
-    if ($stat === FALSE || ($stat['mode'] & 0170000) !== 0100000 || $stat['size'] > 33554432) {
+    $bytes = _provision_tasks_extra_read_plain($file, 33554432);
+    if (!is_string($bytes)) {
       return '';
     }
-    $hash = @hash_file('sha256', $file);
-    if (!is_string($hash) || strlen($hash) !== 64) {
-      return '';
-    }
-    $out .= ':' . $hash;
+    $out .= ':' . hash('sha256', $bytes);
   }
   return $out;
 }
