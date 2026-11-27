@@ -1420,6 +1420,12 @@ function hosting_tasks_extra_platform_successor_then($task) {
     $now = node_load($row->rid, NULL, TRUE);
     $names['@locked'] = (is_object($now) && (int) $now->platform_status === HOSTING_PLATFORM_LOCKED) ? 'is locked' : 'is not locked';
     drush_log(dt('SUCCESSOR/THEN No site was queued: @why. @title is kept, and @platform @locked.', $names), 'warning');
+    foreach ($result['refused'] as $site_nid => $why) {
+      drush_log(dt('SUCCESSOR/THEN left out: @site: @why.', array(
+        '@site' => _hosting_tasks_extra_plain(hosting_tasks_extra_node_title($site_nid)),
+        '@why' => _hosting_tasks_extra_plain($why),
+      )), 'ok');
+    }
     return;
   }
   $names['@r'] = count($result['queued']);

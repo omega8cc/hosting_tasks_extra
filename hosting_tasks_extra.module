@@ -2887,13 +2887,20 @@ function _hosting_tasks_extra_drupal_upgrade_all_enqueue($platform_nid, $target_
     $out['why'] = 'this platform holds sites this account cannot see';
     return $out;
   }
-  if (!isset($judged['targets'][$target_nid])) {
-    $out['why'] = 'that platform is no newer version for any site here';
-    return $out;
+  if (isset($judged['targets'][$target_nid])) {
+    $verdicts = $judged['targets'][$target_nid]['verdicts'];
+  }
+  else {
+    // No site's own list admits it (a platform built for this run can be
+    // one): each site is judged against it, so each says its own reason.
+    $verdicts = array();
+    foreach (array_keys($judged['sites']) as $nid) {
+      $verdicts[$nid] = _hosting_tasks_extra_drupal_upgrade_all_verdict(node_load($nid), $account, $target_nid, isset($judged['copy'][$nid]));
+    }
   }
   $ready = array();
   $left = array();
-  foreach ($judged['targets'][$target_nid]['verdicts'] as $nid => $verdict) {
+  foreach ($verdicts as $nid => $verdict) {
     if ($verdict['ready']) {
       $ready[] = (int) $nid;
     }
