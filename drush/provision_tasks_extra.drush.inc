@@ -1353,7 +1353,13 @@ function drush_provision_tasks_extra_pre_hosting_task() {
 /**
  * Refuses an Upgrade before anything is made.
  */
-function _provision_tasks_extra_upgrade_refuse($why) {
+function _provision_tasks_extra_upgrade_refuse($why, $plan = array()) {
+  if (!empty($plan['built'])) {
+    return drush_set_error('PROVISION_UPGRADE_NOT_UPGRADED', dt('UPGRADE/RESULT Not upgraded: !why. The site is on its platform as before.!built', array(
+      '!why' => _provision_tasks_extra_no_markup($why),
+      '!built' => _provision_tasks_extra_no_markup(_provision_tasks_extra_upgrade_built_kept($plan)),
+    )));
+  }
   return drush_set_error('PROVISION_UPGRADE_NOT_STARTED', dt('UPGRADE/RESULT Not started: !why. Nothing was changed.', array('!why' => _provision_tasks_extra_no_markup($why))));
 }
 
@@ -1777,7 +1783,8 @@ function _provision_tasks_extra_upgrade_plan() {
   }
   $lists = "the platform's list (" . basename($platform_modes['file']) . '): ' . _provision_tasks_extra_upgrade_modes_text($platform_modes)
     . "; this site's list (" . basename($site_modes['file']) . '): ' . _provision_tasks_extra_upgrade_modes_text($site_modes);
-  $stays = ($platform_modes['state'] === 'absent') ? '' : ' The platform\'s list belongs to ' . $source_title . ' and does not follow the site to ' . $target_title . '.';
+  // A platform this run built carries the line of the one it was built from.
+  $stays = ($platform_modes['state'] === 'absent' || drush_get_option('upgrade_build', FALSE)) ? '' : ' The platform\'s list belongs to ' . $source_title . ' and does not follow the site to ' . $target_title . '.';
   drush_log(dt('UPGRADE/PLAN @uri: from Drupal @from on @source to Drupal @to on @target: !kind; !advisories; !lists. The way back will be @copy.!stays', array(
     '@uri' => $uri,
     '@from' => $source_release,
@@ -2097,7 +2104,11 @@ function _provision_tasks_extra_upgrade_panel_judge($task_nid) {
     }
     return 'the panel could not say whether this site may move onto it (' . ($error !== '' ? $error : 'it gave no answer') . ')';
   }
-  return $answer['ready'] ? '' : (string) $answer['why'];
+  if (!empty($answer['ready']) && isset($result['error_status']) && (int) $result['error_status'] === 0) {
+    return '';
+  }
+  $why = trim((string) (isset($answer['why']) ? $answer['why'] : ''));
+  return ($why !== '') ? $why : 'the panel did not say that this site may move onto it';
 }
 
 /**
@@ -2614,13 +2625,13 @@ function _provision_tasks_extra_upgrade_run($plan) {
   // The name is free now, so whatever holds it after leg 1 is this run's.
   clearstatcache();
   if (_provision_tasks_extra_upgrade_alias_root($copy) !== FALSE || file_exists($copy_dir) || is_link($copy_dir)) {
-    return _provision_tasks_extra_upgrade_refuse('the name of the way-back copy, ' . $copy . ', is taken');
+    return _provision_tasks_extra_upgrade_refuse('the name of the way-back copy, ' . $copy . ', is taken', $plan);
   }
   $started = time();
   $when = date('Y-m-d H:i');
   $plan['started'] = $started;
   if (!_provision_tasks_extra_upgrade_mark($plan, '1')) {
-    return _provision_tasks_extra_upgrade_refuse("this run's mark could not be written in the account's log folder");
+    return _provision_tasks_extra_upgrade_refuse("this run's mark could not be written in the account's log folder", $plan);
   }
   foreach ($plan['stale_marks'] as $run) {
     _provision_tasks_extra_upgrade_mark_clear($run);
@@ -2637,11 +2648,13 @@ function _provision_tasks_extra_upgrade_run($plan) {
     clearstatcache();
     $dir = $plan['source_root'] . '/sites/' . $item['copy'];
     if ($removed !== TRUE || _provision_tasks_extra_upgrade_alias_root($item['copy']) !== FALSE || file_exists($dir) || is_link($dir)) {
-      return drush_set_error('PROVISION_UPGRADE_NOT_STARTED', dt('UPGRADE/RESULT Not started: the copy @copy left by the upgrade task @run could not be removed (see above). @uri is on @source as before.', array(
+      return drush_set_error('PROVISION_UPGRADE_NOT_STARTED', dt('UPGRADE/RESULT !verdict: the copy @copy left by the upgrade task @run could not be removed (see above). @uri is on @source as before.!built', array(
+        '!verdict' => empty($plan['built']) ? 'Not started' : 'Not upgraded',
         '@copy' => $item['copy'],
         '@run' => $item['run'],
         '@uri' => $uri,
         '@source' => $plan['source_title'],
+        '!built' => _provision_tasks_extra_no_markup(_provision_tasks_extra_upgrade_built_kept($plan)),
       )));
     }
     _provision_tasks_extra_upgrade_mark_clear($item['run']);
@@ -3977,7 +3990,8 @@ function _provision_tasks_extra_successor_carry_line($plan) {
     return '';
   }
   $tmp = @tempnam($dir, '.ctrl.');
-  if ($tmp === FALSE || dirname($tmp) !== $dir) {
+  // tempnam() names the folder by its real path.
+  if ($tmp === FALSE || dirname($tmp) !== realpath($dir)) {
     if ($tmp !== FALSE) {
       @unlink($tmp);
     }

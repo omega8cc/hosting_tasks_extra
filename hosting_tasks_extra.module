@@ -2589,6 +2589,10 @@ function hosting_task_drupal_upgrade_all_form($node) {
   }
   $build = ($why === '') ? hosting_tasks_extra_drupal_upgrade_all_build_why($node, $account) : array('why' => $why);
   $source = ($build['why'] === '') ? hosting_tasks_extra_platform_successor_source($node) : '';
+  $all_refused = is_array($source) ? hosting_tasks_extra_platform_successor_refused($node, $source) : array();
+  if (is_array($source) && $source['template'] && count($all_refused) === 4) {
+    $source = '';
+  }
   if ($why === '' && !$judged['targets'] && !is_array($source)) {
     $why = 'no newer platform these sites could be upgraded onto is in this account';
   }
@@ -2647,10 +2651,6 @@ function hosting_task_drupal_upgrade_all_form($node) {
     );
   }
   // Last, the choice of building a newer version of this platform first.
-  $all_refused = is_array($source) ? hosting_tasks_extra_platform_successor_refused($node, $source) : array();
-  if (is_array($source) && $source['template'] && count($all_refused) === 4) {
-    $source = '';
-  }
   if (is_array($source)) {
     $form['build']['target_platform'] = array(
       '#type' => 'radio',
@@ -2826,8 +2826,10 @@ function hosting_tasks_extra_drupal_upgrade_all_enqueue($platform_nid, $target_n
     catch (Exception $e) {
       $out['why'] = $e->getMessage();
     }
-    $GLOBALS['user'] = $original;
-    drupal_save_session($session);
+    finally {
+      $GLOBALS['user'] = $original;
+      drupal_save_session($session);
+    }
     return $out;
   }
   if (!is_object($account) || empty($account->uid) || (int) $account->uid !== (int) $GLOBALS['user']->uid) {
@@ -3812,7 +3814,13 @@ function _hosting_tasks_extra_platform_successor_runs_order($a, $b) {
  */
 function hosting_tasks_extra_platform_successor_leftover($platform_nid) {
   foreach (hosting_tasks_extra_platform_successor_runs($platform_nid, array(HOSTING_TASK_ERROR)) as $row) {
-    if ($row->made && (int) $row->made->status === HOSTING_PLATFORM_LOCKED && $row->successor_end !== 'kept_locked') {
+    if (!$row->made || (int) $row->made->status !== HOSTING_PLATFORM_LOCKED) {
+      continue;
+    }
+    // An Upgrade's build is a leftover only when its run never kept it (cut
+    // off, or left Locked unjudged); one it kept may be Locked later by
+    // anyone, an Upgrade all sites run among them.
+    if ($row->site ? in_array((string) $row->successor_end, array('', 'locked'), TRUE) : $row->successor_end !== 'kept_locked') {
       return $row->made;
     }
   }
@@ -3824,7 +3832,9 @@ function hosting_tasks_extra_platform_successor_leftover($platform_nid) {
       INNER JOIN {node} n ON n.nid = t.rid
       INNER JOIN {hosting_platform} h ON h.vid = n.vid
       LEFT JOIN {node} run ON run.nid = CAST(u.value AS UNSIGNED)
-    WHERE t.task_type = 'verify' AND h.status = :locked AND run.nid IS NULL
+      LEFT JOIN {hosting_task_arguments} k ON k.name = 'upgrade_run' AND k.value = u.value AND k.nid <> t.nid
+      LEFT JOIN {hosting_task} kt ON kt.vid = k.vid AND kt.task_type = 'unlock' AND kt.rid = t.rid
+    WHERE t.task_type = 'verify' AND h.status = :locked AND run.nid IS NULL AND kt.nid IS NULL
     ORDER BY t.nid DESC", 0, 1, array(':from' => (string) (int) $platform_nid, ':locked' => HOSTING_PLATFORM_LOCKED))->fetchObject();
   return $made ? $made : FALSE;
 }
@@ -4107,7 +4117,7 @@ function hosting_tasks_extra_platform_successor_fields_form($platform, $source, 
   $labels = (class_exists('HostingDeployForm') && method_exists('HostingDeployForm', 'getStrategyLabels')) ? HostingDeployForm::getStrategyLabels() : array();
   $git = $source['strategy'] === 'platform_composer_git';
   $shown = $visible ? array('visible' => $visible) : array();
-  $form[$prefix . 'from'] = array(
+  $form[$prefix . 'source_line'] = array(
     '#markup' => '<p>' . t('Built from: @how, @what, @field @version, Drupal @release.', array(
       '@how' => isset($labels[$source['strategy']]) ? strip_tags($labels[$source['strategy']]) : $source['strategy'],
       '@what' => $source['source'],
@@ -4239,10 +4249,12 @@ function hosting_tasks_extra_platform_successor_line($platform) {
     return '';
   }
   $ended = array(HOSTING_TASK_SUCCESS, HOSTING_TASK_WARNING, HOSTING_TASK_ERROR);
+  $kept = array(HOSTING_TASK_SUCCESS, HOSTING_TASK_WARNING);
   $items = array();
   $named = FALSE;
   foreach (hosting_tasks_extra_platform_successor_runs(0, $ended, $platform->nid) as $row) {
-    if (!hosting_tasks_extra_platform_successor_row_kept($row)) {
+    // Build newer version's own row as it always was: by its status.
+    if ($row->site ? !hosting_tasks_extra_platform_successor_row_kept($row) : !in_array((int) $row->task_status, $kept, TRUE)) {
       continue;
     }
     $from = node_load($row->rid);
@@ -4281,11 +4293,16 @@ function hosting_tasks_extra_platform_successor_line($platform) {
   }
   $n = 0;
   foreach (hosting_tasks_extra_platform_successor_runs($platform->nid, $ended) as $row) {
-    if (!hosting_tasks_extra_platform_successor_row_kept($row)) {
+    // The last three runs: Build newer version's that ended well, as before,
+    // and every Upgrade's that built; each shown while its build is kept.
+    if (!$row->site && !in_array((int) $row->task_status, $kept, TRUE)) {
       continue;
     }
     if (++$n > 3) {
       break;
+    }
+    if (!hosting_tasks_extra_platform_successor_row_kept($row)) {
+      continue;
     }
     $built = node_load((int) $row->successor);
     if (is_object($built)) {
