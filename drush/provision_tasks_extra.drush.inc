@@ -353,11 +353,16 @@ function _provision_tasks_extra_updates_report_audit() {
  * @param string $root
  *   A platform's docroot.
  *
+ * An answer is kept for the rest of the process, keyed by the lock it read:
+ * an Upgrade that builds its target first audits both codebases in the
+ * build's gate and asks again in its own plan.
+ *
  * @return array
  *   'lines': the report's lines, FALSE when no audit finished. 'why': the
  *   reason when it did not. 'lock': the path of the lock that was read.
  */
 function _provision_tasks_extra_lock_advisories($root) {
+  static $answers = array();
   $app = _provision_tasks_extra_app_root($root);
   $lock = ($app === '') ? FALSE : _provision_tasks_extra_read_plain($app . '/composer.lock');
   if ($lock === FALSE) {
@@ -372,6 +377,17 @@ function _provision_tasks_extra_lock_advisories($root) {
       $dev = ' --no-dev';
     }
   }
+  $key = $app . "\n" . md5($lock) . $dev;
+  if (!isset($answers[$key])) {
+    $answers[$key] = _provision_tasks_extra_lock_audit($app, $lock, $dev);
+  }
+  return $answers[$key];
+}
+
+/**
+ * Runs the audit of _provision_tasks_extra_lock_advisories() on a copy.
+ */
+function _provision_tasks_extra_lock_audit($app, $lock, $dev) {
   $scratch = _provision_tasks_extra_scratch();
   $copy = json_encode(array(
     'name' => 'boa/advisory-audit',
@@ -1688,59 +1704,12 @@ function _provision_tasks_extra_upgrade_plan() {
   if (file_exists($stray) || is_link($stray)) {
     return 'a leftover of this site is in the way on ' . $target_title . ' (' . $stray . '). Delete it, then start again';
   }
-  // A copy that a run cut off before its move provably made (its mark says
-  // so, nothing of it runs, its alias names this platform) is removed by this
-  // run when that is switched on; anything else that is left stays a refusal.
-  $marks = _provision_tasks_extra_upgrade_marks($uri);
-  $tidy_on = (bool) drush_get_option('upgrade_tidy', FALSE);
-  $tidy = array();
-  $in_dir = _provision_tasks_extra_upgrade_copies($source_root . '/sites', $uri);
-  $names = $in_dir;
-  foreach (_provision_tasks_extra_upgrade_copies(drush_server_home() . '/.drush', $uri, '.alias.drushrc.php') as $name) {
-    $root = _provision_tasks_extra_upgrade_alias_root($name);
-    if (!in_array($name, $names, TRUE) && ($root === '' || ($root !== FALSE && _provision_tasks_extra_upgrade_same_root($root, $source_root)))) {
-      $names[] = $name;
-    }
+  $left = _provision_tasks_extra_upgrade_leftovers($uri, $source_root, $source_title);
+  if (is_string($left)) {
+    return $left;
   }
-  foreach ($names as $name) {
-    $run = _provision_tasks_extra_upgrade_copy_run($name, $uri);
-    $mark = isset($marks[$run]) ? $marks[$run] : NULL;
-    $root = _provision_tasks_extra_upgrade_alias_root($name);
-    $dir = $source_root . '/sites/' . $name;
-    $when = is_array($mark) ? date('Y-m-d H:i', $mark['started']) : '';
-    if (is_array($mark) && $mark['phase'] === '2') {
-      return 'an earlier upgrade (task ' . $run . ') was cut off on ' . $when . ' during its move and left ' . $name . ' on ' . $source_title . '; what it left needs support (its mark is ' . $mark['path'] . ')';
-    }
-    if (is_array($mark) && _provision_tasks_extra_upgrade_run_alive($run, $mark['pid'])) {
-      return 'an earlier upgrade of this site (task ' . $run . ') is still running on this server; start again when it has ended';
-    }
-    $provable = is_array($mark)
-      && _provision_tasks_extra_upgrade_same_root($mark['source_root'], $source_root)
-      && $root !== FALSE && $root !== '' && _provision_tasks_extra_upgrade_same_root($root, $source_root)
-      && ((!file_exists($dir) && !is_link($dir)) || (is_dir($dir) && !is_link($dir)));
-    if ($provable && $tidy_on) {
-      $tidy[] = array('copy' => $name, 'run' => $run, 'when' => $when);
-      continue;
-    }
-    if ($provable) {
-      return 'an earlier upgrade (task ' . $run . ') was cut off on ' . $when . ' before it moved the site and left the copy ' . $name . ' on ' . $source_title . '. Delete that site in the panel, then start again; when the panel does not list it, ask support';
-    }
-    if (in_array($name, $in_dir, TRUE)) {
-      return 'an earlier upgrade left the copy ' . $name . ' on ' . $source_title . '. Delete that site in the panel, or its folder ' . $dir . ' when the panel does not list it, then start again';
-    }
-    return 'an earlier upgrade left the copy ' . $name . ' on ' . $source_title . '. Delete that site in the panel, then start again';
-  }
-  // The marks of this site's runs whose copy is gone and that did not reach
-  // their move: nothing is left of them to look at.
-  $stale = array();
-  foreach ($marks as $run => $mark) {
-    $name = 'back-' . $run . '.temp.' . $uri;
-    if ($mark['phase'] !== '2' && !in_array($name, $names, TRUE) && _provision_tasks_extra_upgrade_alias_root($name) === FALSE
-      && !file_exists($source_root . '/sites/' . $name) && !is_link($source_root . '/sites/' . $name)
-      && !_provision_tasks_extra_upgrade_run_alive($run, $mark['pid'])) {
-      $stale[] = $run;
-    }
-  }
+  $tidy = $left['tidy'];
+  $stale = $left['stale'];
 
   // V9, V11.
   if (file_exists('/run/boa_queue_stop.pid')) {
@@ -1843,6 +1812,71 @@ function _provision_tasks_extra_upgrade_plan() {
     'tidy' => $tidy,
     'stale_marks' => $stale,
   );
+}
+
+/**
+ * What an earlier run of this site left beside it, V7's copies part: a
+ * refusal, or the copies this run removes and the marks it clears.
+ *
+ * A copy that a run cut off before its move provably made (its mark says
+ * so, nothing of it runs, its alias names this platform) is removed by this
+ * run when that is switched on; anything else that is left stays a refusal.
+ *
+ * @return string|array
+ *   The reason, or 'tidy' and 'stale'.
+ */
+function _provision_tasks_extra_upgrade_leftovers($uri, $source_root, $source_title) {
+  $marks = _provision_tasks_extra_upgrade_marks($uri);
+  $tidy_on = (bool) drush_get_option('upgrade_tidy', FALSE);
+  $tidy = array();
+  $in_dir = _provision_tasks_extra_upgrade_copies($source_root . '/sites', $uri);
+  $names = $in_dir;
+  foreach (_provision_tasks_extra_upgrade_copies(drush_server_home() . '/.drush', $uri, '.alias.drushrc.php') as $name) {
+    $root = _provision_tasks_extra_upgrade_alias_root($name);
+    if (!in_array($name, $names, TRUE) && ($root === '' || ($root !== FALSE && _provision_tasks_extra_upgrade_same_root($root, $source_root)))) {
+      $names[] = $name;
+    }
+  }
+  foreach ($names as $name) {
+    $run = _provision_tasks_extra_upgrade_copy_run($name, $uri);
+    $mark = isset($marks[$run]) ? $marks[$run] : NULL;
+    $root = _provision_tasks_extra_upgrade_alias_root($name);
+    $dir = $source_root . '/sites/' . $name;
+    $when = is_array($mark) ? date('Y-m-d H:i', $mark['started']) : '';
+    if (is_array($mark) && $mark['phase'] === '2') {
+      return 'an earlier upgrade (task ' . $run . ') was cut off on ' . $when . ' during its move and left ' . $name . ' on ' . $source_title . '; what it left needs support (its mark is ' . $mark['path'] . ')';
+    }
+    if (is_array($mark) && _provision_tasks_extra_upgrade_run_alive($run, $mark['pid'])) {
+      return 'an earlier upgrade of this site (task ' . $run . ') is still running on this server; start again when it has ended';
+    }
+    $provable = is_array($mark)
+      && _provision_tasks_extra_upgrade_same_root($mark['source_root'], $source_root)
+      && $root !== FALSE && $root !== '' && _provision_tasks_extra_upgrade_same_root($root, $source_root)
+      && ((!file_exists($dir) && !is_link($dir)) || (is_dir($dir) && !is_link($dir)));
+    if ($provable && $tidy_on) {
+      $tidy[] = array('copy' => $name, 'run' => $run, 'when' => $when);
+      continue;
+    }
+    if ($provable) {
+      return 'an earlier upgrade (task ' . $run . ') was cut off on ' . $when . ' before it moved the site and left the copy ' . $name . ' on ' . $source_title . '. Delete that site in the panel, then start again; when the panel does not list it, ask support';
+    }
+    if (in_array($name, $in_dir, TRUE)) {
+      return 'an earlier upgrade left the copy ' . $name . ' on ' . $source_title . '. Delete that site in the panel, or its folder ' . $dir . ' when the panel does not list it, then start again';
+    }
+    return 'an earlier upgrade left the copy ' . $name . ' on ' . $source_title . '. Delete that site in the panel, then start again';
+  }
+  // The marks of this site's runs whose copy is gone and that did not reach
+  // their move: nothing is left of them to look at.
+  $stale = array();
+  foreach ($marks as $run => $mark) {
+    $name = 'back-' . $run . '.temp.' . $uri;
+    if ($mark['phase'] !== '2' && !in_array($name, $names, TRUE) && _provision_tasks_extra_upgrade_alias_root($name) === FALSE
+      && !file_exists($source_root . '/sites/' . $name) && !is_link($source_root . '/sites/' . $name)
+      && !_provision_tasks_extra_upgrade_run_alive($run, $mark['pid'])) {
+      $stale[] = $run;
+    }
+  }
+  return array('tidy' => $tidy, 'stale' => $stale);
 }
 
 /**
@@ -3376,11 +3410,25 @@ function _provision_tasks_extra_successor_found($plan, $build) {
  * root holds a codebase Drush can load; otherwise only the record goes.
  */
 function _provision_tasks_extra_successor_found_why($title, $path, $has_code) {
-  $text = 'Not kept: a folder appeared at ' . $path . ' before the build, so nothing was built and nothing there was deleted. ' . $title . ' is left, Locked, naming that folder';
+  $parts = _provision_tasks_extra_successor_found_parts($title, $path, $has_code);
+  return 'Not kept: ' . $parts['why'] . '. ' . $parts['tail'];
+}
+
+/**
+ * The two halves of that result: why, and what is left.
+ */
+function _provision_tasks_extra_successor_found_parts($title, $path, $has_code) {
+  $tail = $title . ' is left, Locked, naming that folder';
   if ($has_code) {
-    return $text . ', and its Delete would remove the code there too: move the folder away first if it is wanted, then the account\'s main login can delete ' . $title . '.';
+    $tail .= ', and its Delete would remove the code there too: move the folder away first if it is wanted, then the account\'s main login can delete ' . $title . '.';
   }
-  return $text . '. It holds no code, so a Delete takes the record only: the account\'s main login can delete ' . $title . ' and the folder stays as it is.';
+  else {
+    $tail .= '. It holds no code, so a Delete takes the record only: the account\'s main login can delete ' . $title . ' and the folder stays as it is.';
+  }
+  return array(
+    'why' => 'a folder appeared at ' . $path . ' before the build, so nothing was built and nothing there was deleted',
+    'tail' => $tail,
+  );
 }
 
 /**
@@ -3398,8 +3446,13 @@ function _provision_tasks_extra_successor_title() {
  * was never built: a quiet Delete ends that record. A platform never
  * verified has no alias, so its Delete removes the record and touches
  * nothing on disk.
+ *
+ * @param string $prefix
+ *   The result line's marker: an Upgrade that builds first says its own.
+ * @param string $code
+ *   The error's code.
  */
-function _provision_tasks_extra_successor_unstarted($why) {
+function _provision_tasks_extra_successor_unstarted($why, $prefix = 'SUCCESSOR/RESULT', $code = 'PROVISION_SUCCESSOR_NOT_STARTED') {
   $context = trim((string) drush_get_option('successor_context', ''));
   $task = trim((string) drush_get_option('successor_task_nid', ''));
   $title = _provision_tasks_extra_successor_title();
@@ -3415,7 +3468,8 @@ function _provision_tasks_extra_successor_unstarted($why) {
       $tail = 'The platform record made for it, ' . $title . ', is left, Locked; the account\'s main login can delete it.';
     }
   }
-  return drush_set_error('PROVISION_SUCCESSOR_NOT_STARTED', dt('SUCCESSOR/RESULT Not started: !why. !tail', array(
+  return drush_set_error($code, dt('!prefix Not started: !why. !tail', array(
+    '!prefix' => $prefix,
     '!why' => _provision_tasks_extra_no_markup($why),
     '!tail' => _provision_tasks_extra_no_markup($tail),
   )));
@@ -3425,12 +3479,18 @@ function _provision_tasks_extra_successor_unstarted($why) {
  * What a Build newer version will do, every check made: a plan, or why not.
  *
  * After the panel's start these can fail only by a race.
+ *
+ * @param object $source
+ *   The platform to build from: this task's own (d()) when NULL, the site's
+ *   platform for an Upgrade that builds its target first.
  */
-function _provision_tasks_extra_successor_plan() {
+function _provision_tasks_extra_successor_plan($source = NULL) {
   if (!function_exists('_provision_tasks_extra_successor_newer') || !function_exists('_provision_tasks_extra_build_marker') || !function_exists('_provision_tasks_extra_tooling_skip')) {
     return 'the backend\'s copy of the task\'s rules is older than the panel\'s; start again in a few minutes';
   }
-  $source = d();
+  if ($source === NULL) {
+    $source = d();
+  }
   if (!is_object($source) || $source->type !== 'platform' || empty($source->root)) {
     return 'this task runs on a platform';
   }
@@ -3537,39 +3597,16 @@ function drush_provision_tasks_extra_provision_platform_successor() {
   // This process holds the platform it builds from: nothing of it is saved
   // when the command ends.
   drush_set_option('provision_save_config', FALSE);
-  drush_log(dt('SUCCESSOR/CHECK building !title in !path from !source (Drupal !release).', array(
-    '!title' => _provision_tasks_extra_no_markup($plan['title']),
-    '!path' => _provision_tasks_extra_no_markup($plan['path']),
-    '!source' => _provision_tasks_extra_no_markup($plan['source_title']),
-    '!release' => _provision_tasks_extra_no_markup($plan['source_release']),
-  )), 'ok');
-  $build = _provision_tasks_extra_upgrade_leg($plan['context'], 'verify', array($plan['marker']), TRUE);
-  // This run sets its own result: an error of its build is kept as a
-  // warning, whether the build ended well or not.
-  _provision_tasks_extra_upgrade_replay($build, TRUE);
-  if (_provision_tasks_extra_successor_found($plan, $build)) {
-    clearstatcache();
-    return drush_set_error('PROVISION_SUCCESSOR_NOT_KEPT', 'SUCCESSOR/RESULT ' . _provision_tasks_extra_successor_found_why(
-      _provision_tasks_extra_no_markup($plan['title']),
-      _provision_tasks_extra_no_markup($plan['path']),
-      (bool) drush_valid_root($plan['root'])
-    ));
+  $built = _provision_tasks_extra_successor_build($plan, array($plan['marker']));
+  if ($built['state'] === 'not_kept') {
+    return drush_set_error('PROVISION_SUCCESSOR_NOT_KEPT', 'SUCCESSOR/RESULT Not kept: ' . $built['why'] . '. ' . $built['tail']);
   }
-  if (!$build['ok']) {
-    return _provision_tasks_extra_successor_not_kept($plan, _provision_tasks_extra_successor_build_why($plan, $build), $build);
-  }
-  $why = _provision_tasks_extra_successor_gate($plan);
-  if ($why !== '') {
-    return _provision_tasks_extra_successor_not_kept($plan, $why, NULL);
-  }
-  $unlock = _provision_tasks_extra_upgrade_leg($plan['context'], 'unlock', array($plan['marker']), TRUE);
-  if (!$unlock['ok']) {
-    _provision_tasks_extra_upgrade_replay($unlock, TRUE);
+  if ($built['state'] === 'locked') {
     drush_log(dt('SUCCESSOR/RESULT Built !title at !path: !kind. It stays Locked, since its Unlock did not work (!why): the account\'s main login can Unlock it on its page, and the Upgrade then offers it to the sites of !source.', array(
       '!title' => _provision_tasks_extra_no_markup($plan['title']),
       '!path' => _provision_tasks_extra_no_markup($plan['built_root']),
       '!kind' => _provision_tasks_extra_no_markup($plan['kind']),
-      '!why' => _provision_tasks_extra_no_markup(_provision_tasks_extra_upgrade_step_why($unlock, $unlock['errors'] ? (string) reset($unlock['errors']) : 'it ended with no result')),
+      '!why' => _provision_tasks_extra_no_markup($built['why']),
       '!source' => _provision_tasks_extra_no_markup($plan['source_title']),
     )), 'warning');
     return;
@@ -3579,6 +3616,61 @@ function drush_provision_tasks_extra_provision_platform_successor() {
     '!path' => _provision_tasks_extra_no_markup($plan['built_root']),
     '!kind' => _provision_tasks_extra_no_markup($plan['kind']),
   )), 'success');
+}
+
+/**
+ * Builds, judges and keeps or removes a new platform: the body of Build
+ * newer version, which an Upgrade that builds its target first runs too.
+ *
+ * The new platform's own Verify is the build, as a step of the calling
+ * task; the build is kept when the gate says so and unlocked, and is
+ * otherwise deleted, unless a build process still writes into its folder.
+ * Each caller writes its own result line.
+ *
+ * @param array $plan
+ *   _provision_tasks_extra_successor_plan(); 'built_root', 'kind' and
+ *   'release' are set in it once the build is judged.
+ * @param array $step_args
+ *   The arguments of each step row: the marker of the calling task first.
+ *
+ * @return array
+ *   'state': kept, locked (kept, its Unlock failed) or not_kept; 'why' (why
+ *   it was not kept, or why its Unlock failed) and 'tail' (what is left of
+ *   it, for not_kept), in plain words.
+ */
+function _provision_tasks_extra_successor_build(&$plan, $step_args) {
+  drush_log(dt('SUCCESSOR/CHECK building !title in !path from !source (Drupal !release).', array(
+    '!title' => _provision_tasks_extra_no_markup($plan['title']),
+    '!path' => _provision_tasks_extra_no_markup($plan['path']),
+    '!source' => _provision_tasks_extra_no_markup($plan['source_title']),
+    '!release' => _provision_tasks_extra_no_markup($plan['source_release']),
+  )), 'ok');
+  $build = _provision_tasks_extra_upgrade_leg($plan['context'], 'verify', $step_args, TRUE);
+  // The caller sets its own result: an error of its build is kept as a
+  // warning, whether the build ended well or not.
+  _provision_tasks_extra_upgrade_replay($build, TRUE);
+  if (_provision_tasks_extra_successor_found($plan, $build)) {
+    clearstatcache();
+    $parts = _provision_tasks_extra_successor_found_parts(
+      _provision_tasks_extra_no_markup($plan['title']),
+      _provision_tasks_extra_no_markup($plan['path']),
+      (bool) drush_valid_root($plan['root'])
+    );
+    return array('state' => 'not_kept', 'why' => $parts['why'], 'tail' => $parts['tail']);
+  }
+  if (!$build['ok']) {
+    return _provision_tasks_extra_successor_remove($plan, _provision_tasks_extra_successor_build_why($plan, $build), $build, $step_args);
+  }
+  $why = _provision_tasks_extra_successor_gate($plan);
+  if ($why !== '') {
+    return _provision_tasks_extra_successor_remove($plan, $why, NULL, $step_args);
+  }
+  $unlock = _provision_tasks_extra_upgrade_leg($plan['context'], 'unlock', array($step_args[0]), TRUE);
+  if (!$unlock['ok']) {
+    _provision_tasks_extra_upgrade_replay($unlock, TRUE);
+    return array('state' => 'locked', 'why' => _provision_tasks_extra_upgrade_step_why($unlock, $unlock['errors'] ? (string) reset($unlock['errors']) : 'it ended with no result'), 'tail' => '');
+  }
+  return array('state' => 'kept', 'why' => '', 'tail' => '');
 }
 
 /**
@@ -3690,25 +3782,33 @@ function _provision_tasks_extra_successor_gate(&$plan) {
 }
 
 /**
- * Ends a Build newer version whose build is not kept: deleted when nothing
- * keeps it, and says what is left.
+ * Removes a build that is not kept, when nothing keeps it, and says what is
+ * left: _provision_tasks_extra_successor_build()'s not_kept answer, its words
+ * free of markup.
+ *
+ * @param array $step_args
+ *   The arguments of the build's step rows, the calling task's marker first.
  */
-function _provision_tasks_extra_successor_not_kept($plan, $why, $build) {
+function _provision_tasks_extra_successor_remove($plan, $why, $build, $step_args) {
   $codes = is_array($build) ? $build['codes'] : array();
   $args = array(
     '!why' => _provision_tasks_extra_no_markup($why),
     '!title' => _provision_tasks_extra_no_markup($plan['title']),
     '!path' => _provision_tasks_extra_no_markup($plan['path']),
   );
+  $out = array('state' => 'not_kept', 'why' => $args['!why'], 'tail' => '');
   $marker = _provision_tasks_extra_build_marker($plan['path']);
   if ($marker['alive'] || in_array('PLATFORM_BUILD_STILL_RUNNING', $codes, TRUE)) {
-    return drush_set_error('PROVISION_SUCCESSOR_NOT_KEPT', dt('SUCCESSOR/RESULT Not kept: !why. A build process still writes into !path; delete !title once it has ended (the account\'s main login can delete it).', $args));
+    $out['tail'] = dt('A build process still writes into !path; delete !title once it has ended (the account\'s main login can delete it).', $args);
+    return $out;
   }
   if ($marker['state'] === 'unknown') {
-    return drush_set_error('PROVISION_SUCCESSOR_NOT_KEPT', dt('SUCCESSOR/RESULT Not kept: !why. Whether a build process still writes into !path cannot be read, so nothing was deleted; the account\'s main login can delete !title.', $args));
+    $out['tail'] = dt('Whether a build process still writes into !path cannot be read, so nothing was deleted; the account\'s main login can delete !title.', $args);
+    return $out;
   }
   if (is_array($build) && _provision_tasks_extra_successor_found($plan, $build)) {
-    return drush_set_error('PROVISION_SUCCESSOR_NOT_KEPT', dt('SUCCESSOR/RESULT Not kept: !why. A folder appeared at !path before the build, so nothing there was deleted; !title is left, Locked, naming it: move the folder away first if it is wanted, then the account\'s main login can delete !title.', $args));
+    $out['tail'] = dt('A folder appeared at !path before the build, so nothing there was deleted; !title is left, Locked, naming it: move the folder away first if it is wanted, then the account\'s main login can delete !title.', $args);
+    return $out;
   }
   // websh refuses a Verify and a Delete of a codebase that needs a newer PHP
   // than the one named for it: it stays until one is.
@@ -3717,18 +3817,22 @@ function _provision_tasks_extra_successor_not_kept($plan, $why, $build) {
     $need = (preg_match('/needs PHP ([0-9]+\.[0-9]+) or newer/', implode("\n", $build['errors']), $m)) ? $m[1] : 'X.Y';
     $args['!line'] = _provision_tasks_extra_no_markup(_provision_tasks_extra_successor_folder_key($plan['path']) . ' ' . $need);
     $args['!need'] = $need;
-    return drush_set_error('PROVISION_SUCCESSOR_NOT_KEPT', dt('SUCCESSOR/RESULT Not kept: the build at !path needs PHP !need or newer and none is named for it. Add `!line` to ~/static/control/cli-per-platform.info, then the account\'s main login can delete !title.', $args));
+    $out['why'] = dt('the build at !path needs PHP !need or newer and none is named for it', $args);
+    $out['tail'] = dt('Add `!line` to ~/static/control/cli-per-platform.info, then the account\'s main login can delete !title.', $args);
+    return $out;
   }
-  $leg = _provision_tasks_extra_upgrade_leg($plan['context'], 'delete', array($plan['marker']), TRUE);
+  $leg = _provision_tasks_extra_upgrade_leg($plan['context'], 'delete', array($step_args[0]), TRUE);
   _provision_tasks_extra_upgrade_replay($leg, TRUE);
   clearstatcache();
   $after = _provision_tasks_extra_build_marker($plan['path']);
   $alias = _provision_tasks_extra_upgrade_alias_root(ltrim($plan['context'], '@'));
   if ($leg['ok'] && !file_exists($plan['path']) && !is_link($plan['path']) && $alias === FALSE && $after['state'] === 'none') {
-    return drush_set_error('PROVISION_SUCCESSOR_NOT_KEPT', dt('SUCCESSOR/RESULT Not kept: !why. The build was deleted.', $args));
+    $out['tail'] = 'The build was deleted.';
+    return $out;
   }
   if ($leg['ok'] && $alias === FALSE) {
-    return drush_set_error('PROVISION_SUCCESSOR_NOT_KEPT', dt('SUCCESSOR/RESULT Not kept: !why. Its record was deleted, and !path is still there (see the warnings above): remove it with the account\'s own login over SSH or SFTP before that name is used again.', $args));
+    $out['tail'] = dt('Its record was deleted, and !path is still there (see the warnings above): remove it with the account\'s own login over SSH or SFTP before that name is used again.', $args);
+    return $out;
   }
   if (!$leg['ok']) {
     $left = _provision_tasks_extra_upgrade_step_why($leg, $leg['errors'] ? trim(preg_replace('/\s+/', ' ', (string) reset($leg['errors']))) : 'its Delete ended with no result');
@@ -3740,5 +3844,6 @@ function _provision_tasks_extra_successor_not_kept($plan, $why, $build) {
     $left = 'its alias is still there';
   }
   $args['!left'] = _provision_tasks_extra_no_markup($left);
-  return drush_set_error('PROVISION_SUCCESSOR_NOT_KEPT', dt('SUCCESSOR/RESULT Not kept: !why. !title at !path could not be deleted (!left); the account\'s main login can delete it.', $args));
+  $out['tail'] = dt('!title at !path could not be deleted (!left); the account\'s main login can delete it.', $args);
+  return $out;
 }
