@@ -442,7 +442,7 @@ function hosting_tasks_extra_platform_successor_lock_options($task, $plan) {
  */
 function hosting_tasks_extra_post_hosting_drupal_upgrade_task($task, $data) {
   hosting_tasks_extra_drupal_upgrade_end($task);
-  hosting_tasks_extra_successor_record_end($task, TRUE, 'UPGRADE/RESULT');
+  hosting_tasks_extra_successor_record_end($task, TRUE, 'UPGRADE/RESULT', $data);
 }
 
 /**
@@ -450,7 +450,7 @@ function hosting_tasks_extra_post_hosting_drupal_upgrade_task($task, $data) {
  */
 function hosting_tasks_extra_hosting_drupal_upgrade_task_rollback($task, $data) {
   hosting_tasks_extra_drupal_upgrade_end($task);
-  hosting_tasks_extra_successor_record_end($task, FALSE, 'UPGRADE/RESULT');
+  hosting_tasks_extra_successor_record_end($task, FALSE, 'UPGRADE/RESULT', $data);
 }
 
 /**
@@ -1391,7 +1391,7 @@ function hosting_tasks_extra_platform_successor_make($platform, $plan) {
  * Implements hook_post_hosting_TASK_TYPE_task().
  */
 function hosting_tasks_extra_post_hosting_platform_successor_task($task, $data) {
-  hosting_tasks_extra_platform_successor_end($task, TRUE);
+  hosting_tasks_extra_platform_successor_end($task, TRUE, $data);
 }
 
 /**
@@ -1400,7 +1400,7 @@ function hosting_tasks_extra_post_hosting_platform_successor_task($task, $data) 
  * Also called when the post hook ends the row in error.
  */
 function hosting_tasks_extra_hosting_platform_successor_task_rollback($task, $data) {
-  hosting_tasks_extra_platform_successor_end($task, FALSE);
+  hosting_tasks_extra_platform_successor_end($task, FALSE, $data);
 }
 
 /**
@@ -1410,14 +1410,14 @@ function hosting_tasks_extra_hosting_platform_successor_task_rollback($task, $da
  * record is read only here. A run that ended before it said anything (its
  * backend never started, say) says here what it left.
  */
-function hosting_tasks_extra_platform_successor_end($task, $ok) {
+function hosting_tasks_extra_platform_successor_end($task, $ok, $data = NULL) {
   $done = &drupal_static(__FUNCTION__, array());
   if (isset($done[$task->nid])) {
     return;
   }
   $done[$task->nid] = TRUE;
   hosting_tasks_extra_drupal_upgrade_cancel_steps($task, 'Build newer version');
-  hosting_tasks_extra_successor_record_end($task, $ok, 'SUCCESSOR/RESULT');
+  hosting_tasks_extra_successor_record_end($task, $ok, 'SUCCESSOR/RESULT', $data);
   if ($ok) {
     hosting_tasks_extra_platform_successor_then($task);
   }
@@ -1499,19 +1499,18 @@ function hosting_tasks_extra_task_said($task, $text) {
 
 /**
  * Records the files a build from a platform's own lock made, on the new
- * platform's first Verify, a step of the run: its backend says them in one
- * line of its own (a log entry of the ok type), taken while the build's
- * folder was still closed to the account's logins. The first such line is
- * the run's: it is written right after the gate, before an Upgrade's steps
- * run the site's own code, whose log lines this row's log takes in too.
+ * platform's first Verify, a step of the run. Its backend gives them in its
+ * own result ($data['context'], successor_build_files), taken while the
+ * build's folder was still closed to the account's logins. Never from the
+ * row's log: that takes in the log lines of whatever the run's steps start,
+ * the site's own code among them, with the types they give themselves. A
+ * run that built from no lock gives none, and the fingerprint its new
+ * platform's Verify recorded stays.
  */
-function hosting_tasks_extra_successor_record_files($task, $made_nid) {
-  $line = db_query_range("SELECT message FROM {hosting_task_log} WHERE vid = :vid AND type = 'ok' AND message LIKE :files ORDER BY lid ASC", 0, 1, array(
-    ':vid' => (int) $task->vid,
-    ':files' => db_like('SUCCESSOR/FILES ') . '%',
-  ))->fetchField();
+function hosting_tasks_extra_successor_record_files($task, $made_nid, $data) {
+  $files = (is_array($data) && isset($data['context']) && is_array($data['context']) && isset($data['context']['successor_build_files'])) ? $data['context']['successor_build_files'] : '';
   $m = array();
-  if (!is_string($line) || !preg_match('/^SUCCESSOR\/FILES (sha256:[0-9a-f]{64}:[0-9a-f]{64})$/', trim($line), $m)) {
+  if (!is_string($files) || !preg_match('/^(sha256:[0-9a-f]{64}:[0-9a-f]{64})$/', $files, $m)) {
     return;
   }
   $verify = db_query_range("SELECT t.nid, t.vid FROM {hosting_task} t INNER JOIN {node} n ON n.vid = t.vid
@@ -1567,7 +1566,7 @@ function hosting_tasks_extra_post_hosting_verify_task($task, $data) {
  * @param string $said_by
  *   The run's result line marker: a run that said it is not spoken for.
  */
-function hosting_tasks_extra_successor_record_end($task, $ok, $said_by) {
+function hosting_tasks_extra_successor_record_end($task, $ok, $said_by, $data = NULL) {
   $done = &drupal_static(__FUNCTION__, array());
   if (isset($done[$task->nid])) {
     return;
@@ -1585,7 +1584,7 @@ function hosting_tasks_extra_successor_record_end($task, $ok, $said_by) {
   }
   hosting_tasks_extra_task_args_keep($task, array('successor_end' => $state));
   if ($state === 'enabled' || $state === 'kept_locked') {
-    hosting_tasks_extra_successor_record_files($task, (int) $made->nid);
+    hosting_tasks_extra_successor_record_files($task, (int) $made->nid, $data);
   }
   if ($ok || $state === 'deleted' || $state === 'gone') {
     return;

@@ -4080,8 +4080,12 @@ function _provision_tasks_extra_successor_build(&$plan, $step_args) {
     return _provision_tasks_extra_successor_remove($plan, $why, NULL, $step_args);
   }
   // What a build from the lock made, for the panel to record on the new
-  // platform's first Verify: the panel reads it from this line alone.
+  // platform's first Verify. The panel reads it from this run's own result,
+  // never from the row's log, which takes in the lines of whatever the run's
+  // steps start, the site's own code among them; the line says it for whoever
+  // reads the log.
   if (!empty($plan['files'])) {
+    drush_set_option('successor_build_files', $plan['files'], 'site');
     drush_log('SUCCESSOR/FILES ' . $plan['files'], 'ok');
   }
   // The line of the platform built from goes with the build, before it is
