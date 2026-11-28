@@ -356,6 +356,10 @@ function hosting_tasks_extra_permission() {
       'title' => t('build platform_successor from lock'),
       'description' => t('Let Build newer version, and the build of an Upgrade or Upgrade all sites, build a platform again from its own composer.json and composer.lock, updating only the part chosen. Needs create platform_successor task and create platform too.'),
     ),
+    'build shell-built platform_successor' => array(
+      'title' => t('build shell-built platform_successor'),
+      'description' => t('Let Build newer version, and the build of an Upgrade or Upgrade all sites, build a Composer project the account built in its shell again from its own composer.json and composer.lock, as the account\'s shell login. Needs create platform_successor task and create platform too.'),
+    ),
   );
 }
 
@@ -586,7 +590,7 @@ function hosting_tasks_extra_drupal_upgrade_build_open($site, $account, $found) 
     || !node_access('update', $platform, $account)) {
     return FALSE;
   }
-  return hosting_tasks_extra_platform_successor_built($platform) === '' && !hosting_tasks_extra_platform_successor_busy($platform->nid);
+  return hosting_tasks_extra_platform_successor_built($platform) === '' && !hosting_tasks_extra_platform_successor_shell_denied($platform, $account) && !hosting_tasks_extra_platform_successor_busy($platform->nid);
 }
 
 /**
@@ -1256,7 +1260,7 @@ function hosting_task_drupal_upgrade_form($node) {
   $source = ($build['why'] === '' && is_object($build['platform'])) ? hosting_tasks_extra_platform_successor_source($build['platform']) : '';
   $build_refused = is_array($source) ? hosting_tasks_extra_drupal_upgrade_build_refused($node, $source) : array();
   $site_modes = is_array($source) ? hosting_tasks_extra_drupal_upgrade_site_modes($node) : NULL;
-  if (is_array($source) && $source['template'] && count($build_refused) === 4 && !hosting_tasks_extra_platform_successor_lock_offer($build['platform'], $source, $site_modes)['open']) {
+  if (is_array($source) && ($source['template'] && count($build_refused) === 4 || !empty($source['shell'])) && !hosting_tasks_extra_platform_successor_lock_offer($build['platform'], $source, $site_modes)['open']) {
     $source = '';
   }
   if (is_array($source)) {
@@ -1271,9 +1275,11 @@ function hosting_task_drupal_upgrade_form($node) {
     if (!$found['ready']) {
       $form['build']['target_platform']['#default_value'] = 'build';
     }
-    $knows = $source['template']
+    $knows = !empty($source['shell'])
+      ? t('The build moves only what you choose below, built as the account\'s shell login.')
+      : ($source['template']
       ? t('A version chosen by its release moves Drupal core only, with what core requires; another version constraint brings whatever that version holds.')
-      : (($source['strategy'] === 'platform_composer_git') ? t('The build holds what your branch or tag holds.') : t('The build brings whatever the package\'s new version brings.'));
+      : (($source['strategy'] === 'platform_composer_git') ? t('The build holds what your branch or tag holds.') : t('The build brings whatever the package\'s new version brings.')));
     $form['build_fields'] = array(
       '#type' => 'container',
       '#weight' => $weight++,
@@ -2595,7 +2601,7 @@ function hosting_task_drupal_upgrade_all_form($node) {
   $build = ($why === '') ? hosting_tasks_extra_drupal_upgrade_all_build_why($node, $account) : array('why' => $why);
   $source = ($build['why'] === '') ? hosting_tasks_extra_platform_successor_source($node) : '';
   $all_refused = is_array($source) ? hosting_tasks_extra_platform_successor_refused($node, $source) : array();
-  if (is_array($source) && $source['template'] && count($all_refused) === 4 && !hosting_tasks_extra_platform_successor_lock_offer($node, $source)['open']) {
+  if (is_array($source) && ($source['template'] && count($all_refused) === 4 || !empty($source['shell'])) && !hosting_tasks_extra_platform_successor_lock_offer($node, $source)['open']) {
     $source = '';
   }
   if ($why === '' && !$judged['targets'] && !is_array($source)) {
@@ -3461,6 +3467,91 @@ function hosting_tasks_extra_lock_include() {
 }
 
 /**
+ * Whether the copy of the shared rules that is loaded knows a codebase built
+ * in the shell. An older one takes that way to build away.
+ */
+function hosting_tasks_extra_shell_include() {
+  return hosting_tasks_extra_lock_include() && function_exists('_provision_tasks_extra_shell_project');
+}
+
+/**
+ * The home of the account this control panel serves, /data/disk/<account>,
+ * read from the panel's own platform path; '' for a panel of no account.
+ */
+function hosting_tasks_extra_account_home() {
+  $nid = function_exists('hosting_get_hostmaster_platform_nid') ? hosting_get_hostmaster_platform_nid() : 0;
+  $panel = $nid ? node_load($nid) : NULL;
+  $m = array();
+  if (is_object($panel) && isset($panel->publish_path) && preg_match('#^(/data/disk/[a-z][a-z0-9_]{0,31})/#', (string) $panel->publish_path, $m)) {
+    return $m[1];
+  }
+  return '';
+}
+
+/**
+ * What a platform added by its path was built from, when the account built
+ * it in its shell: a source as hosting_tasks_extra_platform_successor_source()
+ * gives one, its 'strategy' '' and 'shell' TRUE; or why not.
+ *
+ * No Deployment strategy, no build field of any strategy and no makefile,
+ * and a Composer project in the account's static folder.
+ */
+function hosting_tasks_extra_platform_successor_shell_source($platform) {
+  if (!hosting_tasks_extra_shell_include()) {
+    return 'the control panel is being updated; look again in a few minutes';
+  }
+  // Read once a request: a platform's page asks for each of its tasks.
+  $known = &drupal_static(__FUNCTION__, array());
+  $key = (isset($platform->nid) ? (int) $platform->nid : 0) . ':' . (isset($platform->publish_path) ? (string) $platform->publish_path : '');
+  if (!isset($known[$key])) {
+    $known[$key] = _hosting_tasks_extra_platform_successor_shell_source($platform);
+  }
+  return $known[$key];
+}
+
+/**
+ * hosting_tasks_extra_platform_successor_shell_source(), read afresh.
+ */
+function _hosting_tasks_extra_platform_successor_shell_source($platform) {
+  if (!empty($platform->makefile)) {
+    return 'it was made from a makefile';
+  }
+  // A repository the panel cloned (hosting_git keeps its address whatever
+  // the strategy) is the backend user's build, not one made in the shell.
+  if (isset($platform->git['repo_url']) && is_string($platform->git['repo_url']) && trim($platform->git['repo_url']) !== '') {
+    return 'it was cloned from a Git repository by the panel';
+  }
+  // What a build of the panel's names: its package or repository and its
+  // folder. A Version or a docroot alone is a field's default (the Git
+  // route's Version is "master" on every platform).
+  $fields = array('field_git_repository_url', 'field_git_repository_path');
+  foreach (hosting_tasks_extra_platform_successor_fields() as $parts) {
+    $fields[] = $parts['source'];
+    $fields[] = $parts['path'];
+  }
+  foreach ($fields as $field) {
+    if (_hosting_tasks_extra_field($platform, $field) !== '') {
+      return 'it carries build fields of the panel';
+    }
+  }
+  $home = hosting_tasks_extra_account_home();
+  $project = _provision_tasks_extra_shell_project(isset($platform->publish_path) ? (string) $platform->publish_path : '', $home);
+  if (is_string($project)) {
+    return $project;
+  }
+  return array(
+    'strategy' => '',
+    'shell' => TRUE,
+    'source' => '',
+    'version' => '',
+    'path' => $project['path'],
+    'docroot' => $project['docroot'],
+    'login' => $project['login'],
+    'template' => FALSE,
+  );
+}
+
+/**
  * The fingerprint of the files the panel's own build of a platform made, or
  * '' when no build of it recorded one.
  *
@@ -3489,6 +3580,24 @@ function hosting_tasks_extra_platform_build_fingerprint($nid) {
 function hosting_tasks_extra_platform_successor_lock_why($platform, $source, $account) {
   if (!hosting_tasks_extra_lock_include()) {
     return 'the control panel is being updated; look again in a few minutes';
+  }
+  // A codebase built in the shell is built again as the account's shell
+  // login: its files are that login's own, so no fingerprint vouches for
+  // them, and a repository of the account's folders gives it nothing the
+  // login lacks.
+  if (is_array($source) && !empty($source['shell'])) {
+    if (!hosting_tasks_extra_shell_include()) {
+      return 'the control panel is being updated; look again in a few minutes';
+    }
+    if (!user_access('build shell-built platform_successor', $account)) {
+      return 'this account may not build a codebase built in the shell again';
+    }
+    // The panel's web server has no posix_getpwnam(): there the backend's
+    // own check at the start answers for the login.
+    if (function_exists('posix_getpwnam') && !is_array(posix_getpwnam($source['login']))) {
+      return 'the account\'s shell login ' . $source['login'] . ' is not on this server';
+    }
+    return '';
   }
   if (!user_access('build platform_successor from lock', $account)) {
     return 'this account may not build a platform again from its own composer.lock';
@@ -3770,7 +3879,11 @@ function hosting_tasks_extra_platform_successor_source($platform) {
   $strategy = _hosting_tasks_extra_field($platform, 'field_deployment_strategy');
   $all = hosting_tasks_extra_platform_successor_fields();
   if (!isset($all[$strategy])) {
-    return 'it was not built with Composer by the panel (from Packagist or from a Git repository)';
+    // Added by its path ("none", or no value on an older record): a
+    // Composer project the account built in its shell is built again as
+    // its shell login.
+    $shell = ($strategy === '' || $strategy === 'none') ? hosting_tasks_extra_platform_successor_shell_source($platform) : '';
+    return is_array($shell) ? $shell : 'it was not built with Composer by the panel (from Packagist or from a Git repository)';
   }
   // The build reads its fields under the node's language, and they are
   // kept untranslated.
@@ -4026,7 +4139,20 @@ function hosting_tasks_extra_platform_successor_task_access($node, $task) {
   if (!hosting_tasks_extra_successor_include() || hosting_tasks_extra_platform_successor_built($node) !== '') {
     return FALSE;
   }
+  if (hosting_tasks_extra_platform_successor_shell_denied($node, $GLOBALS['user'])) {
+    return FALSE;
+  }
   return !hosting_tasks_extra_platform_successor_busy($node->nid);
+}
+
+/**
+ * Whether a platform is a codebase built in the shell that an account may
+ * not build: built only by its own route, and only by an account that may
+ * take it, so no link or button offers it to another.
+ */
+function hosting_tasks_extra_platform_successor_shell_denied($platform, $account) {
+  $source = hosting_tasks_extra_platform_successor_source($platform);
+  return is_array($source) && !empty($source['shell']) && !user_access('build shell-built platform_successor', $account);
 }
 
 /**
@@ -4056,6 +4182,15 @@ function hosting_tasks_extra_platform_successor_why($platform, $account, $except
   $built = hosting_tasks_extra_platform_successor_built($platform);
   if ($built !== '') {
     return $built;
+  }
+  // A codebase built in the shell has one route, which this account must
+  // be able to take.
+  $source = hosting_tasks_extra_platform_successor_source($platform);
+  if (is_array($source) && !empty($source['shell'])) {
+    $why = hosting_tasks_extra_platform_successor_lock_why($platform, $source, $account);
+    if ($why !== '') {
+      return $why;
+    }
   }
   // A line that switches upgrades off, or cannot be read, builds nothing.
   if (function_exists('_provision_tasks_extra_build_lists_refusal')) {
@@ -4142,6 +4277,10 @@ function hosting_tasks_extra_platform_successor_plan($platform, $args, $account 
   $mode = isset($args['mode']) ? (string) $args['mode'] : '';
   $version = isset($args['version']) ? (string) $args['version'] : '';
   $name = isset($args['name']) ? trim(preg_replace('/\s+/', ' ', (string) $args['name'])) : '';
+  if (!empty($source['shell']) && $mode !== 'lock') {
+    $out['why'] = 'a codebase built in the shell is built again from its own composer.lock only';
+    return $out;
+  }
   if (!$source['template'] && $mode !== 'version' && $mode !== 'lock') {
     $out['why'] = 'give the ' . ($source['strategy'] === 'platform_composer_git' ? 'Branch/tag' : 'Version') . ' to build';
     return $out;
@@ -4171,7 +4310,13 @@ function hosting_tasks_extra_platform_successor_plan($platform, $args, $account 
       return $out;
     }
     $made = array('constraint' => $source['version'], 'major' => 0, 'why' => '');
-    $lock = array(
+    // A codebase built in the shell is built as its shell login, and no
+    // fingerprint is asked of the login's own files.
+    $lock = !empty($source['shell']) ? array(
+      'route' => 'shell',
+      'choice' => $choice,
+      'fingerprint' => '',
+    ) : array(
       'route' => 'lock',
       'choice' => $choice,
       'fingerprint' => hosting_tasks_extra_platform_build_fingerprint($platform->nid),
@@ -4222,18 +4367,21 @@ function hosting_tasks_extra_platform_successor_plan($platform, $args, $account 
     $out['why'] = $why;
     return $out;
   }
-  // The fields the new platform gets, as the panel's own form checks them.
-  $fields = hosting_tasks_extra_platform_successor_fields();
-  $stub = new stdClass();
-  $stub->language = LANGUAGE_NONE;
-  $stub->field_deployment_strategy[LANGUAGE_NONE][0]['value'] = $source['strategy'];
-  foreach (array('source' => $source['source'], 'version' => $constraint, 'docroot' => $source['docroot'], 'path' => $folder) as $part => $value) {
-    $stub->{$fields[$source['strategy']][$part]}[LANGUAGE_NONE][0]['value'] = $value;
-  }
-  $errors = _hosting_platform_build_field_errors($stub);
-  if ($errors) {
-    $out['why'] = 'the version: ' . strip_tags((string) reset($errors));
-    return $out;
+  // The fields the new platform gets, as the panel's own form checks them;
+  // a codebase built in the shell gets none.
+  if (empty($source['shell'])) {
+    $fields = hosting_tasks_extra_platform_successor_fields();
+    $stub = new stdClass();
+    $stub->language = LANGUAGE_NONE;
+    $stub->field_deployment_strategy[LANGUAGE_NONE][0]['value'] = $source['strategy'];
+    foreach (array('source' => $source['source'], 'version' => $constraint, 'docroot' => $source['docroot'], 'path' => $folder) as $part => $value) {
+      $stub->{$fields[$source['strategy']][$part]}[LANGUAGE_NONE][0]['value'] = $value;
+    }
+    $errors = _hosting_platform_build_field_errors($stub);
+    if ($errors) {
+      $out['why'] = 'the version: ' . strip_tags((string) reset($errors));
+      return $out;
+    }
   }
   return array(
     'why' => '',
@@ -4298,6 +4446,13 @@ function hosting_task_platform_successor_form($node) {
     );
     return $form;
   }
+  // A codebase built in the shell has its own lock as its one route.
+  if (!empty($source['shell']) && !$offer['open']) {
+    $form['none'] = array(
+      '#markup' => '<p>' . t('Nothing can be built from here: @why.', array('@why' => $offer['why'] !== '' ? $offer['why'] : 'its own composer.lock cannot be built from')) . '</p>',
+    );
+    return $form;
+  }
   $form += hosting_tasks_extra_platform_successor_fields_form($platform, $source, '', array(), $refused);
   $form['kept'] = array(
     '#markup' => '<p>' . t('The build is kept, and offered to the sites of this platform by their Upgrade, only when it is a newer version of the same codebase; otherwise it is deleted. A security advisory the build has and this platform does not is named in the result. While it runs, the other tasks of this account wait.') . '</p>',
@@ -4332,14 +4487,18 @@ function hosting_tasks_extra_platform_successor_fields_form($platform, $source, 
   $shown = $visible ? array('visible' => $visible) : array();
   $lock = hosting_tasks_extra_platform_successor_lock_offer($platform, $source, $site_modes);
   $lock_label = t('From its own composer.lock: only what you choose below');
+  $shell = !empty($source['shell']);
   $form[$prefix . 'source_line'] = array(
-    '#markup' => '<p>' . t('Built from: @how, @what, @field @version, Drupal @release.', array(
+    '#markup' => '<p>' . ($shell ? t('Built from: a Composer project built in the shell at @folder, Drupal @release.', array(
+      '@folder' => $source['path'],
+      '@release' => $release,
+    )) : t('Built from: @how, @what, @field @version, Drupal @release.', array(
       '@how' => isset($labels[$source['strategy']]) ? strip_tags($labels[$source['strategy']]) : $source['strategy'],
       '@what' => $source['source'],
       '@field' => $git ? t('Branch/tag') : t('Version'),
       '@version' => $source['version'] !== '' ? $source['version'] : ($git ? 'master' : t('(none)')),
       '@release' => $release,
-    )) . '</p>',
+    ))) . '</p>',
     '#weight' => $weight,
     '#states' => $shown,
   );
@@ -4347,7 +4506,11 @@ function hosting_tasks_extra_platform_successor_fields_form($platform, $source, 
   // validate, never as required: a required field the browser does not show
   // would refuse every other choice.
   $required = ($prefix === '');
-  if ($source['template']) {
+  if ($shell) {
+    // A codebase built in the shell: its own lock is its one route.
+    $form[$prefix . 'mode'] = array('#type' => 'value', '#value' => 'lock');
+  }
+  elseif ($source['template']) {
     $options = array();
     foreach (array('patch', 'minor', 'major') as $mode) {
       $made = _provision_tasks_extra_successor_constraint($mode, $release, '');
@@ -4427,7 +4590,8 @@ function hosting_tasks_extra_platform_successor_fields_form($platform, $source, 
     );
   }
   if ($lock['open']) {
-    $lock_shown = array('visible' => array(':input[name="parameters[' . $prefix . 'mode]"]' => array('value' => 'lock')) + $visible);
+    // With no Mode to choose, the fields are shown as the dialog's own.
+    $lock_shown = $shell ? $shown : array('visible' => array(':input[name="parameters[' . $prefix . 'mode]"]' => array('value' => 'lock')) + $visible);
     $scopes = array_diff_key(array(
       'core' => t('Drupal core'),
       'contrib' => t('Modules and themes'),
@@ -4469,7 +4633,8 @@ function hosting_tasks_extra_platform_successor_fields_form($platform, $source, 
       '#states' => $lock_shown,
     );
     $form[$prefix . 'lock_line'] = array(
-      '#markup' => '<p>' . t('Built again from its own composer.json and composer.lock: only what you choose moves, inside the versions its composer.json allows, and never to a new major release.') . '</p>',
+      '#markup' => '<p>' . ($shell ? t('Built again as the account\'s shell login @login, from its own composer.json and composer.lock: only what you choose moves, inside the versions its composer.json allows, and never to a new major release.', array('@login' => $source['login']))
+        : t('Built again from its own composer.json and composer.lock: only what you choose moves, inside the versions its composer.json allows, and never to a new major release.')) . '</p>',
       '#weight' => $weight + 2,
       '#states' => $lock_shown,
     );

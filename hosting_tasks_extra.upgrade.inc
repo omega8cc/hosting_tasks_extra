@@ -1949,7 +1949,8 @@ function _provision_tasks_extra_cli_php_said($messages, $name) {
  *
  * The marker is hosting_deploy's, read its way: the group pgid= names is the
  * build's only on the same boot (boot=), with the same leader start (start=)
- * when the leader still runs, and only while this user may signal it.
+ * when the leader still runs, and only while this user may signal it, or,
+ * for a build whose steps run as the shell login (login=), while it is there.
  *
  * @param string $path
  *   The build folder (the Composer project, not its docroot).
@@ -1996,6 +1997,19 @@ function _provision_tasks_extra_build_marker($path) {
     }
   }
   $out['alive'] = posix_kill(-$out['pgid'], 0);
+  // A build whose steps run as the account's shell login says so: what is
+  // left of its group may be the login's alone, which this user cannot
+  // signal (EPERM), and that is still the build. Only within the time the
+  // login's program bounds a step and what it left to (45 minutes and its
+  // stop), counted from the marker's last write at the step's start: once
+  // the group has ended, its number may name another user's group.
+  if (!$out['alive'] && preg_match('/^login=[a-z][a-z0-9_]{0,31}\.ftp$/m', $text) && function_exists('posix_get_last_error')) {
+    $eperm = (posix_get_last_error() === 1);
+    $written = @filemtime($marker);
+    $age = ($written === FALSE) ? -1000 : time() - $written;
+    // A marker dated ahead of now bounds nothing.
+    $out['alive'] = ($eperm && $age > -60 && $age < 3000);
+  }
   return $out;
 }
 
@@ -2394,7 +2408,8 @@ function _provision_tasks_extra_lock_build_args($lock, $choice, $advised = NULL)
   ksort($names);
   $words = array();
   foreach (array_keys($names) as $name) {
-    if (!preg_match('/^[a-z0-9_.-]+\/[a-z0-9_.-]+$/', $name)) {
+    // Never a dash first: Composer would read the name as an option.
+    if (!preg_match('/^[a-z0-9][a-z0-9_.-]*\/[a-z0-9][a-z0-9_.-]*$/', $name)) {
       return 'its composer.lock names a package the panel does not pass to Composer (' . preg_replace('/[^\x20-\x7e]/', '?', substr($name, 0, 80)) . ')';
     }
     $words[] = $name;
@@ -2498,6 +2513,67 @@ function _provision_tasks_extra_lock_fingerprint($folder) {
     $out .= ':' . hash('sha256', $bytes);
   }
   return $out;
+}
+
+/**
+ * A Composer project the account built in its shell, from a platform's
+ * recorded path: what a build as the account's shell login needs, or why it
+ * is not one.
+ *
+ * The path must be in the static folder of the account whose home is given,
+ * the project folder the docroot or the folder above it as
+ * _provision_tasks_extra_app_root() finds it, holding a composer.json and a
+ * composer.lock as plain files, reached through no link, and the folder the
+ * project sits in in that static folder too, since the new one is made
+ * beside it. Only the account's logins write there: the answer says where
+ * the files are, never that they can be trusted.
+ *
+ * @param string $publish
+ *   The platform's path as recorded.
+ * @param string $home
+ *   The account's home, /data/disk/<account>.
+ *
+ * @return array|string
+ *   'path' (the project folder), 'docroot' (its name inside the project, ''
+ *   for the project itself) and 'login' (<account>.ftp); or why not.
+ */
+function _provision_tasks_extra_shell_project($publish, $home) {
+  $home = rtrim((string) $home, '/');
+  $m = array();
+  if (!preg_match('#^/data/disk/([a-z][a-z0-9_]{0,31})$#', $home, $m)) {
+    return 'only an account\'s own platforms are built as its shell login';
+  }
+  $static = $home . '/static';
+  $publish = rtrim(preg_replace('#/+#', '/', trim((string) $publish)), '/');
+  if (strpos($publish . '/', $static . '/') !== 0 || $publish === $static || strpos($publish . '/', '/../') !== FALSE || strpos($publish . '/', '/./') !== FALSE) {
+    return 'it is not in the account\'s static folder ' . $static;
+  }
+  $docroot = rtrim((string) _provision_tasks_extra_docroot($publish), '/');
+  // The project folder as the rest of the panel and provision take it: the
+  // docroot when it holds vendor/ beside its composer.lock, else the folder
+  // its autoload.php names above it.
+  $project = _provision_tasks_extra_app_root($docroot);
+  if ($project === '' || ($project !== $docroot && $project !== dirname($docroot)) || _provision_tasks_extra_lock_fingerprint($project) === '') {
+    return 'it holds no composer.json and composer.lock of a project built in the shell';
+  }
+  if (strpos($project, $static . '/') !== 0 || strpos(dirname($project) . '/', $static . '/') !== 0) {
+    return 'its project folder ' . $project . ' has no folder of the account\'s static folder to be built again beside';
+  }
+  // The names the shell login's build program takes: folder names of
+  // letters, digits, dots, dashes and underscores, at most 400 characters.
+  if (strlen($docroot) > 400 || !preg_match('#^[A-Za-z0-9_][A-Za-z0-9._-]*(/[A-Za-z0-9_][A-Za-z0-9._-]*)*$#', substr($docroot, strlen($static) + 1))) {
+    return 'its folder ' . $docroot . ' has a name the build program does not take: folder names of letters, digits, dots, dashes and underscores only';
+  }
+  // No link on the way: the shell login's build program refuses one too.
+  clearstatcache();
+  if (is_link($project) || !is_dir($project) || realpath($project) !== $project || realpath($docroot) !== $docroot) {
+    return 'its project folder ' . $project . ' is not a plain folder, reached through no link';
+  }
+  return array(
+    'path' => $project,
+    'docroot' => ($project === $docroot) ? '' : basename($docroot),
+    'login' => $m[1] . '.ftp',
+  );
 }
 
 /**

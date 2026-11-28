@@ -3795,6 +3795,11 @@ function _provision_tasks_extra_successor_plan($source = NULL) {
   if (is_string($lock_build)) {
     return $lock_build;
   }
+  // A build as the shell login copies the project by its docroot: the one
+  // the panel named for the new platform must be the one found now.
+  if (isset($lock_build['route']) && $lock_build['route'] === 'shell' && $lock_build['source_docroot'] !== (($root === $path) ? '' : basename($root))) {
+    return 'the docroot of the platform it is built from is not the one the panel named';
+  }
   if (function_exists('_provision_tasks_extra_build_lists_refusal')) {
     $kind = _provision_tasks_extra_build_kind_before((bool) drush_get_option('successor_template', FALSE), $mode, isset($lock_build['choice']) ? $lock_build['choice'] : NULL);
     $why = _provision_tasks_extra_build_lists_refusal($kind, $modes, array('state' => 'absent'));
@@ -3855,6 +3860,9 @@ function _provision_tasks_extra_successor_lock_plan($source, $mode, $from, $buil
   $route = trim((string) drush_get_option('successor_route', ''));
   if ($route === '' && $mode !== 'lock') {
     return array();
+  }
+  if ($route === 'shell' && $mode === 'lock') {
+    return _provision_tasks_extra_successor_shell_plan($source, $from, $source_root, $lock);
   }
   if ($route !== 'lock' || $mode !== 'lock') {
     return 'the task did not say how to build (its route and its Mode differ); start it from the platform\'s page';
@@ -3918,6 +3926,94 @@ function _provision_tasks_extra_successor_lock_plan($source, $mode, $from, $buil
 }
 
 /**
+ * The plan of a build of a codebase the account built in its shell, run as
+ * the account's shell login through /opt/local/bin/boa-ftp-build, or why it
+ * cannot be built so.
+ *
+ * A platform added by its path with no build of the panel's, a Composer
+ * project in the account's static folder: the folder the panel named. No
+ * fingerprint is asked, and a repository of the account's own folders is
+ * not refused: the build runs only what the login can run already.
+ *
+ * @param object $source
+ *   The platform built from.
+ * @param string $from
+ *   Its project folder, as the panel named it.
+ * @param string $source_root
+ *   Its docroot.
+ * @param array $lock
+ *   _provision_tasks_extra_lock_load() of it.
+ */
+function _provision_tasks_extra_successor_shell_plan($source, $from, $source_root, $lock) {
+  if (!function_exists('_provision_tasks_extra_shell_project') || !function_exists('_provision_tasks_extra_lock_build_args')) {
+    return 'the backend\'s copy of the task\'s rules is older than the panel\'s; start again in a few minutes';
+  }
+  $choice = _provision_tasks_extra_lock_build_choice(array(
+    'successor_scope' => drush_get_option('successor_scope', ''),
+    'successor_level' => drush_get_option('successor_level', ''),
+    'successor_security' => drush_get_option('successor_security', ''),
+  ), 'successor_');
+  if (is_string($choice)) {
+    return $choice;
+  }
+  // The parent first: loading the class on a copy without it would stop
+  // the task.
+  if (!class_exists('Provision_ComposerLockBuild') || !class_exists('Provision_ComposerShellBuild')) {
+    return 'the backend\'s copy of the platform builds is older than the panel\'s; start again in a few minutes';
+  }
+  foreach (array('composer_project_package', 'composer_project_path', 'composer_git_path', 'composer_git_project_url', 'git_repository_url', 'git_repository_path', 'repo_url', 'makefile') as $property) {
+    if (isset($source->{$property}) && is_string($source->{$property}) && trim($source->{$property}) !== '') {
+      return 'it was built by the panel, so it is not built as the account\'s shell login';
+    }
+  }
+  $master = d('@server_master');
+  $home = (is_object($master) && !empty($master->aegir_root)) ? rtrim($master->aegir_root, '/') : drush_server_home();
+  $project = _provision_tasks_extra_shell_project($source->root, $home);
+  if (is_string($project)) {
+    return $project;
+  }
+  if ($project['path'] !== $from) {
+    return 'its project folder is not the one the panel named';
+  }
+  // The backend user is the account's own, and its shell login is here.
+  $me = function_exists('posix_getpwuid') ? posix_getpwuid(posix_geteuid()) : FALSE;
+  if (!is_array($me) || $me['name'] . '.ftp' !== $project['login']) {
+    return 'only the account\'s own backend user builds as its shell login';
+  }
+  if (!is_array(posix_getpwnam($project['login']))) {
+    return 'the account\'s shell login ' . $project['login'] . ' is not on this server';
+  }
+  // The program the build runs as the login: root's, and no one else's to
+  // change, or the build would run what another wrote.
+  $program = '/opt/local/bin/boa-ftp-build';
+  clearstatcache(TRUE, $program);
+  $stat = @lstat($program);
+  if ($stat === FALSE || ($stat['mode'] & 0170000) !== 0100000 || $stat['uid'] !== 0 || ($stat['mode'] & 0022) || !($stat['mode'] & 0001)) {
+    return 'the shell login\'s build program ' . $program . ' is not on this server as BOA installs it';
+  }
+  $advised = NULL;
+  if ($choice['security']) {
+    $advised = _provision_tasks_extra_lock_build_advised($lock, _provision_tasks_extra_lock_advisories($source_root));
+    if (is_string($advised)) {
+      return $advised . ', so no fix can be chosen';
+    }
+  }
+  $words = _provision_tasks_extra_lock_build_args($lock, $choice, $advised);
+  if (is_string($words)) {
+    return $words;
+  }
+  return array(
+    'route' => 'shell',
+    'choice' => $choice,
+    'resolve' => $words,
+    'login' => $project['login'],
+    'source_path' => $from,
+    'source_docroot' => $project['docroot'],
+    'source_dev' => _provision_tasks_extra_lock_dev($from),
+  );
+}
+
+/**
  * Builds the new folder from the platform's own lock, before the new
  * platform's Verify: '' when it is built, or why not.
  *
@@ -3939,17 +4035,31 @@ function _provision_tasks_extra_successor_lock_run(&$plan) {
     'choice' => $plan['choice'],
   );
   $docroot = ($plan['root'] === $plan['path']) ? '' : basename($plan['root']);
-  $build = new Provision_ComposerLockBuild(array(
-    'path' => $plan['path'],
-    'source' => $plan['source_path'],
-    'docroot' => $docroot,
-    'resolve' => $plan['resolve'],
-    'fingerprint' => $plan['fingerprint'],
-    'judge' => function ($folder) use ($judged) {
-      return _provision_tasks_extra_lock_build_judge($judged, $folder);
-    },
-    'mode' => $plan['source_mode'],
-  ));
+  $judge = function ($folder) use ($judged) {
+    return _provision_tasks_extra_lock_build_judge($judged, $folder);
+  };
+  // A codebase built in the shell is built as its shell login, in place.
+  if ($plan['route'] === 'shell') {
+    $build = new Provision_ComposerShellBuild(array(
+      'path' => $plan['path'],
+      'source' => $plan['source_path'],
+      'docroot' => $docroot,
+      'resolve' => $plan['resolve'],
+      'judge' => $judge,
+      'login' => $plan['login'],
+    ));
+  }
+  else {
+    $build = new Provision_ComposerLockBuild(array(
+      'path' => $plan['path'],
+      'source' => $plan['source_path'],
+      'docroot' => $docroot,
+      'resolve' => $plan['resolve'],
+      'fingerprint' => $plan['fingerprint'],
+      'judge' => $judge,
+      'mode' => $plan['source_mode'],
+    ));
+  }
   if ($build->deploy() !== TRUE) {
     $text = trim(preg_replace('/\s+/', ' ', (string) $build->errorText()));
     if (strlen($text) > 600) {
@@ -4033,15 +4143,21 @@ function drush_provision_tasks_extra_provision_platform_successor() {
  *   it, for not_kept), in plain words.
  */
 function _provision_tasks_extra_successor_build(&$plan, $step_args) {
+  // The files this run gives the panel: none until a build from the lock is
+  // gated below. Drush's process context outranks every option a config file,
+  // an alias or the command line brings, and no config file is written from it.
+  drush_set_option('successor_build_files', '');
   drush_log(dt('SUCCESSOR/CHECK building !title in !path from !source (Drupal !release).', array(
     '!title' => _provision_tasks_extra_no_markup($plan['title']),
     '!path' => _provision_tasks_extra_no_markup($plan['path']),
     '!source' => _provision_tasks_extra_no_markup($plan['source_title']),
     '!release' => _provision_tasks_extra_no_markup($plan['source_release']),
   )), 'ok');
-  // A build from the platform's own lock makes the folder first, here; the
-  // Verify then takes it as it is.
-  if (isset($plan['route']) && $plan['route'] === 'lock') {
+  // A build from the platform's own lock, as the backend user or as the
+  // shell login, makes the folder first, here; the Verify then takes it as
+  // it is.
+  $made_first = isset($plan['route']) && in_array($plan['route'], array('lock', 'shell'), TRUE);
+  if ($made_first) {
     clearstatcache();
     if (file_exists($plan['path']) || is_link($plan['path'])) {
       $parts = _provision_tasks_extra_successor_found_parts(
@@ -4063,7 +4179,7 @@ function _provision_tasks_extra_successor_build(&$plan, $step_args) {
   // After a build from the lock the Verify finds this run's own folder, and
   // says so: only a link put in its place is a folder that appeared.
   clearstatcache();
-  if (!empty($plan['files']) ? is_link($plan['path']) : _provision_tasks_extra_successor_found($plan, $build)) {
+  if ($made_first ? is_link($plan['path']) : _provision_tasks_extra_successor_found($plan, $build)) {
     clearstatcache();
     $parts = _provision_tasks_extra_successor_found_parts(
       _provision_tasks_extra_no_markup($plan['title']),
@@ -4080,8 +4196,12 @@ function _provision_tasks_extra_successor_build(&$plan, $step_args) {
     return _provision_tasks_extra_successor_remove($plan, $why, NULL, $step_args);
   }
   // What a build from the lock made, for the panel to record on the new
-  // platform's first Verify: the panel reads it from this line alone.
+  // platform's first Verify. The panel reads it from this run's own result,
+  // never from the row's log, which takes in the lines of whatever the run's
+  // steps start, the site's own code among them; the line says it for whoever
+  // reads the log.
   if (!empty($plan['files'])) {
+    drush_set_option('successor_build_files', $plan['files']);
     drush_log('SUCCESSOR/FILES ' . $plan['files'], 'ok');
   }
   // The line of the platform built from goes with the build, before it is
@@ -4324,7 +4444,8 @@ function _provision_tasks_extra_successor_remove($plan, $why, $build, $step_args
   }
   // A build from the lock made its folder itself: its Verify's "already
   // there" is that folder.
-  if (is_array($build) && (!empty($plan['files']) ? is_link($plan['path']) : _provision_tasks_extra_successor_found($plan, $build))) {
+  $made_first = isset($plan['route']) && in_array($plan['route'], array('lock', 'shell'), TRUE);
+  if (is_array($build) && ($made_first ? is_link($plan['path']) : _provision_tasks_extra_successor_found($plan, $build))) {
     $out['tail'] = dt('A folder appeared at !path before the build, so nothing there was deleted; !title is left, Locked, naming it: move the folder away first if it is wanted, then the account\'s main login can delete !title.', $args);
     return $out;
   }
