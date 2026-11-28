@@ -427,14 +427,18 @@ function hosting_tasks_extra_drupal_upgrade_build_start($task, $site, $accounts)
  * choice, and the fingerprint the platform's two files must still have.
  */
 function hosting_tasks_extra_platform_successor_lock_options($task, $plan) {
-  if (!isset($plan['route']) || $plan['route'] !== 'lock') {
+  if (!isset($plan['route']) || !in_array($plan['route'], array('lock', 'shell'), TRUE)) {
     return;
   }
-  $task->options['successor_route'] = 'lock';
+  // A codebase built in the shell is built as its shell login, with no
+  // fingerprint asked of the login's own files.
+  $task->options['successor_route'] = $plan['route'];
   $task->options['successor_scope'] = $plan['choice']['scope'];
   $task->options['successor_level'] = $plan['choice']['level'];
   $task->options['successor_security'] = $plan['choice']['security'] ? 1 : 0;
-  $task->options['successor_fingerprint'] = $plan['fingerprint'];
+  if ($plan['route'] === 'lock') {
+    $task->options['successor_fingerprint'] = $plan['fingerprint'];
+  }
 }
 
 /**
@@ -1335,10 +1339,14 @@ function hosting_tasks_extra_platform_successor_make($platform, $plan) {
   $new->make_working_copy = 0;
   $new->no_verify = TRUE;
   $fields = hosting_tasks_extra_platform_successor_fields();
-  $mine = $fields[$source['strategy']];
-  $new->{$mine['version']} = array(LANGUAGE_NONE => array(array('value' => $plan['constraint'])));
-  $new->{$mine['path']} = array(LANGUAGE_NONE => array(array('value' => $plan['folder'])));
-  $new->{$mine['docroot']} = ($source['docroot'] === '') ? array() : array(LANGUAGE_NONE => array(array('value' => $source['docroot'])));
+  // A codebase built in the shell makes a platform of its own kind: one at
+  // its path, every build field empty below.
+  if (isset($fields[$source['strategy']])) {
+    $mine = $fields[$source['strategy']];
+    $new->{$mine['version']} = array(LANGUAGE_NONE => array(array('value' => $plan['constraint'])));
+    $new->{$mine['path']} = array(LANGUAGE_NONE => array(array('value' => $plan['folder'])));
+    $new->{$mine['docroot']} = ($source['docroot'] === '') ? array() : array(LANGUAGE_NONE => array(array('value' => $source['docroot'])));
+  }
   // Every other build's fields empty, with no default either: the backend
   // runs every build whose fields reach it.
   $others = array('field_git_repository_url', 'field_git_repository_path', 'field_git_reference', 'field_git_docroot');
