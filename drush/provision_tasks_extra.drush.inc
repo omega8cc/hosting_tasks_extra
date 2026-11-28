@@ -4033,6 +4033,10 @@ function drush_provision_tasks_extra_provision_platform_successor() {
  *   it, for not_kept), in plain words.
  */
 function _provision_tasks_extra_successor_build(&$plan, $step_args) {
+  // The files this run gives the panel: none until a build from the lock is
+  // gated below. Drush's process context outranks every option a config file,
+  // an alias or the command line brings, and no config file is written from it.
+  drush_set_option('successor_build_files', '');
   drush_log(dt('SUCCESSOR/CHECK building !title in !path from !source (Drupal !release).', array(
     '!title' => _provision_tasks_extra_no_markup($plan['title']),
     '!path' => _provision_tasks_extra_no_markup($plan['path']),
@@ -4085,7 +4089,7 @@ function _provision_tasks_extra_successor_build(&$plan, $step_args) {
   // steps start, the site's own code among them; the line says it for whoever
   // reads the log.
   if (!empty($plan['files'])) {
-    drush_set_option('successor_build_files', $plan['files'], 'site');
+    drush_set_option('successor_build_files', $plan['files']);
     drush_log('SUCCESSOR/FILES ' . $plan['files'], 'ok');
   }
   // The line of the platform built from goes with the build, before it is
